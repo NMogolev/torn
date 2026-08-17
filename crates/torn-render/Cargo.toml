@@ -1,0 +1,12 @@
+[package]
+name = "torn-render"
+description = "Backend-neutral rendering contracts for Torn"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+

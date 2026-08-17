@@ -1,0 +1,12 @@
+[package]
+name = "torn-software"
+description = "Deterministic software renderer and test support for Torn"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+

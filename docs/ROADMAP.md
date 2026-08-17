@@ -240,8 +240,3 @@ cargo test --workspace
 The project should favor unit tests for mathematical and routing contracts,
 then headless software-renderer integration tests. Native-window smoke tests
 are added only once the platform layer exists.
-
-## Immediate next step
-
-Implement M0 only. Its output will be a small compiling workspace with a
-well-tested, dependency-free core—not a window, renderer, or widget system.
