@@ -1,4 +1,5 @@
 use torn_core::{Constraints, InputEvent, Point, Size};
+use torn_render::PaintContext;
 
 use crate::{ChildLayout, EventStatus, LayoutResult, Widget, event};
 
@@ -72,6 +73,20 @@ impl Widget for Column {
             LayoutResult::with_children(constraints.constrain(size(width, height)), children);
         self.last_layout = Some(result.clone());
         result
+    }
+
+    fn paint(&self, context: &mut PaintContext<'_>, origin: Point) {
+        let Some(layout) = &self.last_layout else {
+            return;
+        };
+
+        for (child, child_layout) in self.children.iter().zip(layout.children()) {
+            let child_origin = Point::new(
+                origin.x + child_layout.origin().x,
+                origin.y + child_layout.origin().y,
+            );
+            child.paint(context, child_origin);
+        }
     }
 
     fn handle_event(&mut self, event: &InputEvent) -> EventStatus {

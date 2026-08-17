@@ -1,4 +1,5 @@
 use torn_core::{Constraints, InputEvent, Point, Rect};
+use torn_render::PaintContext;
 
 use crate::{EventStatus, LayoutResult, Widget, event};
 
@@ -32,6 +33,15 @@ impl UiRuntime {
     #[must_use]
     pub const fn last_layout(&self) -> Option<&LayoutResult> {
         self.layout.as_ref()
+    }
+
+    /// Records the laid-out widget tree into `context`.
+    ///
+    /// Does nothing until [`Self::layout`] has been called.
+    pub fn paint(&self, context: &mut PaintContext<'_>) {
+        if self.layout.is_some() {
+            self.root.paint(context, Point::ZERO);
+        }
     }
 
     /// Returns mutable access to the root widget and invalidates its layout.

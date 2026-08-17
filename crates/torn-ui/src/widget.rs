@@ -1,4 +1,5 @@
-use torn_core::{Constraints, InputEvent};
+use torn_core::{Constraints, InputEvent, Point};
+use torn_render::PaintContext;
 
 use crate::{EventStatus, LayoutResult};
 
@@ -9,6 +10,12 @@ use crate::{EventStatus, LayoutResult};
 pub trait Widget {
     /// Lays out this widget and its descendants within `constraints`.
     fn layout(&mut self, constraints: Constraints) -> LayoutResult;
+
+    /// Records this widget's paint operations at `origin`.
+    ///
+    /// The origin is relative to the display list's coordinate system. The
+    /// default implementation records no paint operations.
+    fn paint(&self, _context: &mut PaintContext<'_>, _origin: Point) {}
 
     /// Handles an input event targeted at this widget.
     ///
@@ -26,6 +33,10 @@ where
 {
     fn layout(&mut self, constraints: Constraints) -> LayoutResult {
         (**self).layout(constraints)
+    }
+
+    fn paint(&self, context: &mut PaintContext<'_>, origin: Point) {
+        (**self).paint(context, origin);
     }
 
     fn handle_event(&mut self, event: &InputEvent) -> EventStatus {
