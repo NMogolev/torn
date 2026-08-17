@@ -10,3 +10,5 @@ repository.workspace = true
 [lints]
 workspace = true
 
+[dependencies]
+torn-core = { path = "../torn-core" }
