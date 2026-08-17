@@ -1,3 +1,9 @@
 //! Backend-neutral display-list and text contracts for Torn.
-//!
-//! The rendering API is introduced in milestone M1.
+
+mod display_list;
+mod paint;
+mod text;
+
+pub use display_list::{DisplayCommand, DisplayList};
+pub use paint::PaintContext;
+pub use text::{TextLayout, TextShaper, TextStyle};

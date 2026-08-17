@@ -13,10 +13,17 @@ version = "0.1.0"
 [[package]]
 name = "torn-render"
 version = "0.1.0"
+dependencies = [
+ "torn-core",
+]
 
 [[package]]
 name = "torn-software"
 version = "0.1.0"
+dependencies = [
+ "torn-core",
+ "torn-render",
+]
 
 [[package]]
 name = "torn-ui"
