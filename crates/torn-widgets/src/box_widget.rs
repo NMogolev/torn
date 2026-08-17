@@ -1,8 +1,8 @@
 use std::boxed::Box as HeapBox;
 
-use torn_core::{Color, Constraints, InputEvent, Point, Rect, Size};
+use torn_core::{Color, Constraints, Point, Rect, Size};
 use torn_render::PaintContext;
-use torn_ui::{ChildLayout, EventStatus, LayoutResult, Widget};
+use torn_ui::{ChildLayout, LayoutResult, Widget};
 
 /// A single-child container similar to an HTML `div`.
 ///
@@ -89,53 +89,55 @@ impl Widget for Box {
         }
     }
 
-    fn handle_event(&mut self, event: &InputEvent) -> EventStatus {
-        let Some(position) = pointer_position(event) else {
-            return EventStatus::Ignored;
-        };
-        let (Some(child), Some(layout)) = (&mut self.child, &self.last_layout) else {
-            return EventStatus::Ignored;
-        };
-        let Some(child_layout) = layout.children().first() else {
-            return EventStatus::Ignored;
-        };
+    fn hit_test_child(&self, position: Point) -> Option<(usize, Point)> {
+        let layout = self.last_layout.as_ref()?;
+        let child_layout = layout.children().first()?;
         if child_layout.bounds().contains(position) {
-            return child.handle_event(&with_local_position(event, child_layout.origin()));
+            return Some((
+                0,
+                Point::new(
+                    position.x - child_layout.origin().x,
+                    position.y - child_layout.origin().y,
+                ),
+            ));
         }
 
-        EventStatus::Ignored
+        None
     }
-}
 
-fn pointer_position(event: &InputEvent) -> Option<Point> {
-    match event {
-        InputEvent::PointerDown(event)
-        | InputEvent::PointerMove(event)
-        | InputEvent::PointerUp(event) => Some(event.position),
-        InputEvent::Wheel(_)
-        | InputEvent::KeyDown(_)
-        | InputEvent::KeyUp(_)
-        | InputEvent::TextInput(_)
-        | InputEvent::FocusChanged(_) => None,
-    }
-}
-
-fn with_local_position(event: &InputEvent, origin: Point) -> InputEvent {
-    let mut event = event.clone();
-    match &mut event {
-        InputEvent::PointerDown(pointer)
-        | InputEvent::PointerMove(pointer)
-        | InputEvent::PointerUp(pointer) => {
-            pointer.position.x -= origin.x;
-            pointer.position.y -= origin.y;
+    fn event_child(&mut self, index: usize) -> Option<&mut (dyn Widget + '_)> {
+        if index == 0 {
+            let child = self.child.as_mut()?;
+            Some(&mut **child)
+        } else {
+            None
         }
-        InputEvent::Wheel(_)
-        | InputEvent::KeyDown(_)
-        | InputEvent::KeyUp(_)
-        | InputEvent::TextInput(_)
-        | InputEvent::FocusChanged(_) => {}
     }
-    event
+
+    fn event_child_ref(&self, index: usize) -> Option<&(dyn Widget + '_)> {
+        if index == 0 {
+            let child = self.child.as_ref()?;
+            Some(&**child)
+        } else {
+            None
+        }
+    }
+
+    fn event_child_count(&self) -> usize {
+        usize::from(self.child.is_some())
+    }
+
+    fn event_child_origin(&self, index: usize) -> Option<Point> {
+        (index == 0)
+            .then(|| {
+                self.last_layout
+                    .as_ref()?
+                    .children()
+                    .first()
+                    .map(ChildLayout::origin)
+            })
+            .flatten()
+    }
 }
 
 #[cfg(test)]

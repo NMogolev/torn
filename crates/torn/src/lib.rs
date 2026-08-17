@@ -10,10 +10,15 @@ pub use torn_core::{
     SizeError, WheelDelta, WheelEvent,
 };
 pub use torn_ui::{
-    ChildLayout, Column, DarkTheme, EventStatus, LayoutResult, LightTheme, Row, SystemAppearance,
-    SystemTheme, Theme, UiRuntime, UiRuntimeError, Widget,
+    ChildLayout, Column, DarkTheme, EventContext, EventPhase, EventStatus, LayoutResult,
+    LightTheme, Row, SystemAppearance, SystemTheme, Theme, UiRuntime, UiRuntimeError, Widget,
 };
 pub use torn_widgets::{Box, Button, Text};
+
+/// Platform-independent native-window contracts.
+pub mod platform {
+    pub use torn_platform::{Frame, WindowAction, WindowApplication, WindowEvent, WindowOptions};
+}
 
 /// Backend-neutral display-list and text-shaping contracts.
 pub mod render {

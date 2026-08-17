@@ -1,0 +1,437 @@
+//! Cross-platform `winit` adapter for [`torn_platform::WindowApplication`].
+//!
+//! `winit` uses Win32 on Windows and X11 or Wayland on Linux. The adapter keeps
+//! Torn's coordinate system logical and uses `pixels` to scale the logical RGBA
+//! framebuffer to the native surface.
+
+use std::{error::Error, fmt, sync::Arc};
+
+use pixels::{Pixels, SurfaceTexture};
+use torn_core::{
+    InputEvent, Key, KeyCode, KeyEvent, Modifiers, NamedKey, Point, PointerButton, PointerButtons,
+    PointerEvent, PointerId, Size, WheelDelta, WheelEvent,
+};
+use torn_platform::{Frame, WindowAction, WindowApplication, WindowEvent, WindowOptions};
+use winit::{
+    application::ApplicationHandler,
+    dpi::{LogicalPosition, LogicalSize, PhysicalSize},
+    event::{ElementState, Ime, MouseButton, MouseScrollDelta, WindowEvent as WinitWindowEvent},
+    event_loop::{ActiveEventLoop, EventLoop},
+    keyboard::{Key as WinitKey, NamedKey as WinitNamedKey, PhysicalKey},
+    window::{Window, WindowId},
+};
+
+/// Why [`run`] could not start or continue a native event loop.
+#[derive(Debug)]
+pub enum RunError {
+    /// Creating or running the native event loop failed.
+    EventLoop(winit::error::EventLoopError),
+    /// Creating the native window failed.
+    Window(winit::error::OsError),
+    /// Initializing or presenting the pixel surface failed.
+    Pixels(pixels::Error),
+    /// Resizing a pixel texture failed.
+    Texture(pixels::TextureError),
+    /// A requested logical size could not be represented as a Torn [`Size`].
+    InvalidSize,
+}
+
+impl fmt::Display for RunError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::EventLoop(error) => write!(formatter, "native event loop failed: {error}"),
+            Self::Window(error) => write!(formatter, "could not create native window: {error}"),
+            Self::Pixels(error) => write!(formatter, "pixel surface failed: {error}"),
+            Self::Texture(error) => write!(formatter, "pixel texture resize failed: {error}"),
+            Self::InvalidSize => {
+                formatter.write_str("native window reported an invalid logical size")
+            }
+        }
+    }
+}
+
+impl Error for RunError {}
+
+/// Runs `application` in a native event loop.
+///
+/// The returned function is portable across Windows and Linux environments with
+/// an available Win32, X11, or Wayland display server.
+///
+/// # Errors
+///
+/// Returns an error when the event loop cannot be created. Later platform and
+/// presentation failures close the event loop because `winit` callbacks cannot
+/// return errors directly.
+pub fn run(application: impl WindowApplication + 'static) -> Result<(), RunError> {
+    let event_loop = EventLoop::new().map_err(RunError::EventLoop)?;
+    let mut adapter = Adapter::new(Box::new(application));
+    event_loop
+        .run_app(&mut adapter)
+        .map_err(RunError::EventLoop)
+}
+
+struct Adapter {
+    application: Box<dyn WindowApplication>,
+    options: WindowOptions,
+    window: Option<Arc<Window>>,
+    pixels: Option<Pixels<'static>>,
+    logical_size: Option<Size>,
+    cursor: Point,
+    modifiers: Modifiers,
+}
+
+impl Adapter {
+    fn new(application: Box<dyn WindowApplication>) -> Self {
+        let options = application.window_options();
+        Self {
+            application,
+            options,
+            window: None,
+            pixels: None,
+            logical_size: None,
+            cursor: Point::ZERO,
+            modifiers: Modifiers::NONE,
+        }
+    }
+
+    fn request_redraw(&self) {
+        if let Some(window) = &self.window {
+            window.request_redraw();
+        }
+    }
+
+    fn apply_action(&self, event_loop: &ActiveEventLoop, action: WindowAction) {
+        match action {
+            WindowAction::None => {}
+            WindowAction::RequestRedraw => self.request_redraw(),
+            WindowAction::Exit => event_loop.exit(),
+        }
+    }
+
+    fn create_surface(
+        &mut self,
+        physical_size: PhysicalSize<u32>,
+        scale_factor: f64,
+    ) -> Result<(), RunError> {
+        let logical_size = logical_size(physical_size, scale_factor)?;
+        let buffer_size = pixel_size(logical_size);
+        let window = Arc::clone(
+            self.window
+                .as_ref()
+                .expect("window exists before surface creation"),
+        );
+        let surface = SurfaceTexture::new(physical_size.width, physical_size.height, window);
+        self.pixels =
+            Some(Pixels::new(buffer_size.0, buffer_size.1, surface).map_err(RunError::Pixels)?);
+        self.logical_size = Some(logical_size);
+        Ok(())
+    }
+
+    fn resize_surface(
+        &mut self,
+        physical_size: PhysicalSize<u32>,
+        scale_factor: f64,
+    ) -> Result<(), RunError> {
+        if physical_size.width == 0 || physical_size.height == 0 {
+            return Ok(());
+        }
+        let logical_size = logical_size(physical_size, scale_factor)?;
+        let buffer_size = pixel_size(logical_size);
+        let pixels = self
+            .pixels
+            .as_mut()
+            .expect("surface exists after window creation");
+        pixels
+            .resize_surface(physical_size.width, physical_size.height)
+            .map_err(RunError::Texture)?;
+        pixels
+            .resize_buffer(buffer_size.0, buffer_size.1)
+            .map_err(RunError::Texture)?;
+        self.logical_size = Some(logical_size);
+        Ok(())
+    }
+
+    fn dispatch(&mut self, event_loop: &ActiveEventLoop, event: WindowEvent) {
+        let action = self.application.window_event(event);
+        self.apply_action(event_loop, action);
+    }
+}
+
+impl ApplicationHandler for Adapter {
+    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        if self.window.is_some() {
+            return;
+        }
+        let attributes = Window::default_attributes()
+            .with_title(&self.options.title)
+            .with_inner_size(LogicalSize::new(
+                f64::from(self.options.size.width()),
+                f64::from(self.options.size.height()),
+            ));
+        let Ok(window) = event_loop.create_window(attributes) else {
+            event_loop.exit();
+            return;
+        };
+        self.window = Some(Arc::new(window));
+        let window = self.window.as_ref().expect("window was stored");
+        let physical_size = window.inner_size();
+        let scale_factor = window.scale_factor();
+        if self.create_surface(physical_size, scale_factor).is_err() {
+            event_loop.exit();
+            return;
+        }
+        if let Some(size) = self.logical_size {
+            self.dispatch(event_loop, WindowEvent::Resized(size));
+        }
+        self.request_redraw();
+    }
+
+    fn window_event(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        window_id: WindowId,
+        event: WinitWindowEvent,
+    ) {
+        if self.window.as_ref().map(|window| window.id()) != Some(window_id) {
+            return;
+        }
+        let scale_factor = self.window.as_ref().expect("window exists").scale_factor();
+        match event {
+            WinitWindowEvent::CloseRequested => {
+                self.dispatch(event_loop, WindowEvent::CloseRequested);
+            }
+            WinitWindowEvent::Resized(physical_size) => {
+                if self.resize_surface(physical_size, scale_factor).is_ok() {
+                    if let Some(size) = self.logical_size {
+                        self.dispatch(event_loop, WindowEvent::Resized(size));
+                    }
+                } else {
+                    event_loop.exit();
+                }
+            }
+            WinitWindowEvent::ScaleFactorChanged { .. } => {
+                let physical_size = self.window.as_ref().expect("window exists").inner_size();
+                if self.resize_surface(physical_size, scale_factor).is_ok() {
+                    if let Some(size) = self.logical_size {
+                        self.dispatch(event_loop, WindowEvent::Resized(size));
+                    }
+                } else {
+                    event_loop.exit();
+                }
+            }
+            WinitWindowEvent::CursorMoved { position, .. } => {
+                self.cursor = to_logical_point(position, scale_factor);
+                self.dispatch(
+                    event_loop,
+                    WindowEvent::Input(pointer_input(
+                        self.cursor,
+                        None,
+                        PointerButtons::NONE,
+                        self.modifiers,
+                        false,
+                    )),
+                );
+            }
+            WinitWindowEvent::MouseInput { state, button, .. } => {
+                let (button, buttons) = pointer_button(button, state);
+                self.dispatch(
+                    event_loop,
+                    WindowEvent::Input(pointer_input(
+                        self.cursor,
+                        Some(button),
+                        buttons,
+                        self.modifiers,
+                        state == ElementState::Pressed,
+                    )),
+                );
+            }
+            WinitWindowEvent::MouseWheel { delta, .. } => {
+                let delta = match delta {
+                    MouseScrollDelta::LineDelta(x, y) => WheelDelta::Lines(Point::new(x, y)),
+                    MouseScrollDelta::PixelDelta(position) => {
+                        WheelDelta::Pixels(to_logical_point(position, scale_factor))
+                    }
+                };
+                self.dispatch(
+                    event_loop,
+                    WindowEvent::Input(InputEvent::Wheel(WheelEvent {
+                        position: self.cursor,
+                        delta,
+                        modifiers: self.modifiers,
+                    })),
+                );
+            }
+            WinitWindowEvent::ModifiersChanged(modifiers) => {
+                self.modifiers = modifiers_from_winit(modifiers.state());
+            }
+            WinitWindowEvent::KeyboardInput { event, .. } => {
+                let input = if event.state == ElementState::Pressed {
+                    InputEvent::KeyDown(key_event(&event, self.modifiers))
+                } else {
+                    InputEvent::KeyUp(key_event(&event, self.modifiers))
+                };
+                self.dispatch(event_loop, WindowEvent::Input(input));
+            }
+            WinitWindowEvent::Ime(Ime::Commit(text)) => {
+                self.dispatch(event_loop, WindowEvent::Input(InputEvent::TextInput(text)));
+            }
+            WinitWindowEvent::RedrawRequested => {
+                let (Some(pixels), Some(size)) = (&mut self.pixels, self.logical_size) else {
+                    return;
+                };
+                let mut frame = Frame::new(size, pixels.frame_mut());
+                self.application.redraw(&mut frame);
+                if pixels.render().is_err() {
+                    event_loop.exit();
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn logical_size(physical: PhysicalSize<u32>, scale_factor: f64) -> Result<Size, RunError> {
+    let logical: LogicalSize<f64> = physical.to_logical(scale_factor);
+    Size::new(
+        to_logical_coordinate(logical.width),
+        to_logical_coordinate(logical.height),
+    )
+    .map_err(|_| RunError::InvalidSize)
+}
+
+fn pixel_size(size: Size) -> (u32, u32) {
+    (
+        to_pixel_coordinate(size.width()),
+        to_pixel_coordinate(size.height()),
+    )
+}
+
+fn to_logical_point(position: winit::dpi::PhysicalPosition<f64>, scale_factor: f64) -> Point {
+    let logical: LogicalPosition<f64> = position.to_logical(scale_factor);
+    Point::new(
+        to_logical_coordinate(logical.x),
+        to_logical_coordinate(logical.y),
+    )
+}
+
+fn to_logical_coordinate(value: f64) -> f32 {
+    let value = value.clamp(f64::from(f32::MIN), f64::from(f32::MAX));
+    // The clamp limits the value to the finite f32 range.
+    #[allow(clippy::cast_possible_truncation)]
+    {
+        value as f32
+    }
+}
+
+fn to_pixel_coordinate(value: f32) -> u32 {
+    let value = value.round().max(1.0);
+    if value >= 4_294_967_000.0 {
+        return u32::MAX;
+    }
+    // The clamp limits the positive value to u32's representable range.
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    {
+        value as u32
+    }
+}
+
+fn pointer_input(
+    position: Point,
+    button: Option<PointerButton>,
+    buttons: PointerButtons,
+    modifiers: Modifiers,
+    pressed: bool,
+) -> InputEvent {
+    let event = PointerEvent {
+        pointer_id: PointerId(0),
+        position,
+        button,
+        buttons,
+        modifiers,
+    };
+    if pressed {
+        InputEvent::PointerDown(event)
+    } else if button.is_some() {
+        InputEvent::PointerUp(event)
+    } else {
+        InputEvent::PointerMove(event)
+    }
+}
+
+fn pointer_button(button: MouseButton, state: ElementState) -> (PointerButton, PointerButtons) {
+    let button = match button {
+        MouseButton::Left => PointerButton::Primary,
+        MouseButton::Middle => PointerButton::Auxiliary,
+        MouseButton::Right => PointerButton::Secondary,
+        MouseButton::Back => PointerButton::Other(4),
+        MouseButton::Forward => PointerButton::Other(5),
+        MouseButton::Other(value) => PointerButton::Other(value),
+    };
+    let buttons = if state == ElementState::Pressed {
+        match button {
+            PointerButton::Primary => PointerButtons::PRIMARY,
+            PointerButton::Auxiliary => PointerButtons::AUXILIARY,
+            PointerButton::Secondary | PointerButton::Other(_) => PointerButtons::SECONDARY,
+        }
+    } else {
+        PointerButtons::NONE
+    };
+    (button, buttons)
+}
+
+fn modifiers_from_winit(modifiers: winit::keyboard::ModifiersState) -> Modifiers {
+    let mut result = Modifiers::NONE;
+    if modifiers.shift_key() {
+        result |= Modifiers::SHIFT;
+    }
+    if modifiers.control_key() {
+        result |= Modifiers::CONTROL;
+    }
+    if modifiers.alt_key() {
+        result |= Modifiers::ALT;
+    }
+    if modifiers.super_key() {
+        result |= Modifiers::META;
+    }
+    result
+}
+
+fn key_event(event: &winit::event::KeyEvent, modifiers: Modifiers) -> KeyEvent {
+    KeyEvent {
+        key: key_from_winit(&event.logical_key),
+        code: match event.physical_key {
+            PhysicalKey::Code(code) => KeyCode::Platform(code as u32),
+            PhysicalKey::Unidentified(_) => KeyCode::Unidentified,
+        },
+        repeat: event.repeat,
+        modifiers,
+    }
+}
+
+fn key_from_winit(key: &WinitKey) -> Key {
+    match key {
+        WinitKey::Character(character) => Key::Character(character.to_string()),
+        WinitKey::Named(named) => named_key(*named).map_or(Key::Unidentified, Key::Named),
+        WinitKey::Unidentified(_) | WinitKey::Dead(_) => Key::Unidentified,
+    }
+}
+
+fn named_key(key: WinitNamedKey) -> Option<NamedKey> {
+    Some(match key {
+        WinitNamedKey::Backspace => NamedKey::Backspace,
+        WinitNamedKey::Enter => NamedKey::Enter,
+        WinitNamedKey::Escape => NamedKey::Escape,
+        WinitNamedKey::Tab => NamedKey::Tab,
+        WinitNamedKey::Space => NamedKey::Space,
+        WinitNamedKey::ArrowLeft => NamedKey::ArrowLeft,
+        WinitNamedKey::ArrowRight => NamedKey::ArrowRight,
+        WinitNamedKey::ArrowUp => NamedKey::ArrowUp,
+        WinitNamedKey::ArrowDown => NamedKey::ArrowDown,
+        WinitNamedKey::Home => NamedKey::Home,
+        WinitNamedKey::End => NamedKey::End,
+        WinitNamedKey::PageUp => NamedKey::PageUp,
+        WinitNamedKey::PageDown => NamedKey::PageDown,
+        WinitNamedKey::Delete => NamedKey::Delete,
+        _ => return None,
+    })
+}

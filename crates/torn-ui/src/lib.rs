@@ -9,7 +9,7 @@ mod theme;
 mod widget;
 
 pub use column::Column;
-pub use event::EventStatus;
+pub use event::{EventContext, EventPhase, EventStatus};
 pub use layout::{ChildLayout, LayoutResult};
 pub use row::Row;
 pub use runtime::{UiRuntime, UiRuntimeError};

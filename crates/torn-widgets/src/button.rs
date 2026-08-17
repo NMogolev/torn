@@ -2,7 +2,7 @@ use std::boxed::Box as HeapBox;
 
 use torn_core::{Color, Constraints, InputEvent, Insets, Point, PointerButton, Rect, Size};
 use torn_render::PaintContext;
-use torn_ui::{ChildLayout, EventStatus, LayoutResult, Widget};
+use torn_ui::{ChildLayout, EventContext, EventPhase, EventStatus, LayoutResult, Widget};
 
 /// A clickable single-child control with a rectangular background.
 pub struct Button {
@@ -100,10 +100,16 @@ impl Widget for Button {
         }
     }
 
-    fn handle_event(&mut self, event: &InputEvent) -> EventStatus {
+    fn handle_event(&mut self, context: &mut EventContext<'_>, event: &InputEvent) -> EventStatus {
+        if context.phase() == EventPhase::Capture {
+            return EventStatus::Ignored;
+        }
         match event {
             InputEvent::PointerDown(pointer) if pointer.button == Some(PointerButton::Primary) => {
                 self.pressed = true;
+                context.capture_pointer(pointer.pointer_id);
+                context.request_focus();
+                context.request_redraw();
                 if let Some(callback) = &mut self.on_click {
                     callback();
                 }
@@ -111,10 +117,53 @@ impl Widget for Button {
             }
             InputEvent::PointerUp(pointer) if pointer.button == Some(PointerButton::Primary) => {
                 self.pressed = false;
+                context.release_pointer(pointer.pointer_id);
+                context.request_redraw();
                 EventStatus::Handled
             }
             _ => EventStatus::Ignored,
         }
+    }
+
+    fn accepts_focus(&self) -> bool {
+        true
+    }
+
+    fn hit_test_child(&self, position: Point) -> Option<(usize, Point)> {
+        let child_layout = self.last_layout.as_ref()?.children().first()?;
+        child_layout.bounds().contains(position).then(|| {
+            (
+                0,
+                Point::new(
+                    position.x - child_layout.origin().x,
+                    position.y - child_layout.origin().y,
+                ),
+            )
+        })
+    }
+
+    fn event_child(&mut self, index: usize) -> Option<&mut (dyn Widget + '_)> {
+        (index == 0).then_some(self.child.as_mut())
+    }
+
+    fn event_child_ref(&self, index: usize) -> Option<&(dyn Widget + '_)> {
+        (index == 0).then_some(self.child.as_ref())
+    }
+
+    fn event_child_count(&self) -> usize {
+        1
+    }
+
+    fn event_child_origin(&self, index: usize) -> Option<Point> {
+        (index == 0)
+            .then(|| {
+                self.last_layout
+                    .as_ref()?
+                    .children()
+                    .first()
+                    .map(ChildLayout::origin)
+            })
+            .flatten()
     }
 }
 
@@ -131,7 +180,7 @@ mod tests {
         PointerEvent, PointerId, Size,
     };
     use torn_render::{DisplayCommand, DisplayList, PaintContext};
-    use torn_ui::{EventStatus, LayoutResult, Widget};
+    use torn_ui::{EventStatus, LayoutResult, UiRuntime, Widget};
 
     use super::Button;
 
@@ -176,20 +225,21 @@ mod tests {
             move || calls.set(calls.get() + 1)
         });
 
-        let layout = button.layout(Constraints::UNBOUNDED);
+        let mut runtime = UiRuntime::new(button);
+        let layout = runtime
+            .layout(Constraints::UNBOUNDED)
+            .expect("layout succeeds");
         assert_eq!(layout.size(), size(28.0, 18.0));
         assert_eq!(layout.children()[0].origin(), Point::new(4.0, 4.0));
         assert_eq!(
-            button.handle_event(&pointer_event(PointerButton::Primary, true)),
+            runtime.dispatch_event(&pointer_event(PointerButton::Primary, true)),
             EventStatus::Handled
         );
-        assert!(button.is_pressed());
         assert_eq!(calls.get(), 1);
         assert_eq!(
-            button.handle_event(&pointer_event(PointerButton::Primary, false)),
+            runtime.dispatch_event(&pointer_event(PointerButton::Primary, false)),
             EventStatus::Handled
         );
-        assert!(!button.is_pressed());
     }
 
     #[test]
@@ -198,14 +248,17 @@ mod tests {
         let pressed = Color::WHITE;
         let mut button = Button::new(Fixed(size(1.0, 1.0)));
         button.set_backgrounds(normal, pressed);
-        let _ = button.layout(Constraints::UNBOUNDED);
+        let mut runtime = UiRuntime::new(button);
+        let _ = runtime.layout(Constraints::UNBOUNDED);
         assert_eq!(
-            button.handle_event(&pointer_event(PointerButton::Primary, true)),
+            runtime.dispatch_event(&pointer_event(PointerButton::Primary, true)),
             EventStatus::Handled
         );
         let mut list = DisplayList::new();
 
-        button.paint(&mut PaintContext::new(&mut list), Point::ZERO);
+        runtime
+            .paint(&mut PaintContext::new(&mut list))
+            .expect("paint succeeds");
 
         assert_eq!(
             list.commands().first(),

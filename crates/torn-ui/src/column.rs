@@ -1,7 +1,7 @@
-use torn_core::{Constraints, InputEvent, Point, Size};
+use torn_core::{Constraints, Point, Size};
 use torn_render::PaintContext;
 
-use crate::{ChildLayout, EventStatus, LayoutResult, Widget, event};
+use crate::{ChildLayout, LayoutResult, Widget};
 
 /// A container that positions children top-to-bottom.
 ///
@@ -89,22 +89,46 @@ impl Widget for Column {
         }
     }
 
-    fn handle_event(&mut self, event: &InputEvent) -> EventStatus {
-        let Some(position) = event::pointer_position(event) else {
-            return EventStatus::Ignored;
-        };
+    fn hit_test_child(&self, position: Point) -> Option<(usize, Point)> {
         let Some(layout) = &self.last_layout else {
-            return EventStatus::Ignored;
+            return None;
         };
 
-        for (child, child_layout) in self.children.iter_mut().zip(layout.children()).rev() {
+        for (index, child_layout) in layout.children().iter().enumerate().rev() {
             if child_layout.bounds().contains(position) {
-                return child
-                    .handle_event(&event::with_local_position(event, child_layout.origin()));
+                return Some((
+                    index,
+                    Point::new(
+                        position.x - child_layout.origin().x,
+                        position.y - child_layout.origin().y,
+                    ),
+                ));
             }
         }
 
-        EventStatus::Ignored
+        None
+    }
+
+    fn event_child(&mut self, index: usize) -> Option<&mut (dyn Widget + '_)> {
+        let child = self.children.get_mut(index)?;
+        Some(&mut **child)
+    }
+
+    fn event_child_ref(&self, index: usize) -> Option<&(dyn Widget + '_)> {
+        let child = self.children.get(index)?;
+        Some(&**child)
+    }
+
+    fn event_child_count(&self) -> usize {
+        self.children.len()
+    }
+
+    fn event_child_origin(&self, index: usize) -> Option<Point> {
+        self.last_layout
+            .as_ref()?
+            .children()
+            .get(index)
+            .map(ChildLayout::origin)
     }
 }
 

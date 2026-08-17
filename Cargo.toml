@@ -5,6 +5,8 @@ members = [
     "crates/torn-ui",
     "crates/torn-widgets",
     "crates/torn-software",
+    "crates/torn-platform",
+    "crates/torn-platform-winit",
     "crates/torn",
 ]
 resolver = "3"
