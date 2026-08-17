@@ -119,8 +119,16 @@ and rendering cannot disagree.
 
 ### Styling and invalidation
 
-v0 starts with a typed Rust style builder. Themes and state selectors come
-after the widget model is proven. A `.tss` parser is deliberately deferred.
+v0 starts with the small typed [`Theme`](../crates/torn-ui/src/theme.rs)
+contract: semantic background, foreground, and accent colors plus the default
+spacing, font size, and corner radius. `DarkTheme` and `LightTheme` are built
+in. `SystemTheme` is updated by the future platform adapter from the OS
+appearance; the dependency-free UI crate must not query the OS itself.
+
+A future `.tss` parser is deliberately deferred. It will resolve selectors and
+cascade into these same typed visual values rather than exposing CSS concepts to
+widgets. More state-specific values are added to `Theme` only when a widget
+needs them and the semantic distinction is proven.
 
 Dirty state is represented separately for `LAYOUT`, `PAINT`, and `STYLE`.
 Changing text or padding invalidates layout and paint; a hover color normally
@@ -210,6 +218,24 @@ example intentionally small: text plus one interactive button.
 
 **Done when:** it opens a native window, handles pointer interaction, and
 redraws correctly on Windows.
+
+### M7 — Desktop workspace: docking and MDI
+
+Add a desktop workspace after the window, focus, pointer-capture, and basic
+widgets are stable. The workspace contains dockable panels and optional
+document windows with an MDI presentation inspired by Qt: documents can be
+tabbed in the central area or displayed as bounded, movable child windows.
+
+The persistent model is a serializable data tree, independent from live
+widgets. It records panel/document identifiers, split orientation and ratio,
+tab order and active tab, floating-window geometry, and the currently selected
+MDI presentation. Applications own stable IDs and decide how to recreate a
+panel from one. Unknown, removed, or unavailable panels must be preserved as
+placeholders rather than discarded, so saved layouts survive application
+upgrades. Persist only this model and a format version; never serialize widget
+objects, callbacks, or platform handles.
+
+See [`DOCKING.md`](DOCKING.md) for the proposed contract and persistence rules.
 
 ### M6 — Capability expansion
 

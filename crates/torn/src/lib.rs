@@ -10,7 +10,8 @@ pub use torn_core::{
     SizeError, WheelDelta, WheelEvent,
 };
 pub use torn_ui::{
-    ChildLayout, Column, EventStatus, LayoutResult, Row, UiRuntime, UiRuntimeError, Widget,
+    ChildLayout, Column, DarkTheme, EventStatus, LayoutResult, LightTheme, Row, SystemAppearance,
+    SystemTheme, Theme, UiRuntime, UiRuntimeError, Widget,
 };
 pub use torn_widgets::{Box, Button, Text};
 
