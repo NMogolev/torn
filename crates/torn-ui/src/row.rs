@@ -1,6 +1,6 @@
-use torn_core::{Constraints, Point, Size};
+use torn_core::{Constraints, InputEvent, Point, Size};
 
-use crate::{ChildLayout, LayoutResult, Widget};
+use crate::{ChildLayout, EventStatus, LayoutResult, Widget, event};
 
 /// A container that positions children left-to-right.
 ///
@@ -11,6 +11,7 @@ use crate::{ChildLayout, LayoutResult, Widget};
 #[derive(Default)]
 pub struct Row {
     children: Vec<Box<dyn Widget>>,
+    last_layout: Option<LayoutResult>,
 }
 
 impl Row {
@@ -19,18 +20,23 @@ impl Row {
     pub const fn new() -> Self {
         Self {
             children: Vec::new(),
+            last_layout: None,
         }
     }
 
     /// Creates a row from boxed child widgets in display order.
     #[must_use]
     pub fn with_children(children: Vec<Box<dyn Widget>>) -> Self {
-        Self { children }
+        Self {
+            children,
+            last_layout: None,
+        }
     }
 
     /// Appends a child to the row.
     pub fn push(&mut self, child: impl Widget + 'static) {
         self.children.push(Box::new(child));
+        self.last_layout = None;
     }
 
     /// Returns the number of direct children.
@@ -61,7 +67,28 @@ impl Widget for Row {
             height = height.max(child_size.height());
         }
 
-        LayoutResult::with_children(constraints.constrain(size(width, height)), children)
+        let result =
+            LayoutResult::with_children(constraints.constrain(size(width, height)), children);
+        self.last_layout = Some(result.clone());
+        result
+    }
+
+    fn handle_event(&mut self, event: &InputEvent) -> EventStatus {
+        let Some(position) = event::pointer_position(event) else {
+            return EventStatus::Ignored;
+        };
+        let Some(layout) = &self.last_layout else {
+            return EventStatus::Ignored;
+        };
+
+        for (child, child_layout) in self.children.iter_mut().zip(layout.children()).rev() {
+            if child_layout.bounds().contains(position) {
+                return child
+                    .handle_event(&event::with_local_position(event, child_layout.origin()));
+            }
+        }
+
+        EventStatus::Ignored
     }
 }
 
