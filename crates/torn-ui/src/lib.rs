@@ -11,5 +11,5 @@ pub use column::Column;
 pub use event::EventStatus;
 pub use layout::{ChildLayout, LayoutResult};
 pub use row::Row;
-pub use runtime::UiRuntime;
+pub use runtime::{UiRuntime, UiRuntimeError};
 pub use widget::Widget;

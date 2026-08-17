@@ -94,10 +94,10 @@ root.set_background(Some(Color::WHITE));
 ```rust
 let mut runtime = UiRuntime::new(root);
 let canvas = Size::new(320.0, 180.0)?;
-runtime.layout(Constraints::tight(canvas)?);
+runtime.layout(Constraints::tight(canvas)?)?;
 
 let mut display_list = DisplayList::new();
-runtime.paint(&mut PaintContext::new(&mut display_list));
+runtime.paint(&mut PaintContext::new(&mut display_list))?;
 ```
 
 `Constraints::tight(canvas)` задаёт корню точный размер холста. У `Box` ребёнок
@@ -138,7 +138,52 @@ assert!(result.is_handled());
 Сейчас маршрутизация прямая: событие получает самый глубокий виджет под
 указателем. Нет bubble/capture, фокуса, keyboard routing и pointer capture.
 
-## 6. Рендер в PNG
+## 6. Diagnostics вместо неясного падения
+
+`UiRuntime` изолирует panic в пользовательских методах `Widget::layout`,
+`Widget::paint` и `Widget::handle_event`. Вместо распространения panic наружу
+`layout` и `paint` возвращают `UiRuntimeError::WidgetPanicked`, а runtime
+сохраняет структурированный `Diagnostic`:
+
+```rust
+match runtime.layout(Constraints::tight(canvas)?) {
+    Ok(_) => {}
+    Err(error) => {
+        for diagnostic in runtime.take_diagnostics() {
+            eprintln!("{diagnostic}");
+        }
+        return Err(error.into());
+    }
+}
+```
+
+По умолчанию diagnostics собираются внутри runtime. Чтобы одновременно
+пересылать их в собственный логгер, установите reporter:
+
+```rust
+runtime.set_diagnostic_reporter(|diagnostic: &torn::Diagnostic| {
+    eprintln!("{diagnostic}");
+});
+```
+
+В строгих тестах reporter `PanicOnDiagnostic` превращает любую diagnostic в
+панику. Это позволяет не пропустить ошибку разработчика в CI:
+
+```rust
+runtime.set_diagnostic_reporter(torn::PanicOnDiagnostic);
+```
+
+`SoftwareRenderer` сохраняет обычный `Result`, но имеет
+`render_with_diagnostics`. Он сообщает об ошибках display list, а также выдаёт
+warning, если пропускает `DrawText` из-за пока отсутствующей растеризации
+глифов:
+
+```rust
+let mut diagnostics = Vec::new();
+SoftwareRenderer.render_with_diagnostics(&display_list, &mut pixels, &mut diagnostics)?;
+```
+
+## 7. Рендер в PNG
 
 `SoftwareRenderer` выполняет команды `FillRect`, clip-операции и source-over
 композицию в `PixelBuffer`. Затем `PixelBuffer::write_png` создаёт

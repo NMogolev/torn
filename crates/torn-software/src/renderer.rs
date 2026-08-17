@@ -1,6 +1,6 @@
 use core::fmt;
 
-use torn_core::{Color, Point, Rect, Size};
+use torn_core::{Color, Diagnostic, DiagnosticReporter, Point, Rect, Size};
 use torn_render::{DisplayCommand, DisplayList};
 
 use crate::{Pixel, PixelBuffer};
@@ -56,6 +56,37 @@ impl SoftwareRenderer {
         }
 
         Ok(())
+    }
+
+    /// Renders a display list and reports a diagnostic if rendering fails.
+    ///
+    /// The original [`RenderError`] is still returned so callers can decide
+    /// whether to recover, stop the frame, or fail a test.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same [`RenderError`] as [`Self::render`] after reporting an
+    /// error diagnostic.
+    pub fn render_with_diagnostics(
+        &self,
+        display_list: &DisplayList,
+        target: &mut PixelBuffer,
+        reporter: &mut dyn DiagnosticReporter,
+    ) -> Result<(), RenderError> {
+        let result = self.render(display_list, target);
+        if let Err(error) = result {
+            reporter.report(&Diagnostic::error("torn-software", error.to_string()));
+        } else if display_list
+            .commands()
+            .iter()
+            .any(|command| matches!(command, DisplayCommand::DrawText { .. }))
+        {
+            reporter.report(&Diagnostic::warning(
+                "torn-software",
+                "software renderer skipped DrawText because glyph rasterization is unavailable",
+            ));
+        }
+        result
     }
 
     fn validate_rect(rect: Rect) -> Result<(), RenderError> {
@@ -190,7 +221,7 @@ fn coordinate_to_pixel(coordinate: f32, limit: u32) -> u32 {
 
 #[cfg(test)]
 mod tests {
-    use torn_core::{Color, Point, Rect, Size};
+    use torn_core::{Color, DiagnosticSeverity, Point, Rect, Size};
     use torn_render::{DisplayList, PaintContext};
 
     use super::{Pixel, PixelBuffer, RenderError, SoftwareRenderer};
@@ -246,6 +277,26 @@ mod tests {
         assert_eq!(
             SoftwareRenderer.render(&list, &mut pixels),
             Err(RenderError::UnmatchedClipPop)
+        );
+    }
+
+    #[test]
+    fn reports_render_errors_as_diagnostics() {
+        let mut list = DisplayList::new();
+        PaintContext::new(&mut list).pop_clip();
+        let mut pixels = PixelBuffer::new(1, 1).expect("small test buffer");
+        let mut diagnostics = Vec::new();
+
+        assert_eq!(
+            SoftwareRenderer.render_with_diagnostics(&list, &mut pixels, &mut diagnostics),
+            Err(RenderError::UnmatchedClipPop)
+        );
+        assert_eq!(diagnostics.len(), 1);
+        assert_eq!(diagnostics[0].severity(), DiagnosticSeverity::Error);
+        assert_eq!(diagnostics[0].component(), "torn-software");
+        assert_eq!(
+            diagnostics[0].message(),
+            "display list popped an empty clip stack"
         );
     }
 }

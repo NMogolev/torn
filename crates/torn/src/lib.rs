@@ -4,11 +4,14 @@
 //! headless test support remain available under [`render`] and [`software`].
 
 pub use torn_core::{
-    Color, ConstraintError, Constraints, FocusChanged, InputEvent, Insets, Key, KeyCode, KeyEvent,
-    Modifiers, NamedKey, Point, PointerButton, PointerButtons, PointerEvent, PointerId, Rect, Size,
+    Color, ConstraintError, Constraints, Diagnostic, DiagnosticReporter, DiagnosticSeverity,
+    FocusChanged, InputEvent, Insets, Key, KeyCode, KeyEvent, Modifiers, NamedKey,
+    PanicOnDiagnostic, Point, PointerButton, PointerButtons, PointerEvent, PointerId, Rect, Size,
     SizeError, WheelDelta, WheelEvent,
 };
-pub use torn_ui::{ChildLayout, Column, EventStatus, LayoutResult, Row, UiRuntime, Widget};
+pub use torn_ui::{
+    ChildLayout, Column, EventStatus, LayoutResult, Row, UiRuntime, UiRuntimeError, Widget,
+};
 pub use torn_widgets::{Box, Button, Text};
 
 /// Backend-neutral display-list and text-shaping contracts.
@@ -43,10 +46,15 @@ mod tests {
         let mut display_list = DisplayList::new();
 
         assert_eq!(
-            runtime.layout(Constraints::UNBOUNDED).size(),
+            runtime
+                .layout(Constraints::UNBOUNDED)
+                .expect("widget tree does not panic")
+                .size(),
             size(56.0, 32.0)
         );
-        runtime.paint(&mut PaintContext::new(&mut display_list));
+        runtime
+            .paint(&mut PaintContext::new(&mut display_list))
+            .expect("widget tree does not panic");
 
         assert_eq!(display_list.len(), 3);
     }

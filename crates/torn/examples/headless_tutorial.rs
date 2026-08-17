@@ -27,7 +27,7 @@ fn main() -> Result<(), std::boxed::Box<dyn std::error::Error>> {
     let mut runtime = UiRuntime::new(root);
     let canvas = size(320.0, 180.0)?;
 
-    runtime.layout(Constraints::tight(canvas)?);
+    runtime.layout(Constraints::tight(canvas)?)?;
 
     assert_eq!(
         runtime.dispatch_event(&pointer_down(Point::new(12.0, 12.0))),
@@ -40,7 +40,7 @@ fn main() -> Result<(), std::boxed::Box<dyn std::error::Error>> {
     );
 
     let mut display_list = DisplayList::new();
-    runtime.paint(&mut PaintContext::new(&mut display_list));
+    runtime.paint(&mut PaintContext::new(&mut display_list))?;
 
     let mut pixels = PixelBuffer::new(320, 180)?;
     SoftwareRenderer.render(&display_list, &mut pixels)?;

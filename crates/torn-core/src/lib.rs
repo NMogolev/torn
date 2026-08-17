@@ -5,12 +5,14 @@
 
 mod color;
 mod constraints;
+mod diagnostic;
 mod geometry;
 mod id;
 mod input;
 
 pub use color::Color;
 pub use constraints::{ConstraintError, Constraints};
+pub use diagnostic::{Diagnostic, DiagnosticReporter, DiagnosticSeverity, PanicOnDiagnostic};
 pub use geometry::{Insets, Point, Rect, Size, SizeError};
 pub use id::WidgetId;
 pub use input::{
