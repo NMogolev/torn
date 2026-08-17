@@ -17,6 +17,7 @@ torn-software = { path = "../torn-software" }
 torn-platform = { path = "../torn-platform" }
 torn-ui = { path = "../torn-ui" }
 torn-widgets = { path = "../torn-widgets" }
+torn-workspace = { path = "../torn-workspace" }
 
 [dev-dependencies]
 torn-platform-winit = { path = "../torn-platform-winit" }

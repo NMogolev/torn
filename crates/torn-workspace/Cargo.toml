@@ -1,0 +1,19 @@
+[package]
+name = "torn-workspace"
+description = "Persistent docking and document-workspace model for Torn"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+default = ["serde"]
+serde = ["dep:serde", "dep:serde_json"]
+
+[dependencies]
+serde = { version = "1.0.229", features = ["derive"], optional = true }
+serde_json = { version = "1.0.149", optional = true }

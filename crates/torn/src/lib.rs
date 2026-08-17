@@ -14,6 +14,11 @@ pub use torn_ui::{
     LightTheme, Row, SystemAppearance, SystemTheme, Theme, UiRuntime, UiRuntimeError, Widget,
 };
 pub use torn_widgets::{Box, Button, Text};
+pub use torn_workspace::{
+    DockAxis, DocumentId, DocumentPresentation, FloatingDocument, FloatingPanel, LayoutNode,
+    PanelId, SplitPlacement, WorkspaceBounds, WorkspaceError, WorkspaceLayout,
+    WorkspaceSerializationError,
+};
 
 /// Platform-independent native-window contracts.
 pub mod platform {
