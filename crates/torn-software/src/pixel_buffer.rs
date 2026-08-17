@@ -1,4 +1,5 @@
 use core::fmt;
+use std::path::Path;
 
 /// A single unpremultiplied 8-bit sRGBA pixel.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -79,6 +80,29 @@ impl PixelBuffer {
         &self.pixels
     }
 
+    /// Encodes the buffer as an 8-bit RGBA PNG image.
+    ///
+    /// The output is deterministic, making it suitable for Golden Tests.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PngError::InvalidDimensions`] when either image dimension is
+    /// zero, which PNG does not support. Returns [`PngError::DataTooLarge`] if
+    /// the PNG scanlines cannot be represented in memory.
+    pub fn encode_png(&self) -> Result<Vec<u8>, PngError> {
+        crate::png::encode(self)
+    }
+
+    /// Writes the buffer as an 8-bit RGBA PNG image to `path`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates PNG encoding errors and filesystem errors while creating or
+    /// writing `path`.
+    pub fn write_png(&self, path: impl AsRef<Path>) -> Result<(), PngError> {
+        std::fs::write(path, self.encode_png()?).map_err(PngError::Io)
+    }
+
     pub(crate) fn get_mut(&mut self, x: u32, y: u32) -> Option<&mut Pixel> {
         self.index_of(x, y).map(|index| &mut self.pixels[index])
     }
@@ -104,3 +128,33 @@ impl fmt::Display for PixelBufferError {
 }
 
 impl std::error::Error for PixelBufferError {}
+
+/// Why a [`PixelBuffer`] could not be exported as PNG.
+#[derive(Debug)]
+pub enum PngError {
+    /// PNG requires both image dimensions to be non-zero.
+    InvalidDimensions,
+    /// The encoded scanlines cannot be represented in memory.
+    DataTooLarge,
+    /// The destination PNG file could not be written.
+    Io(std::io::Error),
+}
+
+impl fmt::Display for PngError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::InvalidDimensions => formatter.write_str("PNG dimensions must be non-zero"),
+            Self::DataTooLarge => formatter.write_str("PNG image data is too large"),
+            Self::Io(error) => write!(formatter, "could not write PNG: {error}"),
+        }
+    }
+}
+
+impl std::error::Error for PngError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Io(error) => Some(error),
+            Self::InvalidDimensions | Self::DataTooLarge => None,
+        }
+    }
+}
