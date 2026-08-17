@@ -10,3 +10,9 @@ repository.workspace = true
 [lints]
 workspace = true
 
+[dependencies]
+torn-core = { path = "../torn-core" }
+torn-render = { path = "../torn-render" }
+torn-software = { path = "../torn-software" }
+torn-ui = { path = "../torn-ui" }
+torn-widgets = { path = "../torn-widgets" }

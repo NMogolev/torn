@@ -5,6 +5,13 @@ version = 4
 [[package]]
 name = "torn"
 version = "0.1.0"
+dependencies = [
+ "torn-core",
+ "torn-render",
+ "torn-software",
+ "torn-ui",
+ "torn-widgets",
+]
 
 [[package]]
 name = "torn-core"
