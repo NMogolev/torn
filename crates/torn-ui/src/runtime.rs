@@ -213,8 +213,11 @@ impl UiRuntime {
     ///
     /// Returns [`UiRuntimeError::InvalidWidgetId`] when `node` is stale or is
     /// the runtime root.
-    pub fn remove(&mut self, node: WidgetId) -> Result<(), UiRuntimeError> {
-        if node == self.root || self.node(node).is_none() {
+    pub fn remove_subtree(&mut self, node: WidgetId) -> Result<(), UiRuntimeError> {
+        if node == self.root {
+            return Err(UiRuntimeError::InvalidWidgetId);
+        }
+        if self.node(node).is_none() {
             return Err(UiRuntimeError::InvalidWidgetId);
         }
         let parent = self
@@ -225,9 +228,21 @@ impl UiRuntime {
             .ok_or(UiRuntimeError::InvalidWidgetId)?
             .children
             .retain(|id| *id != node);
-        self.remove_subtree(node);
+        self.deallocate_subtree(node);
         self.invalidate_layout();
         Ok(())
+    }
+
+    /// Removes `node` and all of its descendants.
+    ///
+    /// This is an alias for [`Self::remove_subtree`]. Prefer that method when
+    /// the fact that descendants are removed matters to the calling code.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as [`Self::remove_subtree`].
+    pub fn remove(&mut self, node: WidgetId) -> Result<(), UiRuntimeError> {
+        self.remove_subtree(node)
     }
 
     /// Returns a node's parent, if its handle is live.
@@ -674,16 +689,18 @@ impl UiRuntime {
         WidgetId::new(index, 0)
     }
 
-    fn remove_subtree(&mut self, id: WidgetId) {
+    fn deallocate_subtree(&mut self, id: WidgetId) {
         let children = self.node(id).expect("node is live").children.clone();
         for child in children {
-            self.remove_subtree(child);
+            self.deallocate_subtree(child);
         }
         let index = usize::try_from(id.index()).expect("u32 fits usize");
         let slot = &mut self.nodes[index];
         slot.node = None;
-        slot.generation = slot.generation.wrapping_add(1);
-        self.free_slots.push(id.index());
+        if let Some(next_generation) = slot.generation.checked_add(1) {
+            slot.generation = next_generation;
+            self.free_slots.push(id.index());
+        }
         self.pointer_capture.retain(|_, captured| *captured != id);
         if self.focused == Some(id) {
             self.focused = None;
@@ -704,8 +721,6 @@ impl UiRuntime {
 
     fn invalidate_layout(&mut self) {
         self.layout = None;
-        self.pointer_capture.clear();
-        self.focused = None;
         self.redraw_requested = true;
         for slot in &mut self.nodes {
             if let Some(node) = &mut slot.node {
@@ -776,7 +791,7 @@ mod tests {
 
     use crate::{
         ChildLayout, EventContext, EventPhase, EventStatus, LayoutContext, LayoutResult,
-        LightTheme, Row, Theme, UiEnvironment, UiRuntime, Widget, event,
+        LightTheme, Row, Theme, UiEnvironment, UiRuntime, UiRuntimeError, Widget, event,
     };
 
     type EventRecord = (&'static str, EventPhase, Point);
@@ -824,16 +839,14 @@ mod tests {
             context: &mut LayoutContext<'_>,
             constraints: Constraints,
         ) -> LayoutResult {
-            if context.child_count() == 0 {
-                return LayoutResult::new(constraints.constrain(self.size));
+            let mut children = Vec::with_capacity(context.child_count());
+            for index in 0..context.child_count() {
+                let (child, _) = context
+                    .layout_child(index, Constraints::loose(constraints.max()))
+                    .expect("valid child");
+                children.push(ChildLayout::new(child, Point::ZERO));
             }
-            let (child, _) = context
-                .layout_child(0, Constraints::loose(constraints.max()))
-                .expect("valid child");
-            LayoutResult::with_children(
-                constraints.constrain(self.size),
-                vec![ChildLayout::new(child, Point::ZERO)],
-            )
+            LayoutResult::with_children(constraints.constrain(self.size), children)
         }
         fn handle_event(
             &mut self,
@@ -889,7 +902,7 @@ mod tests {
     }
 
     #[test]
-    fn retained_handles_are_stable_and_generation_invalidates_removed_nodes() {
+    fn adding_a_sibling_preserves_existing_widget_ids() {
         let mut runtime = UiRuntime::new(Row::new());
         let root = runtime.root();
         let first = runtime
@@ -904,7 +917,6 @@ mod tests {
                 },
             )
             .expect("valid parent");
-        runtime.remove(first).expect("remove child");
         let second = runtime
             .append_child(
                 root,
@@ -917,9 +929,100 @@ mod tests {
                 },
             )
             .expect("valid parent");
+
+        assert_eq!(runtime.parent(first), Some(root));
+        assert_eq!(runtime.children(root), Some([first, second].as_slice()));
+        assert_ne!(first, second);
+    }
+
+    #[test]
+    fn removing_a_node_invalidates_its_generation() {
+        let mut runtime = UiRuntime::new(Row::new());
+        let root = runtime.root();
+        let first = runtime
+            .append_child(
+                root,
+                Recorder {
+                    size: size(1.0, 1.0),
+                    name: "first",
+                    events: Rc::new(RefCell::new(Vec::new())),
+                    capture_on_down: false,
+                    focus_on_down: false,
+                },
+            )
+            .expect("valid parent");
+        runtime.remove_subtree(first).expect("remove child");
+        let second = runtime
+            .append_child(
+                root,
+                Recorder {
+                    size: size(1.0, 1.0),
+                    name: "second",
+                    events: Rc::new(RefCell::new(Vec::new())),
+                    capture_on_down: false,
+                    focus_on_down: false,
+                },
+            )
+            .expect("valid parent");
+
         assert_eq!(first.index(), second.index());
+        assert_ne!(first.generation(), second.generation());
         assert_ne!(first, second);
         assert!(runtime.bounds(first).is_none());
+        assert_eq!(
+            runtime.remove_subtree(first),
+            Err(UiRuntimeError::InvalidWidgetId)
+        );
+    }
+
+    #[test]
+    fn removing_a_subtree_clears_focus_and_pointer_capture() {
+        let events = Rc::new(RefCell::new(Vec::new()));
+        let mut runtime = UiRuntime::new(Recorder {
+            size: size(10.0, 10.0),
+            name: "root",
+            events: Rc::clone(&events),
+            capture_on_down: false,
+            focus_on_down: false,
+        });
+        let branch = runtime
+            .append_child(
+                runtime.root(),
+                Recorder {
+                    size: size(10.0, 10.0),
+                    name: "branch",
+                    events: Rc::clone(&events),
+                    capture_on_down: false,
+                    focus_on_down: false,
+                },
+            )
+            .expect("add branch");
+        let target = runtime
+            .append_child(
+                branch,
+                Recorder {
+                    size: size(10.0, 10.0),
+                    name: "target",
+                    events,
+                    capture_on_down: true,
+                    focus_on_down: true,
+                },
+            )
+            .expect("add target");
+
+        runtime
+            .layout(Constraints::UNBOUNDED)
+            .expect("layout succeeds");
+        let _ = runtime.dispatch_event(&pointer(Point::new(5.0, 5.0), true));
+        assert_eq!(runtime.focused_widget(), Some(target));
+        assert_eq!(runtime.pointer_capture(PointerId(1)), Some(target));
+
+        runtime
+            .remove_subtree(branch)
+            .expect("remove focused branch");
+
+        assert_eq!(runtime.focused_widget(), None);
+        assert_eq!(runtime.pointer_capture(PointerId(1)), None);
     }
 
     #[test]
@@ -971,6 +1074,65 @@ mod tests {
                 ("target", EventPhase::Target, Point::new(15.0, 5.0)),
                 ("parent", EventPhase::Bubble, Point::new(15.0, 5.0)),
                 ("root", EventPhase::Bubble, Point::new(15.0, 5.0)),
+            ]
+        );
+    }
+
+    #[test]
+    fn routes_events_through_the_updated_tree_after_a_removal() {
+        let events = Rc::new(RefCell::new(Vec::new()));
+        let mut runtime = UiRuntime::new(Recorder {
+            size: size(10.0, 10.0),
+            name: "root",
+            events: Rc::clone(&events),
+            capture_on_down: false,
+            focus_on_down: false,
+        });
+        let removed = runtime
+            .append_child(
+                runtime.root(),
+                Recorder {
+                    size: size(10.0, 10.0),
+                    name: "removed",
+                    events: Rc::clone(&events),
+                    capture_on_down: false,
+                    focus_on_down: false,
+                },
+            )
+            .expect("add first child");
+        runtime
+            .append_child(
+                runtime.root(),
+                Recorder {
+                    size: size(10.0, 10.0),
+                    name: "remaining",
+                    events: Rc::clone(&events),
+                    capture_on_down: false,
+                    focus_on_down: false,
+                },
+            )
+            .expect("add second child");
+        runtime
+            .layout(Constraints::UNBOUNDED)
+            .expect("initial layout succeeds");
+        let _ = runtime.dispatch_event(&pointer(Point::new(5.0, 5.0), true));
+        assert_eq!(events.borrow()[1].0, "remaining");
+        events.borrow_mut().clear();
+
+        runtime.remove_subtree(removed).expect("remove first child");
+        runtime
+            .layout(Constraints::UNBOUNDED)
+            .expect("updated layout succeeds");
+        assert_eq!(
+            runtime.dispatch_event(&pointer(Point::new(5.0, 5.0), true)),
+            EventStatus::Handled
+        );
+        assert_eq!(
+            *events.borrow(),
+            vec![
+                ("root", EventPhase::Capture, Point::new(5.0, 5.0)),
+                ("remaining", EventPhase::Target, Point::new(5.0, 5.0)),
+                ("root", EventPhase::Bubble, Point::new(5.0, 5.0)),
             ]
         );
     }
