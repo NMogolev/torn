@@ -1,6 +1,6 @@
 use torn_core::{Color, Constraints, Point, Rect, Size};
 use torn_render::PaintContext;
-use torn_ui::{ChildLayout, LayoutContext, LayoutResult, Widget};
+use torn_ui::{ChildLayout, LayoutContext, LayoutResult, UiEnvironment, Widget};
 
 /// A single-child container similar to an HTML `div`.
 ///
@@ -9,17 +9,13 @@ use torn_ui::{ChildLayout, LayoutContext, LayoutResult, Widget};
 #[derive(Default)]
 pub struct Box {
     background: Option<Color>,
-    size: Size,
 }
 
 impl Box {
     /// Creates an empty transparent box.
     #[must_use]
     pub const fn new() -> Self {
-        Self {
-            background: None,
-            size: Size::ZERO,
-        }
+        Self { background: None }
     }
 
     /// Sets the optional background color.
@@ -44,13 +40,12 @@ impl Widget for Box {
         } else {
             Size::ZERO
         };
-        self.size = constraints.constrain(content_size);
-        LayoutResult::with_children(self.size, children)
+        LayoutResult::with_children(constraints.constrain(content_size), children)
     }
 
-    fn paint(&self, context: &mut PaintContext<'_>, origin: Point) {
+    fn paint(&self, context: &mut PaintContext<'_>, _: &UiEnvironment, bounds: Rect) {
         if let Some(background) = self.background {
-            context.fill_rect(Rect::new(origin, self.size), background);
+            context.fill_rect(bounds, background);
         }
     }
 }

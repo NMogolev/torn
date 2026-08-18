@@ -1,7 +1,7 @@
-use torn_core::{Constraints, InputEvent, Point};
+use torn_core::{Constraints, InputEvent, Rect};
 use torn_render::PaintContext;
 
-use crate::{EventContext, EventStatus, LayoutContext, LayoutResult};
+use crate::{EventContext, EventStatus, LayoutContext, LayoutResult, UiEnvironment};
 
 /// A retained UI element whose placement and relationships are owned by the runtime.
 ///
@@ -13,10 +13,10 @@ pub trait Widget {
     fn layout(&mut self, context: &mut LayoutContext<'_>, constraints: Constraints)
     -> LayoutResult;
 
-    /// Records this widget's own paint operations at `origin`.
+    /// Records this widget's own paint operations within its runtime-owned `bounds`.
     ///
     /// The runtime paints descendants after this method returns.
-    fn paint(&self, _context: &mut PaintContext<'_>, _origin: Point) {}
+    fn paint(&self, _context: &mut PaintContext<'_>, _environment: &UiEnvironment, _bounds: Rect) {}
 
     /// Handles an input event during capture, target, or bubble propagation.
     fn handle_event(
@@ -45,8 +45,8 @@ where
         (**self).layout(context, constraints)
     }
 
-    fn paint(&self, context: &mut PaintContext<'_>, origin: Point) {
-        (**self).paint(context, origin);
+    fn paint(&self, context: &mut PaintContext<'_>, environment: &UiEnvironment, bounds: Rect) {
+        (**self).paint(context, environment, bounds);
     }
 
     fn handle_event(&mut self, context: &mut EventContext<'_>, event: &InputEvent) -> EventStatus {

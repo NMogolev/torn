@@ -36,7 +36,8 @@ headless-тесты не зависят от платформенного код
 
 ```rust
 use torn::{
-    Box as TornBox, Button, Color, Constraints, Point, Size, Text, UiRuntime,
+    Box as TornBox, Button, Color, Constraints, LightTheme, Point, Size, Text, UiEnvironment,
+    UiRuntime,
     render::{DisplayList, PaintContext, TextLayout},
     software::{PixelBuffer, SoftwareRenderer},
 };
@@ -104,7 +105,7 @@ root.set_background(Some(Color::WHITE));
 нужно вызвать `layout`:
 
 ```rust
-let mut runtime = UiRuntime::new(root);
+let mut runtime = UiRuntime::with_environment(root, UiEnvironment::new(LightTheme));
 let button = runtime.append_child(runtime.root(), button)?;
 runtime.append_child(button, label)?;
 let canvas = Size::new(320.0, 180.0)?;
@@ -113,6 +114,12 @@ runtime.layout(Constraints::tight(canvas)?)?;
 let mut display_list = DisplayList::new();
 runtime.paint(&mut PaintContext::new(&mut display_list))?;
 ```
+
+`UiEnvironment` принадлежит runtime и доступен каждому виджету во время layout
+и paint. В нём находятся theme, scale factor, locale и, при необходимости,
+`TextShaper`. Обычная `Button` берёт normal и pressed цвета из `Theme`; вызов
+`set_backgrounds` по-прежнему задаёт явное локальное переопределение. Для
+стандартной светлой палитры `UiRuntime::new(root)` остаётся сокращением.
 
 `Constraints::tight(canvas)` задаёт корню точный размер холста. У `Box` ребёнок
 остаётся в левом верхнем углу, но фон растягивается на весь итоговый размер.

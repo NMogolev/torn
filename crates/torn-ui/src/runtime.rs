@@ -11,7 +11,7 @@ use torn_core::{
 };
 use torn_render::PaintContext;
 
-use crate::{EventContext, EventPhase, EventStatus, LayoutResult, Widget, event};
+use crate::{EventContext, EventPhase, EventStatus, LayoutResult, UiEnvironment, Widget, event};
 use event::{EventEffects, FocusRequest};
 
 /// Per-node invalidation state maintained by [`UiRuntime`].
@@ -41,6 +41,12 @@ pub struct LayoutContext<'a> {
 }
 
 impl LayoutContext<'_> {
+    /// Returns the runtime-wide environment for the current layout pass.
+    #[must_use]
+    pub fn environment(&self) -> &UiEnvironment {
+        &self.runtime.environment
+    }
+
     /// Returns the number of direct children owned by the runtime.
     #[must_use]
     pub fn child_count(&self) -> usize {
@@ -89,6 +95,7 @@ pub struct UiRuntime {
     pointer_capture: HashMap<PointerId, WidgetId>,
     focused: Option<WidgetId>,
     redraw_requested: bool,
+    environment: UiEnvironment,
 }
 
 struct ArenaSlot {
@@ -132,6 +139,12 @@ impl UiRuntime {
     /// Creates a runtime whose arena root is `root`.
     #[must_use]
     pub fn new(root: impl Widget + 'static) -> Self {
+        Self::with_environment(root, UiEnvironment::default())
+    }
+
+    /// Creates a runtime whose arena root is `root` and which owns `environment`.
+    #[must_use]
+    pub fn with_environment(root: impl Widget + 'static, environment: UiEnvironment) -> Self {
         let mut runtime = Self {
             nodes: Vec::new(),
             free_slots: Vec::new(),
@@ -142,9 +155,25 @@ impl UiRuntime {
             pointer_capture: HashMap::new(),
             focused: None,
             redraw_requested: true,
+            environment,
         };
         runtime.root = runtime.insert_node(Box::new(root), None);
         runtime
+    }
+
+    /// Returns the environment shared by all widgets in this runtime.
+    #[must_use]
+    pub const fn environment(&self) -> &UiEnvironment {
+        &self.environment
+    }
+
+    /// Returns mutable access to the shared environment and invalidates layout.
+    ///
+    /// Theme and scale changes can affect a widget's intrinsic size, so the
+    /// retained layout is cleared before the environment is exposed.
+    pub fn environment_mut(&mut self) -> &mut UiEnvironment {
+        self.invalidate_layout();
+        &mut self.environment
     }
 
     /// Returns the stable handle of the root node.
@@ -471,7 +500,7 @@ impl UiRuntime {
         node.widget
             .as_ref()
             .expect("widget is present outside layout call")
-            .paint(context, node.bounds.origin);
+            .paint(context, &self.environment, node.bounds);
         for child in &node.children {
             self.paint_node(*child, context);
         }
@@ -718,13 +747,14 @@ mod tests {
     use std::{cell::RefCell, rc::Rc};
 
     use torn_core::{
-        Constraints, InputEvent, Modifiers, Point, PointerButton, PointerButtons, PointerEvent,
-        PointerId, Size,
+        Color, Constraints, InputEvent, Modifiers, Point, PointerButton, PointerButtons,
+        PointerEvent, PointerId, Rect, Size,
     };
+    use torn_render::{DisplayList, PaintContext};
 
     use crate::{
-        ChildLayout, EventContext, EventPhase, EventStatus, LayoutContext, LayoutResult, Row,
-        UiRuntime, Widget, event,
+        ChildLayout, EventContext, EventPhase, EventStatus, LayoutContext, LayoutResult,
+        LightTheme, Row, Theme, UiEnvironment, UiRuntime, Widget, event,
     };
 
     type EventRecord = (&'static str, EventPhase, Point);
@@ -736,6 +766,34 @@ mod tests {
         events: Events,
         capture_on_down: bool,
         focus_on_down: bool,
+    }
+
+    struct EnvironmentRecorder {
+        observed: Rc<RefCell<Vec<(Color, f32, String)>>>,
+    }
+
+    impl Widget for EnvironmentRecorder {
+        fn layout(
+            &mut self,
+            context: &mut LayoutContext<'_>,
+            constraints: Constraints,
+        ) -> LayoutResult {
+            let environment = context.environment();
+            self.observed.borrow_mut().push((
+                environment.theme().background(),
+                environment.scale_factor(),
+                environment.locale().to_owned(),
+            ));
+            LayoutResult::new(constraints.constrain(Size::ZERO))
+        }
+
+        fn paint(&self, _: &mut PaintContext<'_>, environment: &UiEnvironment, _: Rect) {
+            self.observed.borrow_mut().push((
+                environment.theme().background(),
+                environment.scale_factor(),
+                environment.locale().to_owned(),
+            ));
+        }
     }
 
     impl Widget for Recorder {
@@ -934,5 +992,34 @@ mod tests {
             events.borrow().last().map(|event| event.0),
             Some("capturing")
         );
+    }
+
+    #[test]
+    fn exposes_the_same_environment_to_layout_and_paint() {
+        let observed = Rc::new(RefCell::new(Vec::new()));
+        let mut environment = UiEnvironment::new(LightTheme);
+        environment.set_scale_factor(1.5);
+        environment.set_locale("ru-RU");
+        let expected = (
+            LightTheme.background(),
+            environment.scale_factor(),
+            environment.locale().to_owned(),
+        );
+        let mut runtime = UiRuntime::with_environment(
+            EnvironmentRecorder {
+                observed: Rc::clone(&observed),
+            },
+            environment,
+        );
+        let mut display_list = DisplayList::new();
+
+        runtime
+            .layout(Constraints::UNBOUNDED)
+            .expect("layout succeeds");
+        runtime
+            .paint(&mut PaintContext::new(&mut display_list))
+            .expect("paint succeeds");
+
+        assert_eq!(*observed.borrow(), vec![expected.clone(), expected]);
     }
 }

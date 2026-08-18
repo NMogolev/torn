@@ -1,6 +1,6 @@
-use torn_core::{Constraints, Point};
+use torn_core::{Constraints, Rect};
 use torn_render::{PaintContext, TextLayout};
-use torn_ui::{LayoutContext, LayoutResult, Widget};
+use torn_ui::{LayoutContext, LayoutResult, UiEnvironment, Widget};
 
 /// A widget that paints a pre-shaped text layout.
 ///
@@ -29,8 +29,8 @@ impl Widget for Text {
         LayoutResult::new(constraints.constrain(self.layout.size()))
     }
 
-    fn paint(&self, context: &mut PaintContext<'_>, origin: Point) {
-        context.draw_text(self.layout.clone(), origin);
+    fn paint(&self, context: &mut PaintContext<'_>, _: &UiEnvironment, bounds: Rect) {
+        context.draw_text(self.layout.clone(), bounds.origin);
     }
 }
 

@@ -11,8 +11,8 @@ pub use torn_core::{
 };
 pub use torn_ui::{
     ChildLayout, Column, DarkTheme, DirtyFlags, EventContext, EventPhase, EventStatus,
-    LayoutContext, LayoutResult, LightTheme, Row, SystemAppearance, SystemTheme, Theme, UiRuntime,
-    UiRuntimeError, Widget,
+    LayoutContext, LayoutResult, LightTheme, Row, SystemAppearance, SystemTheme, Theme,
+    UiEnvironment, UiRuntime, UiRuntimeError, Widget,
 };
 pub use torn_widgets::{Box, Button, Text};
 pub use torn_workspace::{

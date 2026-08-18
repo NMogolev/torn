@@ -15,6 +15,22 @@ pub trait Theme {
     /// Highlight color for focused and selected controls.
     fn accent(&self) -> Color;
 
+    /// Default background color for a button or similarly raised control.
+    ///
+    /// The default keeps existing custom themes source-compatible. New themes
+    /// should override it instead of relying on an application surface color.
+    fn button_background(&self) -> Color {
+        self.background()
+    }
+
+    /// Background color for a pressed button or similarly active control.
+    ///
+    /// The default keeps existing custom themes source-compatible. New themes
+    /// should override it with an interaction-state color.
+    fn button_pressed_background(&self) -> Color {
+        self.accent()
+    }
+
     /// Standard gap between related controls, in logical pixels.
     fn spacing(&self) -> f32;
 
@@ -40,6 +56,14 @@ impl Theme for DarkTheme {
 
     fn accent(&self) -> Color {
         Color::rgba8(0, 122, 204, 255)
+    }
+
+    fn button_background(&self) -> Color {
+        Color::rgba8(60, 60, 60, 255)
+    }
+
+    fn button_pressed_background(&self) -> Color {
+        Color::rgba8(80, 80, 80, 255)
     }
 
     fn spacing(&self) -> f32 {
@@ -70,6 +94,14 @@ impl Theme for LightTheme {
 
     fn accent(&self) -> Color {
         Color::rgba8(0, 103, 192, 255)
+    }
+
+    fn button_background(&self) -> Color {
+        Color::rgba8(235, 235, 235, 255)
+    }
+
+    fn button_pressed_background(&self) -> Color {
+        Color::rgba8(210, 210, 210, 255)
     }
 
     fn spacing(&self) -> f32 {
@@ -144,6 +176,20 @@ impl Theme for SystemTheme {
         match self.appearance {
             SystemAppearance::Light => LightTheme.accent(),
             SystemAppearance::Dark => DarkTheme.accent(),
+        }
+    }
+
+    fn button_background(&self) -> Color {
+        match self.appearance {
+            SystemAppearance::Light => LightTheme.button_background(),
+            SystemAppearance::Dark => DarkTheme.button_background(),
+        }
+    }
+
+    fn button_pressed_background(&self) -> Color {
+        match self.appearance {
+            SystemAppearance::Light => LightTheme.button_pressed_background(),
+            SystemAppearance::Dark => DarkTheme.button_pressed_background(),
         }
     }
 
