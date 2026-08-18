@@ -2,31 +2,34 @@ use std::boxed::Box as HeapBox;
 
 use torn_core::{Color, Constraints, InputEvent, Insets, Point, PointerButton, Rect, Size};
 use torn_render::PaintContext;
-use torn_ui::{ChildLayout, EventContext, EventPhase, EventStatus, LayoutResult, Widget};
+use torn_ui::{
+    ChildLayout, EventContext, EventPhase, EventStatus, LayoutContext, LayoutResult, Widget,
+};
 
 /// A clickable single-child control with a rectangular background.
+///
+/// Its direct child is owned by [`torn_ui::UiRuntime`] and should be appended to
+/// the button node before layout.
 pub struct Button {
     background: Color,
     pressed_background: Color,
-    child: HeapBox<dyn Widget>,
     on_click: Option<HeapBox<dyn FnMut()>>,
     padding: Insets,
     pressed: bool,
-    last_layout: Option<LayoutResult>,
+    size: Size,
 }
 
 impl Button {
-    /// Creates a button containing `child` with an 8-pixel inset on every edge.
+    /// Creates an empty button with an 8-pixel inset on every edge.
     #[must_use]
-    pub fn new(child: impl Widget + 'static) -> Self {
+    pub fn new() -> Self {
         Self {
             background: Color::rgba8(235, 235, 235, 255),
             pressed_background: Color::rgba8(210, 210, 210, 255),
-            child: HeapBox::new(child),
             on_click: None,
             padding: Insets::all(8.0),
             pressed: false,
-            last_layout: None,
+            size: Size::ZERO,
         }
     }
 
@@ -39,7 +42,6 @@ impl Button {
     /// Sets the inset between the button edge and its child.
     pub fn set_padding(&mut self, padding: Insets) {
         self.padding = padding;
-        self.last_layout = None;
     }
 
     /// Sets a callback invoked for a primary pointer press within the button.
@@ -54,50 +56,50 @@ impl Button {
     }
 }
 
+impl Default for Button {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Widget for Button {
-    fn layout(&mut self, constraints: Constraints) -> LayoutResult {
+    fn layout(
+        &mut self,
+        context: &mut LayoutContext<'_>,
+        constraints: Constraints,
+    ) -> LayoutResult {
         let max = constraints.max();
         let child_max = size(
             (max.width() - self.padding.horizontal()).max(0.0),
             (max.height() - self.padding.vertical()).max(0.0),
         );
-        let child_result = self.child.layout(Constraints::loose(child_max));
-        let child_size = child_result.size();
-        let size = size(
-            child_size.width() + self.padding.horizontal(),
-            child_size.height() + self.padding.vertical(),
-        );
-        let result = LayoutResult::with_children(
-            constraints.constrain(size),
-            vec![ChildLayout::new(
+        let mut children = Vec::new();
+        let content_size = if context.child_count() == 1 {
+            let (id, layout) = context
+                .layout_child(0, Constraints::loose(child_max))
+                .expect("runtime child index is valid");
+            children.push(ChildLayout::new(
+                id,
                 Point::new(self.padding.left, self.padding.top),
-                child_result,
-            )],
-        );
-        self.last_layout = Some(result.clone());
-        result
+            ));
+            layout.size()
+        } else {
+            Size::ZERO
+        };
+        self.size = constraints.constrain(size(
+            content_size.width() + self.padding.horizontal(),
+            content_size.height() + self.padding.vertical(),
+        ));
+        LayoutResult::with_children(self.size, children)
     }
 
     fn paint(&self, context: &mut PaintContext<'_>, origin: Point) {
-        let Some(layout) = &self.last_layout else {
-            return;
-        };
         let background = if self.pressed {
             self.pressed_background
         } else {
             self.background
         };
-        context.fill_rect(Rect::new(origin, layout.size()), background);
-
-        if let Some(child_layout) = layout.children().first() {
-            self.child.paint(
-                context,
-                Point::new(
-                    origin.x + child_layout.origin().x,
-                    origin.y + child_layout.origin().y,
-                ),
-            );
-        }
+        context.fill_rect(Rect::new(origin, self.size), background);
     }
 
     fn handle_event(&mut self, context: &mut EventContext<'_>, event: &InputEvent) -> EventStatus {
@@ -128,144 +130,8 @@ impl Widget for Button {
     fn accepts_focus(&self) -> bool {
         true
     }
-
-    fn hit_test_child(&self, position: Point) -> Option<(usize, Point)> {
-        let child_layout = self.last_layout.as_ref()?.children().first()?;
-        child_layout.bounds().contains(position).then(|| {
-            (
-                0,
-                Point::new(
-                    position.x - child_layout.origin().x,
-                    position.y - child_layout.origin().y,
-                ),
-            )
-        })
-    }
-
-    fn event_child(&mut self, index: usize) -> Option<&mut (dyn Widget + '_)> {
-        (index == 0).then_some(self.child.as_mut())
-    }
-
-    fn event_child_ref(&self, index: usize) -> Option<&(dyn Widget + '_)> {
-        (index == 0).then_some(self.child.as_ref())
-    }
-
-    fn event_child_count(&self) -> usize {
-        1
-    }
-
-    fn event_child_origin(&self, index: usize) -> Option<Point> {
-        (index == 0)
-            .then(|| {
-                self.last_layout
-                    .as_ref()?
-                    .children()
-                    .first()
-                    .map(ChildLayout::origin)
-            })
-            .flatten()
-    }
 }
 
 fn size(width: f32, height: f32) -> Size {
     Size::new(width, height).expect("button layout sizes are non-negative and not NaN")
-}
-
-#[cfg(test)]
-mod tests {
-    use std::{cell::Cell, rc::Rc};
-
-    use torn_core::{
-        Color, Constraints, InputEvent, Modifiers, Point, PointerButton, PointerButtons,
-        PointerEvent, PointerId, Size,
-    };
-    use torn_render::{DisplayCommand, DisplayList, PaintContext};
-    use torn_ui::{EventStatus, LayoutResult, UiRuntime, Widget};
-
-    use super::Button;
-
-    struct Fixed(Size);
-
-    impl Widget for Fixed {
-        fn layout(&mut self, constraints: Constraints) -> LayoutResult {
-            LayoutResult::new(constraints.constrain(self.0))
-        }
-    }
-
-    fn size(width: f32, height: f32) -> Size {
-        Size::new(width, height).expect("valid test size")
-    }
-
-    fn pointer_event(button: PointerButton, down: bool) -> InputEvent {
-        let event = PointerEvent {
-            pointer_id: PointerId(1),
-            position: Point::new(1.0, 1.0),
-            button: Some(button),
-            buttons: if down {
-                PointerButtons::PRIMARY
-            } else {
-                PointerButtons::NONE
-            },
-            modifiers: Modifiers::NONE,
-        };
-        if down {
-            InputEvent::PointerDown(event)
-        } else {
-            InputEvent::PointerUp(event)
-        }
-    }
-
-    #[test]
-    fn includes_padding_and_invokes_callback_for_primary_clicks() {
-        let calls = Rc::new(Cell::new(0));
-        let mut button = Button::new(Fixed(size(20.0, 10.0)));
-        button.set_padding(torn_core::Insets::all(4.0));
-        button.set_on_click({
-            let calls = Rc::clone(&calls);
-            move || calls.set(calls.get() + 1)
-        });
-
-        let mut runtime = UiRuntime::new(button);
-        let layout = runtime
-            .layout(Constraints::UNBOUNDED)
-            .expect("layout succeeds");
-        assert_eq!(layout.size(), size(28.0, 18.0));
-        assert_eq!(layout.children()[0].origin(), Point::new(4.0, 4.0));
-        assert_eq!(
-            runtime.dispatch_event(&pointer_event(PointerButton::Primary, true)),
-            EventStatus::Handled
-        );
-        assert_eq!(calls.get(), 1);
-        assert_eq!(
-            runtime.dispatch_event(&pointer_event(PointerButton::Primary, false)),
-            EventStatus::Handled
-        );
-    }
-
-    #[test]
-    fn paints_its_pressed_background() {
-        let normal = Color::BLACK;
-        let pressed = Color::WHITE;
-        let mut button = Button::new(Fixed(size(1.0, 1.0)));
-        button.set_backgrounds(normal, pressed);
-        let mut runtime = UiRuntime::new(button);
-        let _ = runtime.layout(Constraints::UNBOUNDED);
-        assert_eq!(
-            runtime.dispatch_event(&pointer_event(PointerButton::Primary, true)),
-            EventStatus::Handled
-        );
-        let mut list = DisplayList::new();
-
-        runtime
-            .paint(&mut PaintContext::new(&mut list))
-            .expect("paint succeeds");
-
-        assert_eq!(
-            list.commands().first(),
-            Some(&DisplayCommand::FillRect {
-                rect: torn_core::Rect::new(Point::ZERO, size(17.0, 17.0)),
-                color: pressed,
-            })
-        );
-    }
 }

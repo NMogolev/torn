@@ -29,7 +29,7 @@ impl HelloTorn {
             Size::new(144.0, 20.0).expect("fixed label size is valid"),
             Color::BLACK,
         ));
-        let mut button = Button::new(label);
+        let mut button = Button::new();
         button.set_backgrounds(
             Color::rgba8(180, 220, 255, 255),
             Color::rgba8(120, 180, 230, 255),
@@ -41,10 +41,14 @@ impl HelloTorn {
                 println!("Нажато: {}", clicks.get());
             }
         });
-        let mut root = TornBox::with_child(button);
+        let mut root = TornBox::new();
         root.set_background(Some(Color::WHITE));
         let size = Size::new(480.0, 280.0).expect("initial window size is valid");
         let mut runtime = UiRuntime::new(root);
+        let button = runtime
+            .append_child(runtime.root(), button)
+            .expect("root exists");
+        runtime.append_child(button, label).expect("button exists");
         runtime
             .layout(Constraints::tight(size).expect("initial constraints are valid"))
             .expect("example widgets do not panic during layout");

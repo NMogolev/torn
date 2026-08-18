@@ -70,11 +70,12 @@ let label = Text::new(TextLayout::new(
 
 ## 3. Button и Box
 
-`Button` принимает один дочерний виджет, добавляет отступ 8 px с каждой
-стороны и обрабатывает primary pointer events:
+`UiRuntime` владеет деревом виджетов. `Button` добавляет отступ 8 px с каждой
+стороны вокруг своего единственного дочернего узла и обрабатывает primary
+pointer events:
 
 ```rust
-let mut button = Button::new(label);
+let mut button = Button::new();
 button.set_backgrounds(
     Color::rgba8(180, 220, 255, 255),
     Color::rgba8(120, 180, 230, 255),
@@ -89,10 +90,11 @@ PointerUp сбрасывает визуальное состояние pressed.
 
 
 `Box` похож на минимальный `div`: может содержать одного потомка и рисовать фон.
-Внешний `Box` в примере задаёт белый холст:
+Связи parent/child создаются через runtime; внешний `Box` в примере задаёт
+белый холст:
 
 ```rust
-let mut root = TornBox::with_child(button);
+let mut root = TornBox::new();
 root.set_background(Some(Color::WHITE));
 ```
 
@@ -103,6 +105,8 @@ root.set_background(Some(Color::WHITE));
 
 ```rust
 let mut runtime = UiRuntime::new(root);
+let button = runtime.append_child(runtime.root(), button)?;
+runtime.append_child(button, label)?;
 let canvas = Size::new(320.0, 180.0)?;
 runtime.layout(Constraints::tight(canvas)?)?;
 

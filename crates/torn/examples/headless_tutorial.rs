@@ -12,7 +12,7 @@ use torn::{
 fn main() -> Result<(), std::boxed::Box<dyn std::error::Error>> {
     let click_count = Rc::new(Cell::new(0));
     let label = Text::new(TextLayout::new(size(120.0, 16.0)?, Color::BLACK));
-    let mut button = Button::new(label);
+    let mut button = Button::new();
     button.set_backgrounds(
         Color::rgba8(180, 220, 255, 255),
         Color::rgba8(120, 180, 230, 255),
@@ -22,9 +22,11 @@ fn main() -> Result<(), std::boxed::Box<dyn std::error::Error>> {
         move || click_count.set(click_count.get() + 1)
     });
 
-    let mut root = TornBox::with_child(button);
+    let mut root = TornBox::new();
     root.set_background(Some(Color::WHITE));
     let mut runtime = UiRuntime::new(root);
+    let button = runtime.append_child(runtime.root(), button)?;
+    runtime.append_child(button, label)?;
     let canvas = size(320.0, 180.0)?;
 
     runtime.layout(Constraints::tight(canvas)?)?;

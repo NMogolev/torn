@@ -1,6 +1,9 @@
-use torn_core::{Point, Rect, Size};
+use torn_core::{Point, Size, WidgetId};
 
-/// The layout computed for one widget and its descendants.
+/// The layout computed for one widget.
+///
+/// The runtime owns the resulting bounds of every node. A widget returns only
+/// its own size and the relative positions of its direct children.
 #[derive(Clone, Debug, PartialEq)]
 #[must_use]
 pub struct LayoutResult {
@@ -17,7 +20,7 @@ impl LayoutResult {
         }
     }
 
-    /// Creates a layout result with positioned child layouts.
+    /// Creates a layout result with positioned direct children.
     pub fn with_children(size: Size, children: Vec<ChildLayout>) -> Self {
         Self { size, children }
     }
@@ -28,40 +31,35 @@ impl LayoutResult {
         self.size
     }
 
-    /// Returns child layouts in their widget-tree order.
+    /// Returns direct child positions in widget-tree order.
     pub fn children(&self) -> &[ChildLayout] {
         &self.children
     }
 }
 
-/// The position and layout result of a direct child widget.
-#[derive(Clone, Debug, PartialEq)]
+/// The relative position assigned to a direct child node.
+#[derive(Clone, Copy, Debug, PartialEq)]
 #[must_use]
 pub struct ChildLayout {
+    id: WidgetId,
     origin: Point,
-    result: LayoutResult,
 }
 
 impl ChildLayout {
     /// Creates a child layout at `origin` relative to its parent.
-    pub const fn new(origin: Point, result: LayoutResult) -> Self {
-        Self { origin, result }
+    pub const fn new(id: WidgetId, origin: Point) -> Self {
+        Self { id, origin }
+    }
+
+    /// Returns the child node being positioned.
+    #[must_use]
+    pub const fn id(&self) -> WidgetId {
+        self.id
     }
 
     /// Returns the child's origin relative to its parent.
     #[must_use]
     pub const fn origin(&self) -> Point {
         self.origin
-    }
-
-    /// Returns the child's bounds relative to its parent.
-    #[must_use]
-    pub const fn bounds(&self) -> Rect {
-        Rect::new(self.origin, self.result.size)
-    }
-
-    /// Returns the layout result computed for the child.
-    pub const fn result(&self) -> &LayoutResult {
-        &self.result
     }
 }

@@ -7,11 +7,12 @@ pub use torn_core::{
     Color, ConstraintError, Constraints, Diagnostic, DiagnosticReporter, DiagnosticSeverity,
     FocusChanged, InputEvent, Insets, Key, KeyCode, KeyEvent, Modifiers, NamedKey,
     PanicOnDiagnostic, Point, PointerButton, PointerButtons, PointerEvent, PointerId, Rect, Size,
-    SizeError, WheelDelta, WheelEvent,
+    SizeError, WheelDelta, WheelEvent, WidgetId,
 };
 pub use torn_ui::{
-    ChildLayout, Column, DarkTheme, EventContext, EventPhase, EventStatus, LayoutResult,
-    LightTheme, Row, SystemAppearance, SystemTheme, Theme, UiRuntime, UiRuntimeError, Widget,
+    ChildLayout, Column, DarkTheme, DirtyFlags, EventContext, EventPhase, EventStatus,
+    LayoutContext, LayoutResult, LightTheme, Row, SystemAppearance, SystemTheme, Theme, UiRuntime,
+    UiRuntimeError, Widget,
 };
 pub use torn_widgets::{Box, Button, Text};
 pub use torn_workspace::{
@@ -50,10 +51,18 @@ mod tests {
 
     #[test]
     fn exposes_a_complete_headless_widget_pipeline() {
-        let label = Text::new(TextLayout::new(size(40.0, 16.0), Color::BLACK));
-        let mut root = Box::with_child(Button::new(label));
+        let mut root = Box::new();
         root.set_background(Some(Color::WHITE));
         let mut runtime = UiRuntime::new(root);
+        let button = runtime
+            .append_child(runtime.root(), Button::new())
+            .expect("root exists");
+        runtime
+            .append_child(
+                button,
+                Text::new(TextLayout::new(size(40.0, 16.0), Color::BLACK)),
+            )
+            .expect("button exists");
         let mut display_list = DisplayList::new();
 
         assert_eq!(

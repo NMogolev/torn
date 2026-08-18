@@ -12,6 +12,6 @@ pub use column::Column;
 pub use event::{EventContext, EventPhase, EventStatus};
 pub use layout::{ChildLayout, LayoutResult};
 pub use row::Row;
-pub use runtime::{UiRuntime, UiRuntimeError};
+pub use runtime::{DirtyFlags, LayoutContext, UiRuntime, UiRuntimeError};
 pub use theme::{DarkTheme, LightTheme, SystemAppearance, SystemTheme, Theme};
 pub use widget::Widget;

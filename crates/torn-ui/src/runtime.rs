@@ -2,7 +2,7 @@ use std::{
     any::Any,
     collections::HashMap,
     fmt,
-    panic::{AssertUnwindSafe, catch_unwind},
+    panic::{AssertUnwindSafe, catch_unwind, resume_unwind},
 };
 
 use torn_core::{
@@ -14,14 +14,75 @@ use torn_render::PaintContext;
 use crate::{EventContext, EventPhase, EventStatus, LayoutResult, Widget, event};
 use event::{EventEffects, FocusRequest};
 
-/// Retained UI runtime responsible for layout, painting, input routing, and focus.
+/// Per-node invalidation state maintained by [`UiRuntime`].
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct DirtyFlags {
+    /// The node needs layout.
+    pub layout: bool,
+    /// The node needs repainting.
+    pub paint: bool,
+    /// The node's hit-test bounds have changed.
+    pub hit_test: bool,
+}
+
+impl DirtyFlags {
+    const ALL: Self = Self {
+        layout: true,
+        paint: true,
+        hit_test: true,
+    };
+}
+
+/// Context through which a widget measures its direct runtime-owned children.
+pub struct LayoutContext<'a> {
+    runtime: &'a mut UiRuntime,
+    parent: WidgetId,
+    parent_origin: Point,
+}
+
+impl LayoutContext<'_> {
+    /// Returns the number of direct children owned by the runtime.
+    #[must_use]
+    pub fn child_count(&self) -> usize {
+        self.runtime
+            .node(self.parent)
+            .map_or(0, |node| node.children.len())
+    }
+
+    /// Measures the child at `index` and returns its stable handle and result.
+    ///
+    /// The widget must include each direct child once in its [`LayoutResult`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`UiRuntimeError::InvalidWidgetId`] when `index` does not name a
+    /// direct child, or when a child handle became invalid during layout.
+    pub fn layout_child(
+        &mut self,
+        index: usize,
+        constraints: Constraints,
+    ) -> Result<(WidgetId, LayoutResult), UiRuntimeError> {
+        let id = *self
+            .runtime
+            .node(self.parent)
+            .and_then(|node| node.children.get(index))
+            .ok_or(UiRuntimeError::InvalidWidgetId)?;
+        let result = self
+            .runtime
+            .layout_node(id, constraints, self.parent_origin)?;
+        Ok((id, result))
+    }
+}
+
+/// Retained UI runtime responsible for tree ownership, layout, painting, input routing, and focus.
 ///
-/// Pointer and wheel events use hit testing unless their pointer is captured.
-/// Keyboard and text events are routed to the focused widget. A route travels
-/// root-to-target during capture, reaches the target, then travels back during
-/// bubble. Every recipient sees coordinates local to its own origin.
+/// Every widget occupies a generational arena slot. Nodes own their parent and
+/// child relationships, absolute layout bounds, invalidation state, and routing
+/// metadata; widgets themselves only implement behavior.
 pub struct UiRuntime {
-    root: Box<dyn Widget>,
+    nodes: Vec<ArenaSlot>,
+    free_slots: Vec<u32>,
+    root: WidgetId,
     layout: Option<LayoutResult>,
     diagnostics: Vec<Diagnostic>,
     reporter: Option<Box<dyn DiagnosticReporter>>,
@@ -30,44 +91,153 @@ pub struct UiRuntime {
     redraw_requested: bool,
 }
 
+struct ArenaSlot {
+    generation: u32,
+    node: Option<Node>,
+}
+
+struct Node {
+    widget: Option<Box<dyn Widget>>,
+    parent: Option<WidgetId>,
+    children: Vec<WidgetId>,
+    bounds: Rect,
+    dirty: DirtyFlags,
+    accepts_focus: bool,
+}
+
 /// Why a [`UiRuntime`] operation could not be completed.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum UiRuntimeError {
     /// Application widget code panicked during the requested operation.
     WidgetPanicked,
+    /// A widget supplied a layout that does not position each direct child once.
+    InvalidLayout,
+    /// A requested node handle is stale or does not belong to this runtime.
+    InvalidWidgetId,
 }
 
 impl fmt::Display for UiRuntimeError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(match self {
             Self::WidgetPanicked => "application widget panicked; inspect runtime diagnostics",
+            Self::InvalidLayout => "widget layout must position every direct child exactly once",
+            Self::InvalidWidgetId => "widget handle is stale or does not belong to this runtime",
         })
     }
 }
 
 impl std::error::Error for UiRuntimeError {}
 
-#[derive(Clone, Debug)]
-struct RouteNode {
-    id: WidgetId,
-    path: Vec<usize>,
-    origin: Point,
-    accepts_focus: bool,
-}
-
 impl UiRuntime {
-    /// Creates a runtime that owns `root`.
+    /// Creates a runtime whose arena root is `root`.
     #[must_use]
     pub fn new(root: impl Widget + 'static) -> Self {
-        Self {
-            root: Box::new(root),
+        let mut runtime = Self {
+            nodes: Vec::new(),
+            free_slots: Vec::new(),
+            root: WidgetId::new(0, 0),
             layout: None,
             diagnostics: Vec::new(),
             reporter: None,
             pointer_capture: HashMap::new(),
             focused: None,
             redraw_requested: true,
+        };
+        runtime.root = runtime.insert_node(Box::new(root), None);
+        runtime
+    }
+
+    /// Returns the stable handle of the root node.
+    #[must_use]
+    pub const fn root(&self) -> WidgetId {
+        self.root
+    }
+
+    /// Appends `child` to `parent` and returns its stable generational handle.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`UiRuntimeError::InvalidWidgetId`] when `parent` is stale.
+    pub fn append_child(
+        &mut self,
+        parent: WidgetId,
+        child: impl Widget + 'static,
+    ) -> Result<WidgetId, UiRuntimeError> {
+        if self.node(parent).is_none() {
+            return Err(UiRuntimeError::InvalidWidgetId);
         }
+        let id = self.insert_node(Box::new(child), Some(parent));
+        self.node_mut(parent)
+            .ok_or(UiRuntimeError::InvalidWidgetId)?
+            .children
+            .push(id);
+        self.invalidate_layout();
+        Ok(id)
+    }
+
+    /// Removes `node` and all of its descendants, invalidating their handles.
+    ///
+    /// The root cannot be removed.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`UiRuntimeError::InvalidWidgetId`] when `node` is stale or is
+    /// the runtime root.
+    pub fn remove(&mut self, node: WidgetId) -> Result<(), UiRuntimeError> {
+        if node == self.root || self.node(node).is_none() {
+            return Err(UiRuntimeError::InvalidWidgetId);
+        }
+        let parent = self
+            .node(node)
+            .and_then(|node| node.parent)
+            .ok_or(UiRuntimeError::InvalidWidgetId)?;
+        self.node_mut(parent)
+            .ok_or(UiRuntimeError::InvalidWidgetId)?
+            .children
+            .retain(|id| *id != node);
+        self.remove_subtree(node);
+        self.invalidate_layout();
+        Ok(())
+    }
+
+    /// Returns a node's parent, if its handle is live.
+    #[must_use]
+    pub fn parent(&self, node: WidgetId) -> Option<WidgetId> {
+        self.node(node).and_then(|node| node.parent)
+    }
+
+    /// Returns direct child handles in display order, if `node` is live.
+    #[must_use]
+    pub fn children(&self, node: WidgetId) -> Option<&[WidgetId]> {
+        self.node(node).map(|node| node.children.as_slice())
+    }
+
+    /// Returns the last absolute bounds assigned to a live node.
+    #[must_use]
+    pub fn bounds(&self, node: WidgetId) -> Option<Rect> {
+        self.node(node).map(|node| node.bounds)
+    }
+
+    /// Returns the invalidation state of a live node.
+    #[must_use]
+    pub fn dirty_flags(&self, node: WidgetId) -> Option<DirtyFlags> {
+        self.node(node).map(|node| node.dirty)
+    }
+
+    /// Returns mutable access to a widget and invalidates the retained layout.
+    pub fn widget_mut(&mut self, node: WidgetId) -> Option<&mut (dyn Widget + 'static)> {
+        self.invalidate_layout();
+        self.node_mut(node)?.widget.as_deref_mut()
+    }
+
+    /// Returns mutable access to the root widget and invalidates the retained layout.
+    ///
+    /// # Panics
+    ///
+    /// Panics only if the runtime's internally retained root node was corrupted.
+    pub fn root_mut(&mut self) -> &mut (dyn Widget + 'static) {
+        self.widget_mut(self.root)
+            .expect("runtime root is always live")
     }
 
     /// Sets a reporter that receives every runtime diagnostic.
@@ -92,22 +262,28 @@ impl UiRuntime {
         std::mem::take(&mut self.diagnostics)
     }
 
-    /// Lays out the root widget and returns its computed layout.
+    /// Lays out the retained tree and returns the computed root layout.
     ///
     /// # Errors
     ///
-    /// Returns [`UiRuntimeError::WidgetPanicked`] and emits a diagnostic if
-    /// application widget code panics. The previous layout is discarded.
+    /// Returns [`UiRuntimeError::WidgetPanicked`] when widget code panics, or
+    /// [`UiRuntimeError::InvalidLayout`] when a container does not position its
+    /// direct children exactly once.
     pub fn layout(&mut self, constraints: Constraints) -> Result<&LayoutResult, UiRuntimeError> {
-        match catch_unwind(AssertUnwindSafe(|| self.root.layout(constraints))) {
-            Ok(layout) => {
+        match catch_unwind(AssertUnwindSafe(|| {
+            self.layout_node(self.root, constraints, Point::ZERO)
+        })) {
+            Ok(Ok(layout)) => {
+                self.layout = Some(layout);
                 self.redraw_requested = true;
-                Ok(self.layout.insert(layout))
+                self.layout.as_ref().ok_or(UiRuntimeError::InvalidLayout)
+            }
+            Ok(Err(error)) => {
+                self.clear_layout_state();
+                Err(error)
             }
             Err(payload) => {
-                self.layout = None;
-                self.pointer_capture.clear();
-                self.focused = None;
+                self.clear_layout_state();
                 self.report_panic("layout", payload);
                 Err(UiRuntimeError::WidgetPanicked)
             }
@@ -137,17 +313,16 @@ impl UiRuntime {
         std::mem::replace(&mut self.redraw_requested, false)
     }
 
-    /// Records the widget tree and reports a panic from application widget code.
+    /// Records paint operations for the retained tree.
     ///
     /// # Errors
     ///
-    /// Returns [`UiRuntimeError::WidgetPanicked`] if painting panics.
+    /// Returns [`UiRuntimeError::WidgetPanicked`] when widget paint code panics.
     pub fn paint(&mut self, context: &mut PaintContext<'_>) -> Result<(), UiRuntimeError> {
         if self.layout.is_none() {
             return Ok(());
         }
-
-        match catch_unwind(AssertUnwindSafe(|| self.root.paint(context, Point::ZERO))) {
+        match catch_unwind(AssertUnwindSafe(|| self.paint_node(self.root, context))) {
             Ok(()) => Ok(()),
             Err(payload) => {
                 self.report_panic("paint", payload);
@@ -156,26 +331,12 @@ impl UiRuntime {
         }
     }
 
-    /// Returns mutable access to the root widget and invalidates layout and input state.
-    pub fn root_mut(&mut self) -> &mut dyn Widget {
-        self.layout = None;
-        self.pointer_capture.clear();
-        self.focused = None;
-        self.redraw_requested = true;
-        &mut *self.root
-    }
-
     /// Delivers an input event through capture, target, and bubble phases.
-    ///
-    /// Pointer and wheel events require a preceding layout. Keyboard and text
-    /// events require a focused widget. If application handler code panics, the
-    /// runtime records a diagnostic and stops the affected propagation route.
     pub fn dispatch_event(&mut self, event: &InputEvent) -> EventStatus {
-        let routes = self.routes();
-        let Some(route) = self.select_route(event, &routes) else {
+        let Some(target) = self.select_target(event) else {
             return EventStatus::Ignored;
         };
-
+        let route = self.route_to(target);
         let mut effects = EventEffects {
             propagation_stopped: false,
             pointer_capture: self.pointer_capture.clone(),
@@ -185,142 +346,205 @@ impl UiRuntime {
         };
         let mut handled = EventStatus::Ignored;
 
-        let Some(target) = route.last() else {
-            return EventStatus::Ignored;
-        };
-        let target_id = target.id;
-        for node in route.iter().take(route.len().saturating_sub(1)) {
+        for id in route.iter().take(route.len().saturating_sub(1)) {
             handled = merge_status(
                 handled,
-                self.dispatch_to(node, target_id, EventPhase::Capture, event, &mut effects),
+                self.dispatch_to(*id, target, EventPhase::Capture, event, &mut effects),
             );
             if effects.propagation_stopped {
-                self.finish_event(event, effects, &routes);
+                self.finish_event(event, effects);
                 return handled;
             }
         }
-
-        if let Some(target) = route.last() {
-            handled = merge_status(
-                handled,
-                self.dispatch_to(target, target_id, EventPhase::Target, event, &mut effects),
-            );
-        }
-
+        handled = merge_status(
+            handled,
+            self.dispatch_to(target, target, EventPhase::Target, event, &mut effects),
+        );
         if !effects.propagation_stopped {
-            for node in route.iter().rev().skip(1) {
+            for id in route.iter().rev().skip(1) {
                 handled = merge_status(
                     handled,
-                    self.dispatch_to(node, target_id, EventPhase::Bubble, event, &mut effects),
+                    self.dispatch_to(*id, target, EventPhase::Bubble, event, &mut effects),
                 );
                 if effects.propagation_stopped {
                     break;
                 }
             }
         }
-
-        self.finish_event(event, effects, &routes);
+        self.finish_event(event, effects);
         handled
     }
 
-    fn finish_event(
+    fn layout_node(
         &mut self,
-        event: &InputEvent,
-        mut effects: EventEffects,
-        routes: &[RouteNode],
-    ) {
+        id: WidgetId,
+        constraints: Constraints,
+        origin: Point,
+    ) -> Result<LayoutResult, UiRuntimeError> {
+        let mut widget = self
+            .node_mut(id)
+            .ok_or(UiRuntimeError::InvalidWidgetId)?
+            .widget
+            .take()
+            .expect("widget is present outside layout call");
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            let mut context = LayoutContext {
+                runtime: self,
+                parent: id,
+                parent_origin: origin,
+            };
+            widget.layout(&mut context, constraints)
+        }));
+        self.node_mut(id).expect("node survives layout").widget = Some(widget);
+        let result = match result {
+            Ok(result) => result,
+            Err(payload) => resume_unwind(payload),
+        };
+
+        self.apply_layout(id, origin, &result)?;
+        Ok(result)
+    }
+
+    fn apply_layout(
+        &mut self,
+        id: WidgetId,
+        origin: Point,
+        result: &LayoutResult,
+    ) -> Result<(), UiRuntimeError> {
+        let children = self
+            .node(id)
+            .ok_or(UiRuntimeError::InvalidWidgetId)?
+            .children
+            .clone();
+        if result.children().len() != children.len()
+            || result
+                .children()
+                .iter()
+                .any(|layout| !children.contains(&layout.id()))
+            || result
+                .children()
+                .iter()
+                .enumerate()
+                .any(|(index, layout)| layout.id() != children[index])
+        {
+            return Err(UiRuntimeError::InvalidLayout);
+        }
+
+        let accepts_focus = self
+            .node(id)
+            .expect("node was validated")
+            .widget
+            .as_ref()
+            .is_some_and(Widget::accepts_focus);
+        let node = self.node_mut(id).expect("node was validated");
+        node.bounds = Rect::new(origin, result.size());
+        node.dirty = DirtyFlags::default();
+        node.accepts_focus = accepts_focus;
+        for child in result.children() {
+            self.translate_subtree(
+                child.id(),
+                Point::new(origin.x + child.origin().x, origin.y + child.origin().y),
+            );
+        }
+        Ok(())
+    }
+
+    fn translate_subtree(&mut self, id: WidgetId, origin: Point) {
+        let Some(node) = self.node(id) else {
+            return;
+        };
+        let old = node.bounds.origin;
+        let children = node.children.clone();
+        let delta = Point::new(origin.x - old.x, origin.y - old.y);
+        self.node_mut(id).expect("node is live").bounds.origin = origin;
+        for child in children {
+            let child_origin = self.node(child).expect("child is live").bounds.origin;
+            self.translate_subtree(
+                child,
+                Point::new(child_origin.x + delta.x, child_origin.y + delta.y),
+            );
+        }
+    }
+
+    fn paint_node(&self, id: WidgetId, context: &mut PaintContext<'_>) {
+        let node = self.node(id).expect("paint tree contains live nodes");
+        node.widget
+            .as_ref()
+            .expect("widget is present outside layout call")
+            .paint(context, node.bounds.origin);
+        for child in &node.children {
+            self.paint_node(*child, context);
+        }
+    }
+
+    fn select_target(&self, event: &InputEvent) -> Option<WidgetId> {
         if let Some(pointer_id) = pointer_id(event) {
-            if matches!(event, InputEvent::PointerUp(_)) {
-                effects.pointer_capture.remove(&pointer_id);
+            return self
+                .pointer_capture
+                .get(&pointer_id)
+                .copied()
+                .filter(|id| self.node(*id).is_some())
+                .or_else(|| {
+                    event::pointer_position(event).and_then(|position| self.hit_test(position))
+                });
+        }
+        if matches!(event, InputEvent::Wheel(_)) {
+            return event::pointer_position(event).and_then(|position| self.hit_test(position));
+        }
+        self.focused.filter(|id| self.node(*id).is_some())
+    }
+
+    fn hit_test(&self, position: Point) -> Option<WidgetId> {
+        self.layout.as_ref()?;
+        self.hit_test_node(self.root, position)
+    }
+
+    fn hit_test_node(&self, id: WidgetId, position: Point) -> Option<WidgetId> {
+        let node = self.node(id)?;
+        if !node.bounds.contains(position) {
+            return None;
+        }
+        for child in node.children.iter().rev() {
+            if let Some(hit) = self.hit_test_node(*child, position) {
+                return Some(hit);
             }
         }
-        self.pointer_capture = effects.pointer_capture;
-        self.redraw_requested |= effects.redraw_requested;
-
-        let Some(request) = effects.focus_request else {
-            return;
-        };
-        let requested = match request {
-            FocusRequest::Set(id) => routes
-                .iter()
-                .any(|node| node.id == id && node.accepts_focus)
-                .then_some(id),
-            FocusRequest::Clear => None,
-        };
-        if requested == self.focused {
-            return;
-        }
-        self.focused = requested;
-        self.redraw_requested = true;
-        let focus_event = InputEvent::FocusChanged(FocusChanged { focused: requested });
-        if let Some(target) = requested.and_then(|id| routes.iter().find(|node| node.id == id)) {
-            let mut focus_effects = EventEffects {
-                propagation_stopped: false,
-                pointer_capture: self.pointer_capture.clone(),
-                focused: self.focused,
-                focus_request: None,
-                redraw_requested: false,
-            };
-            let _ = self.dispatch_to(
-                target,
-                target.id,
-                EventPhase::Target,
-                &focus_event,
-                &mut focus_effects,
-            );
-            self.pointer_capture = focus_effects.pointer_capture;
-            self.redraw_requested |= focus_effects.redraw_requested;
-        }
+        Some(id)
     }
 
-    fn select_route(&self, event: &InputEvent, routes: &[RouteNode]) -> Option<Vec<RouteNode>> {
-        let target = if let Some(pointer_id) = pointer_id(event) {
-            self.pointer_capture
-                .get(&pointer_id)
-                .and_then(|captured| routes.iter().find(|node| node.id == *captured))
-                .or_else(|| {
-                    event::pointer_position(event)
-                        .and_then(|position| self.hit_target(position, routes))
-                })
-        } else if matches!(event, InputEvent::Wheel(_)) {
-            event::pointer_position(event).and_then(|position| self.hit_target(position, routes))
-        } else {
-            self.focused
-                .and_then(|focused| routes.iter().find(|node| node.id == focused))
-        }?;
-
-        route_to(target, routes)
-    }
-
-    fn hit_target<'a>(&self, position: Point, routes: &'a [RouteNode]) -> Option<&'a RouteNode> {
-        let layout = self.layout.as_ref()?;
-        Rect::new(Point::ZERO, layout.size())
-            .contains(position)
-            .then_some(())?;
-        let mut current = self.root.as_ref();
-        let mut local_position = position;
-        let mut path = Vec::new();
-        while let Some((child_index, child_position)) = current.hit_test_child(local_position) {
-            path.push(child_index);
-            current = current.event_child_ref(child_index)?;
-            local_position = child_position;
+    fn route_to(&self, target: WidgetId) -> Vec<WidgetId> {
+        let mut route = Vec::new();
+        let mut current = Some(target);
+        while let Some(id) = current {
+            route.push(id);
+            current = self.node(id).and_then(|node| node.parent);
         }
-        routes.iter().find(|node| node.path == path)
+        route.reverse();
+        route
     }
 
     fn dispatch_to(
         &mut self,
-        node: &RouteNode,
+        id: WidgetId,
         target: WidgetId,
         phase: EventPhase,
         event: &InputEvent,
         effects: &mut EventEffects,
     ) -> EventStatus {
-        let local_event = event::with_local_position(event, node.origin);
+        let origin = self
+            .node(id)
+            .expect("route contains live nodes")
+            .bounds
+            .origin;
+        let local_event = event::with_local_position(event, origin);
         let result = catch_unwind(AssertUnwindSafe(|| {
-            let widget = widget_at_path(&mut *self.root, &node.path)
-                .expect("event route references a retained widget");
-            let mut context = EventContext::new(phase, target, node.id, effects);
+            let widget = self
+                .node_mut(id)
+                .expect("route contains live nodes")
+                .widget
+                .as_deref_mut()
+                .expect("widget is present outside layout call");
+            let mut context = EventContext::new(phase, target, id, effects);
             widget.handle_event(&mut context, &local_event)
         }));
         match result {
@@ -333,10 +557,116 @@ impl UiRuntime {
         }
     }
 
-    fn routes(&self) -> Vec<RouteNode> {
-        let mut routes = Vec::new();
-        collect_routes(self.root.as_ref(), &mut routes, &[], Point::ZERO);
-        routes
+    fn finish_event(&mut self, event: &InputEvent, mut effects: EventEffects) {
+        if let Some(pointer_id) = pointer_id(event) {
+            if matches!(event, InputEvent::PointerUp(_)) {
+                effects.pointer_capture.remove(&pointer_id);
+            }
+        }
+        self.pointer_capture = effects.pointer_capture;
+        self.redraw_requested |= effects.redraw_requested;
+        let Some(request) = effects.focus_request else {
+            return;
+        };
+        let requested = match request {
+            FocusRequest::Set(id) => self
+                .node(id)
+                .is_some_and(|node| node.accepts_focus)
+                .then_some(id),
+            FocusRequest::Clear => None,
+        };
+        if requested == self.focused {
+            return;
+        }
+        self.focused = requested;
+        self.redraw_requested = true;
+        if let Some(target) = requested {
+            let mut focus_effects = EventEffects {
+                propagation_stopped: false,
+                pointer_capture: self.pointer_capture.clone(),
+                focused: self.focused,
+                focus_request: None,
+                redraw_requested: false,
+            };
+            let _ = self.dispatch_to(
+                target,
+                target,
+                EventPhase::Target,
+                &InputEvent::FocusChanged(FocusChanged { focused: requested }),
+                &mut focus_effects,
+            );
+            self.pointer_capture = focus_effects.pointer_capture;
+            self.redraw_requested |= focus_effects.redraw_requested;
+        }
+    }
+
+    fn insert_node(&mut self, widget: Box<dyn Widget>, parent: Option<WidgetId>) -> WidgetId {
+        let node = Node {
+            widget: Some(widget),
+            parent,
+            children: Vec::new(),
+            bounds: Rect::ZERO,
+            dirty: DirtyFlags::ALL,
+            accepts_focus: false,
+        };
+        if let Some(index) = self.free_slots.pop() {
+            let slot = &mut self.nodes[usize::try_from(index).expect("u32 fits usize")];
+            slot.node = Some(node);
+            return WidgetId::new(index, slot.generation);
+        }
+        let index =
+            u32::try_from(self.nodes.len()).expect("widget arena exceeds WidgetId capacity");
+        self.nodes.push(ArenaSlot {
+            generation: 0,
+            node: Some(node),
+        });
+        WidgetId::new(index, 0)
+    }
+
+    fn remove_subtree(&mut self, id: WidgetId) {
+        let children = self.node(id).expect("node is live").children.clone();
+        for child in children {
+            self.remove_subtree(child);
+        }
+        let index = usize::try_from(id.index()).expect("u32 fits usize");
+        let slot = &mut self.nodes[index];
+        slot.node = None;
+        slot.generation = slot.generation.wrapping_add(1);
+        self.free_slots.push(id.index());
+        self.pointer_capture.retain(|_, captured| *captured != id);
+        if self.focused == Some(id) {
+            self.focused = None;
+        }
+    }
+
+    fn node(&self, id: WidgetId) -> Option<&Node> {
+        let index = usize::try_from(id.index()).ok()?;
+        let slot = self.nodes.get(index)?;
+        (slot.generation == id.generation()).then_some(slot.node.as_ref()?)
+    }
+
+    fn node_mut(&mut self, id: WidgetId) -> Option<&mut Node> {
+        let index = usize::try_from(id.index()).ok()?;
+        let slot = self.nodes.get_mut(index)?;
+        (slot.generation == id.generation()).then_some(slot.node.as_mut()?)
+    }
+
+    fn invalidate_layout(&mut self) {
+        self.layout = None;
+        self.pointer_capture.clear();
+        self.focused = None;
+        self.redraw_requested = true;
+        for slot in &mut self.nodes {
+            if let Some(node) = &mut slot.node {
+                node.dirty = DirtyFlags::ALL;
+            }
+        }
+    }
+
+    fn clear_layout_state(&mut self) {
+        self.layout = None;
+        self.pointer_capture.clear();
+        self.focused = None;
     }
 
     fn report_panic(&mut self, operation: &str, payload: Box<dyn Any + Send>) {
@@ -349,56 +679,6 @@ impl UiRuntime {
             reporter.report(&diagnostic);
         }
         self.diagnostics.push(diagnostic);
-    }
-}
-
-fn collect_routes(widget: &dyn Widget, routes: &mut Vec<RouteNode>, path: &[usize], origin: Point) {
-    let id = WidgetId::new(
-        u32::try_from(routes.len()).expect("widget tree exceeds WidgetId capacity"),
-        0,
-    );
-    routes.push(RouteNode {
-        id,
-        path: path.to_owned(),
-        origin,
-        accepts_focus: widget.accepts_focus(),
-    });
-    for index in 0..widget.event_child_count() {
-        let Some(child) = widget.event_child_ref(index) else {
-            continue;
-        };
-        let Some(child_origin) = widget.event_child_origin(index) else {
-            continue;
-        };
-        let mut child_path = path.to_owned();
-        child_path.push(index);
-        collect_routes(
-            child,
-            routes,
-            &child_path,
-            Point::new(origin.x + child_origin.x, origin.y + child_origin.y),
-        );
-    }
-}
-
-fn route_to(target: &RouteNode, routes: &[RouteNode]) -> Option<Vec<RouteNode>> {
-    let mut route = Vec::with_capacity(target.path.len() + 1);
-    for depth in 0..=target.path.len() {
-        let path = &target.path[..depth];
-        route.push(routes.iter().find(|node| node.path == path)?.clone());
-    }
-    Some(route)
-}
-
-fn widget_at_path<'a>(widget: &'a mut dyn Widget, path: &[usize]) -> Option<&'a mut dyn Widget> {
-    let Some((&head, tail)) = path.split_first() else {
-        return Some(widget);
-    };
-    let child = widget.event_child(head)?;
-    if tail.is_empty() {
-        Some(child)
-    } else {
-        widget_at_path(child, tail)
     }
 }
 
@@ -443,7 +723,8 @@ mod tests {
     };
 
     use crate::{
-        EventContext, EventPhase, EventStatus, LayoutResult, Row, UiRuntime, Widget, event,
+        ChildLayout, EventContext, EventPhase, EventStatus, LayoutContext, LayoutResult, Row,
+        UiRuntime, Widget, event,
     };
 
     type EventRecord = (&'static str, EventPhase, Point);
@@ -458,10 +739,22 @@ mod tests {
     }
 
     impl Widget for Recorder {
-        fn layout(&mut self, constraints: Constraints) -> LayoutResult {
-            LayoutResult::new(constraints.constrain(self.size))
+        fn layout(
+            &mut self,
+            context: &mut LayoutContext<'_>,
+            constraints: Constraints,
+        ) -> LayoutResult {
+            if context.child_count() == 0 {
+                return LayoutResult::new(constraints.constrain(self.size));
+            }
+            let (child, _) = context
+                .layout_child(0, Constraints::loose(constraints.max()))
+                .expect("valid child");
+            LayoutResult::with_children(
+                constraints.constrain(self.size),
+                vec![ChildLayout::new(child, Point::ZERO)],
+            )
         }
-
         fn handle_event(
             &mut self,
             context: &mut EventContext<'_>,
@@ -488,74 +781,14 @@ mod tests {
             }
             EventStatus::Handled
         }
-
         fn accepts_focus(&self) -> bool {
             self.focus_on_down
-        }
-    }
-
-    struct Parent {
-        child: Box<dyn Widget>,
-        size: Size,
-        name: &'static str,
-        events: Events,
-        stop_during_capture: bool,
-    }
-
-    impl Widget for Parent {
-        fn layout(&mut self, constraints: Constraints) -> LayoutResult {
-            let child_layout = self.child.layout(Constraints::loose(self.size));
-            LayoutResult::with_children(
-                constraints.constrain(self.size),
-                vec![crate::ChildLayout::new(Point::ZERO, child_layout)],
-            )
-        }
-
-        fn handle_event(
-            &mut self,
-            context: &mut EventContext<'_>,
-            event: &InputEvent,
-        ) -> EventStatus {
-            if let Some(position) = event::pointer_position(event) {
-                self.events
-                    .borrow_mut()
-                    .push((self.name, context.phase(), position));
-            }
-            if self.stop_during_capture && context.phase() == EventPhase::Capture {
-                context.stop_propagation();
-            }
-            EventStatus::Handled
-        }
-
-        fn hit_test_child(&self, position: Point) -> Option<(usize, Point)> {
-            (position.x >= 0.0
-                && position.y >= 0.0
-                && position.x < self.size.width()
-                && position.y < self.size.height())
-            .then_some((0, position))
-        }
-
-        fn event_child(&mut self, index: usize) -> Option<&mut (dyn Widget + '_)> {
-            (index == 0).then_some(self.child.as_mut())
-        }
-
-        fn event_child_ref(&self, index: usize) -> Option<&(dyn Widget + '_)> {
-            (index == 0).then_some(self.child.as_ref())
-        }
-
-        fn event_child_count(&self) -> usize {
-            1
-        }
-
-        fn event_child_origin(&self, index: usize) -> Option<Point> {
-            (index == 0).then_some(Point::ZERO)
         }
     }
 
     fn size(width: f32, height: f32) -> Size {
         Size::new(width, height).expect("valid test size")
     }
-
     fn pointer(position: Point, down: bool) -> InputEvent {
         let event = PointerEvent {
             pointer_id: PointerId(1),
@@ -576,34 +809,76 @@ mod tests {
     }
 
     #[test]
-    fn routes_events_through_capture_target_and_bubble_with_local_coordinates() {
+    fn retained_handles_are_stable_and_generation_invalidates_removed_nodes() {
+        let mut runtime = UiRuntime::new(Row::new());
+        let root = runtime.root();
+        let first = runtime
+            .append_child(
+                root,
+                Recorder {
+                    size: size(1.0, 1.0),
+                    name: "first",
+                    events: Rc::new(RefCell::new(Vec::new())),
+                    capture_on_down: false,
+                    focus_on_down: false,
+                },
+            )
+            .expect("valid parent");
+        runtime.remove(first).expect("remove child");
+        let second = runtime
+            .append_child(
+                root,
+                Recorder {
+                    size: size(1.0, 1.0),
+                    name: "second",
+                    events: Rc::new(RefCell::new(Vec::new())),
+                    capture_on_down: false,
+                    focus_on_down: false,
+                },
+            )
+            .expect("valid parent");
+        assert_eq!(first.index(), second.index());
+        assert_ne!(first, second);
+        assert!(runtime.bounds(first).is_none());
+    }
+
+    #[test]
+    fn routes_events_through_runtime_owned_tree_with_local_coordinates() {
         let events = Rc::new(RefCell::new(Vec::new()));
-        let target = Recorder {
-            size: size(20.0, 10.0),
-            name: "target",
-            events: Rc::clone(&events),
-            capture_on_down: false,
-            focus_on_down: false,
-        };
-        let parent = Parent {
-            child: Box::new(target),
-            size: size(20.0, 10.0),
-            name: "parent",
-            events: Rc::clone(&events),
-            stop_during_capture: false,
-        };
-        let root = Parent {
-            child: Box::new(parent),
+        let mut runtime = UiRuntime::new(Recorder {
             size: size(20.0, 10.0),
             name: "root",
             events: Rc::clone(&events),
-            stop_during_capture: false,
-        };
-        let mut runtime = UiRuntime::new(root);
+            capture_on_down: false,
+            focus_on_down: false,
+        });
+        let parent = runtime
+            .append_child(
+                runtime.root(),
+                Recorder {
+                    size: size(20.0, 10.0),
+                    name: "parent",
+                    events: Rc::clone(&events),
+                    capture_on_down: false,
+                    focus_on_down: false,
+                },
+            )
+            .expect("add parent");
+        runtime
+            .append_child(
+                parent,
+                Recorder {
+                    size: size(20.0, 10.0),
+                    name: "target",
+                    events: Rc::clone(&events),
+                    capture_on_down: false,
+                    focus_on_down: false,
+                },
+            )
+            .expect("add target");
         runtime
             .layout(Constraints::UNBOUNDED)
             .expect("layout succeeds");
-
         assert_eq!(
             runtime.dispatch_event(&pointer(Point::new(15.0, 5.0), true)),
             EventStatus::Handled
@@ -623,89 +898,41 @@ mod tests {
     #[test]
     fn captured_pointer_routes_outside_original_bounds() {
         let events = Rc::new(RefCell::new(Vec::new()));
-        let mut row = Row::new();
-        row.push(Recorder {
-            size: size(10.0, 10.0),
-            name: "capturing",
-            events: Rc::clone(&events),
-            capture_on_down: true,
-            focus_on_down: false,
-        });
-        row.push(Recorder {
-            size: size(10.0, 10.0),
-            name: "other",
-            events: Rc::clone(&events),
-            capture_on_down: false,
-            focus_on_down: false,
-        });
-        let mut runtime = UiRuntime::new(row);
+        let mut runtime = UiRuntime::new(Row::new());
+        let root = runtime.root();
+        runtime
+            .append_child(
+                root,
+                Recorder {
+                    size: size(10.0, 10.0),
+                    name: "capturing",
+                    events: Rc::clone(&events),
+                    capture_on_down: true,
+                    focus_on_down: false,
+                },
+            )
+            .expect("add child");
+        runtime
+            .append_child(
+                root,
+                Recorder {
+                    size: size(10.0, 10.0),
+                    name: "other",
+                    events: Rc::clone(&events),
+                    capture_on_down: false,
+                    focus_on_down: false,
+                },
+            )
+            .expect("add child");
         runtime
             .layout(Constraints::UNBOUNDED)
             .expect("layout succeeds");
-
         let _ = runtime.dispatch_event(&pointer(Point::new(5.0, 5.0), true));
         let _ = runtime.dispatch_event(&pointer(Point::new(15.0, 5.0), false));
         assert!(runtime.pointer_capture(PointerId(1)).is_none());
         assert_eq!(
             events.borrow().last().map(|event| event.0),
             Some("capturing")
-        );
-    }
-
-    #[test]
-    fn routes_keyboard_events_to_the_widget_that_requested_focus() {
-        let events = Rc::new(RefCell::new(Vec::new()));
-        let mut runtime = UiRuntime::new(Recorder {
-            size: size(10.0, 10.0),
-            name: "focused",
-            events: Rc::clone(&events),
-            capture_on_down: false,
-            focus_on_down: true,
-        });
-        runtime
-            .layout(Constraints::UNBOUNDED)
-            .expect("layout succeeds");
-
-        let _ = runtime.dispatch_event(&pointer(Point::new(5.0, 5.0), true));
-        let focused = runtime.focused_widget().expect("widget requested focus");
-        assert_eq!(
-            runtime.dispatch_event(&InputEvent::TextInput("тест".to_owned())),
-            EventStatus::Handled
-        );
-
-        assert_eq!(runtime.focused_widget(), Some(focused));
-        assert_eq!(events.borrow().len(), 1);
-    }
-
-    #[test]
-    fn stopping_capture_prevents_target_and_bubble_delivery() {
-        let events = Rc::new(RefCell::new(Vec::new()));
-        let target = Recorder {
-            size: size(10.0, 10.0),
-            name: "target",
-            events: Rc::clone(&events),
-            capture_on_down: false,
-            focus_on_down: false,
-        };
-        let root = Parent {
-            child: Box::new(target),
-            size: size(10.0, 10.0),
-            name: "root",
-            events: Rc::clone(&events),
-            stop_during_capture: true,
-        };
-        let mut runtime = UiRuntime::new(root);
-        runtime
-            .layout(Constraints::UNBOUNDED)
-            .expect("layout succeeds");
-
-        assert_eq!(
-            runtime.dispatch_event(&pointer(Point::new(5.0, 5.0), true)),
-            EventStatus::Handled
-        );
-        assert_eq!(
-            *events.borrow(),
-            vec![("root", EventPhase::Capture, Point::new(5.0, 5.0))]
         );
     }
 }
