@@ -17,6 +17,125 @@ impl Point {
         Self { x, y }
     }
 }
+
+/// A two-dimensional affine transformation in logical-pixel coordinates.
+///
+/// The transform maps a point `(x, y)` to
+/// `(xx * x + yx * y + dx, xy * x + yy * y + dy)`. Transforms are composed in
+/// drawing order: `first.then(second)` applies `first` and then `second`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Affine {
+    /// Horizontal contribution to the output x coordinate.
+    pub xx: f32,
+    /// Vertical contribution to the output x coordinate.
+    pub yx: f32,
+    /// Horizontal contribution to the output y coordinate.
+    pub xy: f32,
+    /// Vertical contribution to the output y coordinate.
+    pub yy: f32,
+    /// Horizontal translation.
+    pub dx: f32,
+    /// Vertical translation.
+    pub dy: f32,
+}
+
+impl Affine {
+    /// The identity transform.
+    pub const IDENTITY: Self = Self::new(1.0, 0.0, 0.0, 1.0, 0.0, 0.0);
+
+    /// Creates a transform from its six matrix components.
+    #[must_use]
+    pub const fn new(xx: f32, yx: f32, xy: f32, yy: f32, dx: f32, dy: f32) -> Self {
+        Self {
+            xx,
+            yx,
+            xy,
+            yy,
+            dx,
+            dy,
+        }
+    }
+
+    /// Creates a translation transform.
+    #[must_use]
+    pub const fn translate(x: f32, y: f32) -> Self {
+        Self::new(1.0, 0.0, 0.0, 1.0, x, y)
+    }
+
+    /// Creates a scale transform around the origin.
+    #[must_use]
+    pub const fn scale(x: f32, y: f32) -> Self {
+        Self::new(x, 0.0, 0.0, y, 0.0, 0.0)
+    }
+
+    /// Creates a counter-clockwise rotation transform around the origin.
+    #[must_use]
+    pub fn rotate(radians: f32) -> Self {
+        let (sin, cos) = radians.sin_cos();
+        Self::new(cos, -sin, sin, cos, 0.0, 0.0)
+    }
+
+    /// Returns whether every matrix component is finite.
+    #[must_use]
+    pub fn is_finite(self) -> bool {
+        self.xx.is_finite()
+            && self.yx.is_finite()
+            && self.xy.is_finite()
+            && self.yy.is_finite()
+            && self.dx.is_finite()
+            && self.dy.is_finite()
+    }
+
+    /// Applies the transform to `point`.
+    #[must_use]
+    pub const fn transform_point(self, point: Point) -> Point {
+        Point::new(
+            self.xx * point.x + self.yx * point.y + self.dx,
+            self.xy * point.x + self.yy * point.y + self.dy,
+        )
+    }
+
+    /// Returns the transform that applies `self` and then `next`.
+    #[must_use]
+    pub const fn then(self, next: Self) -> Self {
+        Self::new(
+            next.xx * self.xx + next.yx * self.xy,
+            next.xx * self.yx + next.yx * self.yy,
+            next.xy * self.xx + next.yy * self.xy,
+            next.xy * self.yx + next.yy * self.yy,
+            next.xx * self.dx + next.yx * self.dy + next.dx,
+            next.xy * self.dx + next.yy * self.dy + next.dy,
+        )
+    }
+
+    /// Returns the inverse transform, or `None` when the transform is singular
+    /// or has non-finite components.
+    #[must_use]
+    pub fn inverse(self) -> Option<Self> {
+        if !self.is_finite() {
+            return None;
+        }
+        let determinant = self.xx * self.yy - self.yx * self.xy;
+        if !determinant.is_finite() || determinant.abs() <= f32::EPSILON {
+            return None;
+        }
+        let inverse_determinant = determinant.recip();
+        Some(Self::new(
+            self.yy * inverse_determinant,
+            -self.yx * inverse_determinant,
+            -self.xy * inverse_determinant,
+            self.xx * inverse_determinant,
+            (self.yx * self.dy - self.yy * self.dx) * inverse_determinant,
+            (self.xy * self.dx - self.xx * self.dy) * inverse_determinant,
+        ))
+    }
+}
+
+impl Default for Affine {
+    fn default() -> Self {
+        Self::IDENTITY
+    }
+}
 /// A two-dimensional extent in logical pixels.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Size {
@@ -208,7 +327,7 @@ impl Rect {
 
 #[cfg(test)]
 mod tests {
-    use super::{Insets, Point, Rect, Size, SizeError};
+    use super::{Affine, Insets, Point, Rect, Size, SizeError};
 
     fn size(width: f32, height: f32) -> Size {
         Size::new(width, height).expect("valid test size")
@@ -238,5 +357,19 @@ mod tests {
 
         assert_eq!(result.origin, Point::new(17.0, 13.0));
         assert_eq!(result.size, Size::ZERO);
+    }
+
+    #[test]
+    fn affine_composition_and_inverse_round_trip_a_point() {
+        let transform = Affine::scale(2.0, 3.0).then(Affine::translate(5.0, -4.0));
+        let point = Point::new(2.0, 7.0);
+
+        assert_eq!(transform.transform_point(point), Point::new(9.0, 17.0));
+        let round_trip = transform
+            .inverse()
+            .expect("non-singular transform has an inverse")
+            .transform_point(transform.transform_point(point));
+        assert!((round_trip.x - point.x).abs() < 1e-5);
+        assert!((round_trip.y - point.y).abs() < 1e-5);
     }
 }

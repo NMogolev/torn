@@ -1,4 +1,4 @@
-use torn_render::TextShaper;
+use torn_render::{FontdueTextShaper, TextShaper};
 
 use crate::{LightTheme, Theme};
 
@@ -11,19 +11,19 @@ use crate::{LightTheme, Theme};
 pub struct UiEnvironment {
     theme: Box<dyn Theme>,
     scale_factor: f32,
-    text_shaper: Option<Box<dyn TextShaper>>,
+    text_shaper: Box<dyn TextShaper>,
     locale: String,
 }
 
 impl UiEnvironment {
-    /// Creates an environment with `theme`, a scale factor of `1.0`, and the
-    /// invariant locale.
+    /// Creates an environment with `theme`, a scale factor of `1.0`, Torn's
+    /// bundled text services, and the invariant locale.
     #[must_use]
     pub fn new(theme: impl Theme + 'static) -> Self {
         Self {
             theme: Box::new(theme),
             scale_factor: 1.0,
-            text_shaper: None,
+            text_shaper: Box::new(FontdueTextShaper::ubuntu_light()),
             locale: "und".to_owned(),
         }
     }
@@ -58,20 +58,20 @@ impl UiEnvironment {
         self.scale_factor = scale_factor;
     }
 
-    /// Returns the text shaper supplied by the application, if any.
+    /// Returns the text shaper used by standard widgets.
     #[must_use]
-    pub fn text_shaper(&self) -> Option<&dyn TextShaper> {
-        self.text_shaper.as_deref()
+    pub fn text_shaper(&self) -> &dyn TextShaper {
+        self.text_shaper.as_ref()
     }
 
     /// Supplies the text shaper used by widgets that shape text at runtime.
     pub fn set_text_shaper(&mut self, text_shaper: impl TextShaper + 'static) {
-        self.text_shaper = Some(Box::new(text_shaper));
+        self.text_shaper = Box::new(text_shaper);
     }
 
-    /// Removes the application-supplied text shaper.
+    /// Restores Torn's bundled default text shaper.
     pub fn clear_text_shaper(&mut self) {
-        self.text_shaper = None;
+        self.text_shaper = Box::new(FontdueTextShaper::ubuntu_light());
     }
 
     /// Returns the locale requested by the application.

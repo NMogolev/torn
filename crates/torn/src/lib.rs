@@ -4,10 +4,10 @@
 //! headless test support remain available under [`render`] and [`software`].
 
 pub use torn_core::{
-    Color, ConstraintError, Constraints, Diagnostic, DiagnosticReporter, DiagnosticSeverity,
-    FocusChanged, InputEvent, Insets, Key, KeyCode, KeyEvent, Modifiers, NamedKey,
-    PanicOnDiagnostic, Point, PointerButton, PointerButtons, PointerEvent, PointerId, Rect, Size,
-    SizeError, WheelDelta, WheelEvent, WidgetId,
+    Affine, Color, ConstraintError, Constraints, Diagnostic, DiagnosticReporter,
+    DiagnosticSeverity, FocusChanged, InputEvent, Insets, Key, KeyCode, KeyEvent, Modifiers,
+    NamedKey, PanicOnDiagnostic, Point, PointerButton, PointerButtons, PointerEvent, PointerId,
+    Rect, Size, SizeError, WheelDelta, WheelEvent, WidgetId,
 };
 pub use torn_ui::{
     ChildLayout, Column, DarkTheme, DirtyFlags, EventContext, EventPhase, EventStatus,

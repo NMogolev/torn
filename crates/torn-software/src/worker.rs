@@ -169,11 +169,32 @@ impl SoftwareRenderWorker {
         width: u32,
         height: u32,
     ) -> Result<(), SubmitError> {
+        self.try_submit_with_scale_factor(frame_id, display_list, width, height, 1.0)
+    }
+
+    /// Queues a display list for rendering into a physical-pixel target.
+    ///
+    /// Display-list geometry remains in logical pixels; `scale_factor` maps it
+    /// to the supplied physical `width` and `height` in the worker thread.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SubmitError::QueueFull`] if the worker cannot begin this frame
+    /// soon, or [`SubmitError::Stopped`] after the worker has exited.
+    pub fn try_submit_with_scale_factor(
+        &self,
+        frame_id: u64,
+        display_list: DisplayList,
+        width: u32,
+        height: u32,
+        scale_factor: f32,
+    ) -> Result<(), SubmitError> {
         let request = RenderRequest {
             frame_id,
             display_list,
             width,
             height,
+            scale_factor,
         };
         let Some(requests) = &self.requests else {
             return Err(SubmitError::Stopped);
@@ -237,6 +258,7 @@ struct RenderRequest {
     display_list: DisplayList,
     width: u32,
     height: u32,
+    scale_factor: f32,
 }
 
 fn render_frames(
@@ -249,7 +271,11 @@ fn render_frames(
             .map_err(SoftwareRenderError::PixelBuffer)
             .and_then(|mut target| {
                 SoftwareRenderer
-                    .render(&request.display_list, &mut target)
+                    .render_with_scale_factor(
+                        &request.display_list,
+                        &mut target,
+                        request.scale_factor,
+                    )
                     .map_err(SoftwareRenderError::Render)
                     .map(|()| target)
             });
@@ -316,7 +342,7 @@ mod tests {
         assert_eq!(rendered.frame_id(), 23);
         assert_eq!(
             rendered.into_result(),
-            Err(SoftwareRenderError::Render(RenderError::UnmatchedClipPop))
+            Err(SoftwareRenderError::Render(RenderError::UnmatchedRestore))
         );
     }
 

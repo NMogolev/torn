@@ -1,4 +1,4 @@
-use torn_core::{Color, Point, Rect};
+use torn_core::{Affine, Color, Point, Rect};
 
 use crate::TextLayout;
 
@@ -43,10 +43,48 @@ impl DisplayList {
 /// One backend-neutral paint operation.
 #[derive(Clone, Debug, PartialEq)]
 pub enum DisplayCommand {
+    /// Saves the current clip and transform state.
+    Save,
+    /// Restores the most recently saved clip and transform state.
+    Restore,
+    /// Concatenates an affine transform with the current transform.
+    Transform {
+        /// Transform expressed in logical-pixel coordinates.
+        transform: Affine,
+    },
     /// Paints a filled axis-aligned rectangle using source-over composition.
     FillRect {
         /// Bounds of the rectangle in logical pixels.
         rect: Rect,
+        /// Unpremultiplied sRGBA source color.
+        color: Color,
+    },
+    /// Paints a filled rectangle with circular corners.
+    FillRoundedRect {
+        /// Bounds of the rectangle in logical pixels.
+        rect: Rect,
+        /// Radius of every corner in logical pixels.
+        radius: f32,
+        /// Unpremultiplied sRGBA source color.
+        color: Color,
+    },
+    /// Paints an inside-and-outside centered rectangular border.
+    StrokeRect {
+        /// Bounds of the rectangle's centerline in logical pixels.
+        rect: Rect,
+        /// Border width in logical pixels.
+        width: f32,
+        /// Unpremultiplied sRGBA source color.
+        color: Color,
+    },
+    /// Paints an inside-and-outside centered rounded rectangular border.
+    StrokeRoundedRect {
+        /// Bounds of the rounded rectangle's centerline in logical pixels.
+        rect: Rect,
+        /// Radius of every corner on the centerline, in logical pixels.
+        radius: f32,
+        /// Border width in logical pixels.
+        width: f32,
         /// Unpremultiplied sRGBA source color.
         color: Color,
     },

@@ -150,15 +150,16 @@ impl Adapter {
         scale_factor: f64,
     ) -> Result<(), RunError> {
         let logical_size = logical_size(physical_size, scale_factor)?;
-        let buffer_size = pixel_size(logical_size);
         let window = Arc::clone(
             self.window
                 .as_ref()
                 .expect("window exists before surface creation"),
         );
         let surface = SurfaceTexture::new(physical_size.width, physical_size.height, window);
-        self.pixels =
-            Some(Pixels::new(buffer_size.0, buffer_size.1, surface).map_err(RunError::Pixels)?);
+        self.pixels = Some(
+            Pixels::new(physical_size.width, physical_size.height, surface)
+                .map_err(RunError::Pixels)?,
+        );
         self.logical_size = Some(logical_size);
         Ok(())
     }
@@ -172,7 +173,6 @@ impl Adapter {
             return Ok(());
         }
         let logical_size = logical_size(physical_size, scale_factor)?;
-        let buffer_size = pixel_size(logical_size);
         let pixels = self
             .pixels
             .as_mut()
@@ -181,7 +181,7 @@ impl Adapter {
             .resize_surface(physical_size.width, physical_size.height)
             .map_err(RunError::Texture)?;
         pixels
-            .resize_buffer(buffer_size.0, buffer_size.1)
+            .resize_buffer(physical_size.width, physical_size.height)
             .map_err(RunError::Texture)?;
         self.logical_size = Some(logical_size);
         Ok(())
@@ -207,19 +207,25 @@ impl Adapter {
         self.apply_action(event_loop, action);
     }
 
-    fn submit_display_list(&mut self, size: Size) {
+    fn submit_display_list(&mut self, _: Size) -> Result<(), RunError> {
         let frame_id = self.next_frame_id;
         self.next_frame_id = self.next_frame_id.wrapping_add(1);
-        let (width, height) = pixel_size(size);
+        let window = self.window.as_ref().expect("window exists while rendering");
+        let physical_size = window.inner_size();
+        let scale_factor = to_scale_factor(window.scale_factor())?;
         let display_list = self.application.redraw();
-        match self
-            .render_worker
-            .try_submit(frame_id, display_list, width, height)
-        {
+        match self.render_worker.try_submit_with_scale_factor(
+            frame_id,
+            display_list,
+            physical_size.width,
+            physical_size.height,
+            scale_factor,
+        ) {
             Ok(()) => {}
             Err(SubmitError::QueueFull) => self.needs_render = true,
             Err(SubmitError::Stopped) => self.needs_render = false,
         }
+        Ok(())
     }
 
     fn receive_render_results(&mut self) -> bool {
@@ -238,13 +244,15 @@ impl Adapter {
         }
     }
 
-    fn copy_last_completed_frame(frame: Option<&PixelBuffer>, size: Size, destination: &mut [u8]) {
+    fn copy_last_completed_frame(frame: Option<&PixelBuffer>, destination: &mut [u8]) {
         destination.fill(0);
         let Some(frame) = frame else {
             return;
         };
-        let (width, height) = pixel_size(size);
-        if frame.width() != width || frame.height() != height {
+        let expected_byte_count =
+            usize::try_from(u64::from(frame.width()) * u64::from(frame.height()) * 4)
+                .unwrap_or(usize::MAX);
+        if destination.len() != expected_byte_count {
             return;
         }
         for (destination, source) in destination.chunks_exact_mut(4).zip(frame.pixels()) {
@@ -366,13 +374,16 @@ impl ApplicationHandler<UserEvent> for Adapter {
                 };
                 if self.needs_render {
                     self.needs_render = false;
-                    self.submit_display_list(size);
+                    if self.submit_display_list(size).is_err() {
+                        event_loop.exit();
+                        return;
+                    }
                 }
                 let last_completed_frame = self.last_completed_frame.as_ref();
                 let Some(pixels) = &mut self.pixels else {
                     return;
                 };
-                Self::copy_last_completed_frame(last_completed_frame, size, pixels.frame_mut());
+                Self::copy_last_completed_frame(last_completed_frame, pixels.frame_mut());
                 if pixels.render().is_err() {
                     event_loop.exit();
                 }
@@ -398,13 +409,6 @@ fn logical_size(physical: PhysicalSize<u32>, scale_factor: f64) -> Result<Size, 
     .map_err(|_| RunError::InvalidSize)
 }
 
-fn pixel_size(size: Size) -> (u32, u32) {
-    (
-        to_pixel_coordinate(size.width()),
-        to_pixel_coordinate(size.height()),
-    )
-}
-
 fn to_logical_point(position: winit::dpi::PhysicalPosition<f64>, scale_factor: f64) -> Point {
     let logical: LogicalPosition<f64> = position.to_logical(scale_factor);
     Point::new(
@@ -422,15 +426,13 @@ fn to_logical_coordinate(value: f64) -> f32 {
     }
 }
 
-fn to_pixel_coordinate(value: f32) -> u32 {
-    let value = value.round().max(1.0);
-    if value >= 4_294_967_000.0 {
-        return u32::MAX;
+fn to_scale_factor(value: f64) -> Result<f32, RunError> {
+    if !value.is_finite() || value <= 0.0 || value > f64::from(f32::MAX) {
+        return Err(RunError::InvalidSize);
     }
-    // The clamp limits the positive value to u32's representable range.
-    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    #[allow(clippy::cast_possible_truncation)]
     {
-        value as u32
+        Ok(value as f32)
     }
 }
 

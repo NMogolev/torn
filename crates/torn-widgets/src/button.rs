@@ -100,7 +100,7 @@ impl Widget for Button {
             )
         });
         let background = if self.pressed { pressed } else { normal };
-        context.fill_rect(bounds, background);
+        context.fill_rounded_rect(bounds, environment.theme().corner_radius(), background);
     }
 
     fn handle_event(&mut self, context: &mut EventContext<'_>, event: &InputEvent) -> EventStatus {
@@ -236,7 +236,7 @@ mod tests {
     }
 
     fn fill_color(list: &DisplayList) -> Color {
-        let [DisplayCommand::FillRect { color, .. }] = list.commands() else {
+        let [DisplayCommand::FillRoundedRect { color, .. }] = list.commands() else {
             panic!("button should record one fill command");
         };
         *color
