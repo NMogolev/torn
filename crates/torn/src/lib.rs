@@ -36,7 +36,9 @@ pub mod render {
 /// Deterministic headless software rendering and image-test support.
 pub mod software {
     pub use torn_software::{
-        Pixel, PixelBuffer, PixelBufferError, PngError, RenderError, SoftwareRenderer,
+        Pixel, PixelBuffer, PixelBufferError, PngError, ReceiveError, RenderError,
+        SoftwareRenderError, SoftwareRenderResult, SoftwareRenderWorker, SoftwareRenderer,
+        SubmitError,
     };
 }
 
