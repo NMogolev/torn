@@ -108,6 +108,7 @@ struct Node {
     parent: Option<WidgetId>,
     children: Vec<WidgetId>,
     bounds: Rect,
+    visible: bool,
     dirty: DirtyFlags,
     accepts_focus: bool,
 }
@@ -470,6 +471,9 @@ impl UiRuntime {
         node.dirty = DirtyFlags::default();
         node.accepts_focus = accepts_focus;
         for child in result.children() {
+            self.node_mut(child.id())
+                .expect("child was validated")
+                .visible = child.is_visible();
             self.translate_subtree(
                 child.id(),
                 Point::new(origin.x + child.origin().x, origin.y + child.origin().y),
@@ -497,6 +501,9 @@ impl UiRuntime {
 
     fn paint_node(&self, id: WidgetId, context: &mut PaintContext<'_>) {
         let node = self.node(id).expect("paint tree contains live nodes");
+        if !node.visible {
+            return;
+        }
         node.widget
             .as_ref()
             .expect("widget is present outside layout call")
@@ -512,7 +519,7 @@ impl UiRuntime {
                 .pointer_capture
                 .get(&pointer_id)
                 .copied()
-                .filter(|id| self.node(*id).is_some())
+                .filter(|id| self.is_visible(*id))
                 .or_else(|| {
                     event::pointer_position(event).and_then(|position| self.hit_test(position))
                 });
@@ -520,7 +527,7 @@ impl UiRuntime {
         if matches!(event, InputEvent::Wheel(_)) {
             return event::pointer_position(event).and_then(|position| self.hit_test(position));
         }
-        self.focused.filter(|id| self.node(*id).is_some())
+        self.focused.filter(|id| self.is_visible(*id))
     }
 
     fn hit_test(&self, position: Point) -> Option<WidgetId> {
@@ -530,7 +537,7 @@ impl UiRuntime {
 
     fn hit_test_node(&self, id: WidgetId, position: Point) -> Option<WidgetId> {
         let node = self.node(id)?;
-        if !node.bounds.contains(position) {
+        if !node.visible || !node.bounds.contains(position) {
             return None;
         }
         for child in node.children.iter().rev() {
@@ -550,6 +557,20 @@ impl UiRuntime {
         }
         route.reverse();
         route
+    }
+
+    fn is_visible(&self, id: WidgetId) -> bool {
+        let mut current = Some(id);
+        while let Some(node_id) = current {
+            let Some(node) = self.node(node_id) else {
+                return false;
+            };
+            if !node.visible {
+                return false;
+            }
+            current = node.parent;
+        }
+        true
     }
 
     fn dispatch_to(
@@ -635,6 +656,7 @@ impl UiRuntime {
             parent,
             children: Vec::new(),
             bounds: Rect::ZERO,
+            visible: true,
             dirty: DirtyFlags::ALL,
             accepts_focus: false,
         };

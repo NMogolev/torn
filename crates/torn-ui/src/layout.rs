@@ -43,12 +43,29 @@ impl LayoutResult {
 pub struct ChildLayout {
     id: WidgetId,
     origin: Point,
+    visible: bool,
 }
 
 impl ChildLayout {
     /// Creates a child layout at `origin` relative to its parent.
     pub const fn new(id: WidgetId, origin: Point) -> Self {
-        Self { id, origin }
+        Self {
+            id,
+            origin,
+            visible: true,
+        }
+    }
+
+    /// Creates a child layout with an explicit visibility state.
+    ///
+    /// Invisible children remain retained and receive layout, but are excluded
+    /// from painting and hit testing until a subsequent layout makes them visible.
+    pub const fn with_visibility(id: WidgetId, origin: Point, visible: bool) -> Self {
+        Self {
+            id,
+            origin,
+            visible,
+        }
     }
 
     /// Returns the child node being positioned.
@@ -61,5 +78,11 @@ impl ChildLayout {
     #[must_use]
     pub const fn origin(&self) -> Point {
         self.origin
+    }
+
+    /// Returns whether the child participates in painting and hit testing.
+    #[must_use]
+    pub const fn is_visible(&self) -> bool {
+        self.visible
     }
 }

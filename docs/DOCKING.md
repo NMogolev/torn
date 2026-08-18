@@ -37,12 +37,17 @@ is accidentally owned by two layout branches.
 
 ## Runtime behavior
 
-`DockArea` renders the model and delegates panel creation to the application
-registry. Interactive changes are expressed as model operations, such as
-`split`, `move_to_tabs`, `float`, `dock`, `hide`, `show`, and `activate`.
-Every operation validates the tree, preserves each ID at most once, and emits a
-single `layout_changed` notification. The application chooses when to persist
-the updated model.
+`DockArea` projects the model onto retained child widgets. The application keeps
+a shared `WorkspaceLayout`, registers stable panel/document IDs with the area,
+and appends the corresponding child widgets in the same order. A layout pass
+places docked panels, selected tabs, and selected documents; inactive, hidden,
+and floating items remain retained but are not painted or hit-tested in the
+docked area. Unregistered IDs are rendered as placeholders.
+
+Interactive changes are expressed as model operations, such as `split`,
+`move_to_tabs`, `float`, `dock`, `hide`, `show`, and `activate`. Every operation
+validates the tree and preserves each ID at most once. The application requests
+the next layout and chooses when to persist the updated model.
 
 Dragging is a transaction: compute a preview target without mutating the
 model, then apply exactly one operation on pointer release. Escape cancels the

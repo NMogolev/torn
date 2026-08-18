@@ -14,7 +14,7 @@ pub use torn_ui::{
     LayoutContext, LayoutResult, LightTheme, Row, SystemAppearance, SystemTheme, Theme,
     UiEnvironment, UiRuntime, UiRuntimeError, Widget,
 };
-pub use torn_widgets::{Box, Button, Text};
+pub use torn_widgets::{Box, Button, DockArea, DockAreaError, DockItem, Text};
 pub use torn_workspace::{
     DockAxis, DocumentId, DocumentPresentation, FloatingDocument, FloatingPanel, LayoutNode,
     PanelId, SplitPlacement, WorkspaceBounds, WorkspaceError, WorkspaceLayout,

@@ -1865,6 +1865,7 @@ dependencies = [
  "torn-core",
  "torn-render",
  "torn-ui",
+ "torn-workspace",
 ]
 
 [[package]]
