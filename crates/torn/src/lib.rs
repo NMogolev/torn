@@ -29,7 +29,8 @@ pub mod platform {
 /// Backend-neutral display-list and text-shaping contracts.
 pub mod render {
     pub use torn_render::{
-        DisplayCommand, DisplayList, PaintContext, TextLayout, TextShaper, TextStyle,
+        DisplayCommand, DisplayList, FontError, FontFace, FontdueTextShaper, GlyphBitmap, GlyphRun,
+        LineMetrics, PaintContext, PositionedGlyph, TextLayout, TextShaper, TextStyle,
     };
 }
 
@@ -45,11 +46,7 @@ pub mod software {
 #[cfg(test)]
 mod tests {
     use super::{Box, Button, Color, Constraints, Size, Text, UiRuntime, render};
-    use render::{DisplayList, PaintContext, TextLayout};
-
-    fn size(width: f32, height: f32) -> Size {
-        Size::new(width, height).expect("valid test size")
-    }
+    use render::{DisplayList, FontdueTextShaper, PaintContext, TextStyle};
 
     #[test]
     fn exposes_a_complete_headless_widget_pipeline() {
@@ -59,11 +56,13 @@ mod tests {
         let button = runtime
             .append_child(runtime.root(), Button::new())
             .expect("root exists");
+        let label = FontdueTextShaper::ubuntu_light().layout(
+            "Torn",
+            &TextStyle::new(16.0, Color::BLACK),
+            None,
+        );
         runtime
-            .append_child(
-                button,
-                Text::new(TextLayout::new(size(40.0, 16.0), Color::BLACK)),
-            )
+            .append_child(button, Text::new(label.clone()))
             .expect("button exists");
         let mut display_list = DisplayList::new();
 
@@ -72,7 +71,8 @@ mod tests {
                 .layout(Constraints::UNBOUNDED)
                 .expect("widget tree does not panic")
                 .size(),
-            size(56.0, 32.0)
+            Size::new(label.size().width() + 16.0, label.size().height() + 16.0)
+                .expect("button adds finite padding")
         );
         runtime
             .paint(&mut PaintContext::new(&mut display_list))

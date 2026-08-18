@@ -6,4 +6,7 @@ mod text;
 
 pub use display_list::{DisplayCommand, DisplayList};
 pub use paint::PaintContext;
-pub use text::{TextLayout, TextShaper, TextStyle};
+pub use text::{
+    FontError, FontFace, FontdueTextShaper, GlyphBitmap, GlyphRun, LineMetrics, PositionedGlyph,
+    TextLayout, TextShaper, TextStyle,
+};

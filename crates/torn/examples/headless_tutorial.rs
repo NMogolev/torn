@@ -5,13 +5,17 @@ use std::{cell::Cell, path::PathBuf, rc::Rc};
 use torn::{
     Box as TornBox, Button, Color, Constraints, InputEvent, Modifiers, Point, PointerButton,
     PointerButtons, PointerEvent, PointerId, Size, Text, UiRuntime,
-    render::{DisplayList, PaintContext, TextLayout},
+    render::{DisplayList, FontdueTextShaper, PaintContext, TextStyle},
     software::{PixelBuffer, SoftwareRenderer},
 };
 
 fn main() -> Result<(), std::boxed::Box<dyn std::error::Error>> {
     let click_count = Rc::new(Cell::new(0));
-    let label = Text::new(TextLayout::new(size(120.0, 16.0)?, Color::BLACK));
+    let label = Text::new(FontdueTextShaper::ubuntu_light().layout(
+        "Нажмите кнопку",
+        &TextStyle::new(16.0, Color::BLACK),
+        None,
+    ));
     let mut button = Button::new();
     button.set_backgrounds(
         Color::rgba8(180, 220, 255, 255),

@@ -117,6 +117,12 @@ trait TextShaper {
 Paint commands consume `TextLayout` rather than raw strings, so layout metrics
 and rendering cannot disagree.
 
+`FontdueTextShaper` is the initial deterministic implementation: a single
+TTF/OTF face is converted to positioned glyph runs and line metrics, and the
+software backend rasterizes the same glyphs. It covers basic horizontal text,
+newlines, and width wrapping. Kerning, complex OpenType shaping, bidirectional
+text, and fallback font selection remain deliberate follow-up work.
+
 ### Styling and invalidation
 
 v0 starts with the small typed [`Theme`](../crates/torn-ui/src/theme.rs)

@@ -8,7 +8,7 @@ use std::{cell::Cell, rc::Rc};
 use torn::{
     Box as TornBox, Button, Color, Constraints, Size, Text, UiRuntime,
     platform::{WindowAction, WindowApplication, WindowEvent, WindowOptions},
-    render::{DisplayList, PaintContext, TextLayout},
+    render::{DisplayList, FontdueTextShaper, PaintContext, TextStyle},
 };
 
 fn main() -> Result<(), torn_platform_winit::RunError> {
@@ -23,9 +23,10 @@ struct HelloTorn {
 impl HelloTorn {
     fn new() -> Self {
         let clicks = Rc::new(Cell::new(0));
-        let label = Text::new(TextLayout::new(
-            Size::new(144.0, 20.0).expect("fixed label size is valid"),
-            Color::BLACK,
+        let label = Text::new(FontdueTextShaper::ubuntu_light().layout(
+            "Нажмите кнопку",
+            &TextStyle::new(20.0, Color::BLACK),
+            None,
         ));
         let mut button = Button::new();
         button.set_backgrounds(

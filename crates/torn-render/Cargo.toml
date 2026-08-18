@@ -11,4 +11,5 @@ repository.workspace = true
 workspace = true
 
 [dependencies]
+fontdue = "0.9.3"
 torn-core = { path = "../torn-core" }

@@ -57,14 +57,11 @@ pub enum DisplayCommand {
     },
     /// Removes the most recently pushed clip.
     PopClip,
-    /// Draws pre-laid-out text at the supplied origin.
-    ///
-    /// The first software renderer records this contract but deliberately does
-    /// not rasterize glyphs until text shaping and rasterization are introduced.
+    /// Draws pre-laid-out text at the supplied top-left origin.
     DrawText {
         /// Pre-laid-out text data.
         layout: TextLayout,
-        /// Text baseline-independent origin in logical pixels.
+        /// Top-left text origin in logical pixels.
         origin: Point,
     },
 }

@@ -38,7 +38,7 @@ headless-тесты не зависят от платформенного код
 use torn::{
     Box as TornBox, Button, Color, Constraints, LightTheme, Point, Size, Text, UiEnvironment,
     UiRuntime,
-    render::{DisplayList, PaintContext, TextLayout},
+    render::{DisplayList, FontdueTextShaper, PaintContext, TextStyle},
     software::{PixelBuffer, SoftwareRenderer},
 };
 ```
@@ -52,22 +52,26 @@ use torn::{
 
 ## 2. Текст
 
-`Text` принимает не строку, а заранее подготовленный `TextLayout`:
+`Text` принимает не строку, а заранее подготовленный `TextLayout`. Базовый
+детерминированный шейпер работает с одним TTF/OTF-шрифтом:
 
 ```rust
-let label = Text::new(TextLayout::new(
-    Size::new(120.0, 16.0)?,
-    Color::BLACK,
+let label = Text::new(FontdueTextShaper::ubuntu_light().layout(
+    "Нажмите кнопку",
+    &TextStyle::new(16.0, Color::BLACK),
+    None,
 ));
 ```
 
 Это сознательное разделение ответственности: шейпер измеряет и подготавливает
-текст, а виджет использует уже известный размер в layout. Конкретного
-`TextShaper` пока нет, поэтому в примерах `TextLayout` создаётся вручную.
+текст, а виджет использует уже известный размер в layout. `TextLayout` хранит
+исходный UTF-8 текст, font face, glyph runs, baseline и метрики строк, поэтому
+измерение и отрисовка используют одни и те же данные.
 
-Важно: рендерер пока **не растеризует** `DrawText`. Текст присутствует
-в `DisplayList`, но в экспортированном PNG его ещё не будет. Фоны `Box` и
-`Button` будут видны.
+`SoftwareRenderer` растеризует bitmap glyphs с alpha coverage и учитывает
+активный прямоугольник clip. Базовый шейпер поддерживает `\n` и wrapping по
+ширине; kerning, сложное OpenType shaping, bidi и font fallback остаются
+следующим этапом.
 
 ## 3. Button и Box
 

@@ -1,7 +1,7 @@
 use core::fmt;
 
 use torn_core::{Color, Diagnostic, DiagnosticReporter, Point, Rect, Size};
-use torn_render::{DisplayCommand, DisplayList};
+use torn_render::{DisplayCommand, DisplayList, TextLayout};
 
 use crate::{Pixel, PixelBuffer};
 
@@ -11,9 +11,6 @@ pub struct SoftwareRenderer;
 
 impl SoftwareRenderer {
     /// Renders `display_list` into `target` using source-over composition.
-    ///
-    /// Text commands are intentionally ignored until a deterministic glyph
-    /// rasterizer is available; all other M1 commands are executed.
     ///
     /// # Errors
     ///
@@ -51,7 +48,10 @@ impl SoftwareRenderer {
                     }
                     clips.pop();
                 }
-                DisplayCommand::DrawText { .. } => {}
+                DisplayCommand::DrawText { layout, origin } => {
+                    let clip = clips.last().copied().ok_or(RenderError::UnmatchedClipPop)?;
+                    Self::draw_text(target, layout, *origin, clip)?;
+                }
             }
         }
 
@@ -76,15 +76,6 @@ impl SoftwareRenderer {
         let result = self.render(display_list, target);
         if let Err(error) = result {
             reporter.report(&Diagnostic::error("torn-software", error.to_string()));
-        } else if display_list
-            .commands()
-            .iter()
-            .any(|command| matches!(command, DisplayCommand::DrawText { .. }))
-        {
-            reporter.report(&Diagnostic::warning(
-                "torn-software",
-                "software renderer skipped DrawText because glyph rasterization is unavailable",
-            ));
         }
         result
     }
@@ -111,6 +102,81 @@ impl SoftwareRenderer {
             for x in start_x..end_x {
                 if let Some(pixel) = target.get_mut(x, y) {
                     *pixel = blend(*pixel, color);
+                }
+            }
+        }
+    }
+
+    fn draw_text(
+        target: &mut PixelBuffer,
+        layout: &TextLayout,
+        origin: Point,
+        clip: Rect,
+    ) -> Result<(), RenderError> {
+        if !origin.x.is_finite() || !origin.y.is_finite() {
+            return Err(RenderError::NonFiniteGeometry);
+        }
+
+        for run in layout.glyph_runs() {
+            if !run.font_size().is_finite() || run.font_size() <= 0.0 {
+                continue;
+            }
+
+            for glyph in run.glyphs() {
+                let glyph_origin =
+                    Point::new(origin.x + glyph.position().x, origin.y + glyph.position().y);
+                if !glyph_origin.x.is_finite() || !glyph_origin.y.is_finite() {
+                    return Err(RenderError::NonFiniteGeometry);
+                }
+                let bitmap = run.font().rasterize(glyph.glyph_id(), run.font_size());
+                Self::blend_glyph(
+                    target,
+                    glyph_origin,
+                    bitmap.coverage(),
+                    bitmap.width(),
+                    bitmap.height(),
+                    clip,
+                    layout.color(),
+                );
+            }
+        }
+
+        Ok(())
+    }
+
+    fn blend_glyph(
+        target: &mut PixelBuffer,
+        origin: Point,
+        coverage: &[u8],
+        width: usize,
+        height: usize,
+        clip: Rect,
+        color: Color,
+    ) {
+        let start_x = floor_to_pixel(origin.x.max(clip.origin.x), target.width());
+        let start_y = floor_to_pixel(origin.y.max(clip.origin.y), target.height());
+        let end_x = ceil_to_pixel(
+            (origin.x + as_logical_coordinate_usize(width)).min(clip.right()),
+            target.width(),
+        );
+        let end_y = ceil_to_pixel(
+            (origin.y + as_logical_coordinate_usize(height)).min(clip.bottom()),
+            target.height(),
+        );
+
+        for y in start_y..end_y {
+            for x in start_x..end_x {
+                let bitmap_x = coordinate_to_usize(as_logical_coordinate(x) - origin.x);
+                let bitmap_y = coordinate_to_usize(as_logical_coordinate(y) - origin.y);
+                let Some(&alpha) = coverage.get(bitmap_y * width + bitmap_x) else {
+                    continue;
+                };
+                let coverage = f32::from(alpha) / 255.0;
+                if let Some(pixel) = target.get_mut(x, y) {
+                    *pixel = blend(
+                        *pixel,
+                        Color::rgba(color.red, color.green, color.blue, color.alpha * coverage),
+                    );
                 }
             }
         }
@@ -201,6 +267,14 @@ fn as_logical_coordinate(value: u32) -> f32 {
     }
 }
 
+fn as_logical_coordinate_usize(value: usize) -> f32 {
+    // Glyph bitmaps cannot practically exceed f32's exact integer range.
+    #[allow(clippy::cast_precision_loss)]
+    {
+        value as f32
+    }
+}
+
 fn floor_to_pixel(coordinate: f32, limit: u32) -> u32 {
     coordinate_to_pixel(coordinate.floor(), limit)
 }
@@ -219,10 +293,18 @@ fn coordinate_to_pixel(coordinate: f32, limit: u32) -> u32 {
     }
 }
 
+fn coordinate_to_usize(coordinate: f32) -> usize {
+    // Callers establish a finite non-negative coordinate before conversion.
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    {
+        coordinate.floor() as usize
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use torn_core::{Color, DiagnosticSeverity, Point, Rect, Size};
-    use torn_render::{DisplayList, PaintContext};
+    use torn_render::{DisplayList, FontdueTextShaper, PaintContext, TextStyle};
 
     use super::{Pixel, PixelBuffer, RenderError, SoftwareRenderer};
 
@@ -297,6 +379,33 @@ mod tests {
         assert_eq!(
             diagnostics[0].message(),
             "display list popped an empty clip stack"
+        );
+    }
+
+    #[test]
+    fn rasterizes_text_and_applies_the_active_clip() {
+        let layout = FontdueTextShaper::ubuntu_light().layout(
+            "T",
+            &TextStyle::new(20.0, Color::BLACK),
+            None,
+        );
+        let mut list = DisplayList::new();
+        let mut paint = PaintContext::new(&mut list);
+        paint.push_clip(rect(0.0, 0.0, 5.0, 24.0));
+        paint.draw_text(layout, Point::new(1.0, 1.0));
+        paint.pop_clip();
+        let mut pixels = PixelBuffer::new(24, 24).expect("small test buffer");
+
+        SoftwareRenderer
+            .render(&list, &mut pixels)
+            .expect("valid text display list");
+
+        assert!(pixels.pixels().iter().any(|pixel| pixel.alpha > 0));
+        assert!(
+            pixels
+                .pixels()
+                .chunks_exact(24)
+                .all(|row| row[5..].iter().all(|pixel| pixel.alpha == 0))
         );
     }
 }
