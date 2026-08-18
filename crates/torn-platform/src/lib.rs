@@ -1,6 +1,7 @@
 //! Platform-independent window, event-loop, and framebuffer contracts for Torn.
 
 use torn_core::{InputEvent, Size};
+use torn_render::DisplayList;
 
 /// Initial properties of a native application window.
 #[derive(Clone, Debug, PartialEq)]
@@ -47,34 +48,6 @@ pub enum WindowAction {
     Exit,
 }
 
-/// A mutable RGBA framebuffer in logical pixels.
-///
-/// A platform adapter presents the framebuffer and may scale it for the native
-/// surface's device-pixel ratio.
-pub struct Frame<'a> {
-    size: Size,
-    pixels: &'a mut [u8],
-}
-
-impl<'a> Frame<'a> {
-    /// Creates a frame over `pixels`, which must contain RGBA8 texels for `size`.
-    #[must_use]
-    pub fn new(size: Size, pixels: &'a mut [u8]) -> Self {
-        Self { size, pixels }
-    }
-
-    /// Returns the frame extent in logical pixels.
-    #[must_use]
-    pub const fn size(&self) -> Size {
-        self.size
-    }
-
-    /// Returns the frame's RGBA8 pixels in row-major order.
-    pub fn pixels_mut(&mut self) -> &mut [u8] {
-        self.pixels
-    }
-}
-
 /// Application callbacks driven by a native window adapter.
 pub trait WindowApplication {
     /// Returns the settings used to create the native window.
@@ -83,25 +56,9 @@ pub trait WindowApplication {
     /// Handles a translated native event.
     fn window_event(&mut self, event: WindowEvent) -> WindowAction;
 
-    /// Fills a framebuffer after a [`WindowEvent::RedrawRequested`] event.
-    fn redraw(&mut self, frame: &mut Frame<'_>);
-}
-
-#[cfg(test)]
-mod tests {
-    use torn_core::Size;
-
-    use super::{Frame, WindowOptions};
-
-    #[test]
-    fn frame_exposes_its_logical_extent_and_pixels() {
-        let size = Size::new(2.0, 1.0).expect("valid size");
-        let mut pixels = [0_u8; 8];
-        let mut frame = Frame::new(size, &mut pixels);
-        frame.pixels_mut()[3] = 255;
-
-        assert_eq!(frame.size(), size);
-        assert_eq!(pixels[3], 255);
-        assert_eq!(WindowOptions::new("Torn", size).title, "Torn");
-    }
+    /// Records the display list for the next rendered frame.
+    ///
+    /// Platform adapters may execute this list asynchronously and continue to
+    /// present the last completed frame while it is rendering.
+    fn redraw(&mut self) -> DisplayList;
 }

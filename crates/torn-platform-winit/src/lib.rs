@@ -11,12 +11,13 @@ use torn_core::{
     InputEvent, Key, KeyCode, KeyEvent, Modifiers, NamedKey, Point, PointerButton, PointerButtons,
     PointerEvent, PointerId, Size, WheelDelta, WheelEvent,
 };
-use torn_platform::{Frame, WindowAction, WindowApplication, WindowEvent, WindowOptions};
+use torn_platform::{WindowAction, WindowApplication, WindowEvent, WindowOptions};
+use torn_software::{PixelBuffer, SoftwareRenderWorker, SubmitError};
 use winit::{
     application::ApplicationHandler,
     dpi::{LogicalPosition, LogicalSize, PhysicalSize},
     event::{ElementState, Ime, MouseButton, MouseScrollDelta, WindowEvent as WinitWindowEvent},
-    event_loop::{ActiveEventLoop, EventLoop},
+    event_loop::{ActiveEventLoop, EventLoop, EventLoopProxy},
     keyboard::{Key as WinitKey, NamedKey as WinitNamedKey, PhysicalKey},
     window::{Window, WindowId},
 };
@@ -32,6 +33,8 @@ pub enum RunError {
     Pixels(pixels::Error),
     /// Resizing a pixel texture failed.
     Texture(pixels::TextureError),
+    /// Starting the software rendering worker failed.
+    RenderWorker(std::io::Error),
     /// A requested logical size could not be represented as a Torn [`Size`].
     InvalidSize,
 }
@@ -43,6 +46,9 @@ impl fmt::Display for RunError {
             Self::Window(error) => write!(formatter, "could not create native window: {error}"),
             Self::Pixels(error) => write!(formatter, "pixel surface failed: {error}"),
             Self::Texture(error) => write!(formatter, "pixel texture resize failed: {error}"),
+            Self::RenderWorker(error) => {
+                write!(formatter, "could not start render worker: {error}")
+            }
             Self::InvalidSize => {
                 formatter.write_str("native window reported an invalid logical size")
             }
@@ -63,11 +69,19 @@ impl Error for RunError {}
 /// presentation failures close the event loop because `winit` callbacks cannot
 /// return errors directly.
 pub fn run(application: impl WindowApplication + 'static) -> Result<(), RunError> {
-    let event_loop = EventLoop::new().map_err(RunError::EventLoop)?;
-    let mut adapter = Adapter::new(Box::new(application));
+    let event_loop = EventLoop::<UserEvent>::with_user_event()
+        .build()
+        .map_err(RunError::EventLoop)?;
+    let mut adapter = Adapter::new(Box::new(application), event_loop.create_proxy())?;
     event_loop
         .run_app(&mut adapter)
         .map_err(RunError::EventLoop)
+}
+
+/// A wake-up sent from the software render thread to the native event loop.
+#[derive(Clone, Copy)]
+enum UserEvent {
+    RenderCompleted,
 }
 
 struct Adapter {
@@ -76,22 +90,37 @@ struct Adapter {
     window: Option<Arc<Window>>,
     pixels: Option<Pixels<'static>>,
     logical_size: Option<Size>,
+    render_worker: SoftwareRenderWorker,
+    last_completed_frame: Option<PixelBuffer>,
+    next_frame_id: u64,
+    needs_render: bool,
     cursor: Point,
     modifiers: Modifiers,
 }
 
 impl Adapter {
-    fn new(application: Box<dyn WindowApplication>) -> Self {
+    fn new(
+        application: Box<dyn WindowApplication>,
+        event_proxy: EventLoopProxy<UserEvent>,
+    ) -> Result<Self, RunError> {
         let options = application.window_options();
-        Self {
+        let render_worker = SoftwareRenderWorker::spawn_with_result_notifier(move || {
+            let _ = event_proxy.send_event(UserEvent::RenderCompleted);
+        })
+        .map_err(RunError::RenderWorker)?;
+        Ok(Self {
             application,
             options,
             window: None,
             pixels: None,
             logical_size: None,
+            render_worker,
+            last_completed_frame: None,
+            next_frame_id: 0,
+            needs_render: false,
             cursor: Point::ZERO,
             modifiers: Modifiers::NONE,
-        }
+        })
     }
 
     fn request_redraw(&self) {
@@ -100,10 +129,15 @@ impl Adapter {
         }
     }
 
-    fn apply_action(&self, event_loop: &ActiveEventLoop, action: WindowAction) {
+    fn request_render(&mut self) {
+        self.needs_render = true;
+        self.request_redraw();
+    }
+
+    fn apply_action(&mut self, event_loop: &ActiveEventLoop, action: WindowAction) {
         match action {
             WindowAction::None => {}
-            WindowAction::RequestRedraw => self.request_redraw(),
+            WindowAction::RequestRedraw => self.request_render(),
             WindowAction::Exit => event_loop.exit(),
         }
     }
@@ -151,13 +185,73 @@ impl Adapter {
         Ok(())
     }
 
+    fn handle_resize(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        physical_size: PhysicalSize<u32>,
+        scale_factor: f64,
+    ) {
+        if self.resize_surface(physical_size, scale_factor).is_ok() {
+            if let Some(size) = self.logical_size {
+                self.dispatch(event_loop, WindowEvent::Resized(size));
+            }
+        } else {
+            event_loop.exit();
+        }
+    }
+
     fn dispatch(&mut self, event_loop: &ActiveEventLoop, event: WindowEvent) {
         let action = self.application.window_event(event);
         self.apply_action(event_loop, action);
     }
+
+    fn submit_display_list(&mut self, size: Size) {
+        let frame_id = self.next_frame_id;
+        self.next_frame_id = self.next_frame_id.wrapping_add(1);
+        let (width, height) = pixel_size(size);
+        let display_list = self.application.redraw();
+        match self
+            .render_worker
+            .try_submit(frame_id, display_list, width, height)
+        {
+            Ok(()) => {}
+            Err(SubmitError::QueueFull) => self.needs_render = true,
+            Err(SubmitError::Stopped) => self.needs_render = false,
+        }
+    }
+
+    fn receive_render_results(&mut self) -> bool {
+        let mut received = false;
+        loop {
+            match self.render_worker.try_receive() {
+                Ok(Some(result)) => {
+                    received = true;
+                    if let Ok(frame) = result.into_result() {
+                        self.last_completed_frame = Some(frame);
+                    }
+                }
+                Ok(None) => return received,
+                Err(_) => return false,
+            }
+        }
+    }
+
+    fn copy_last_completed_frame(frame: Option<&PixelBuffer>, size: Size, destination: &mut [u8]) {
+        destination.fill(0);
+        let Some(frame) = frame else {
+            return;
+        };
+        let (width, height) = pixel_size(size);
+        if frame.width() != width || frame.height() != height {
+            return;
+        }
+        for (destination, source) in destination.chunks_exact_mut(4).zip(frame.pixels()) {
+            destination.copy_from_slice(&[source.red, source.green, source.blue, source.alpha]);
+        }
+    }
 }
 
-impl ApplicationHandler for Adapter {
+impl ApplicationHandler<UserEvent> for Adapter {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.window.is_some() {
             return;
@@ -183,7 +277,7 @@ impl ApplicationHandler for Adapter {
         if let Some(size) = self.logical_size {
             self.dispatch(event_loop, WindowEvent::Resized(size));
         }
-        self.request_redraw();
+        self.request_render();
     }
 
     fn window_event(
@@ -201,23 +295,11 @@ impl ApplicationHandler for Adapter {
                 self.dispatch(event_loop, WindowEvent::CloseRequested);
             }
             WinitWindowEvent::Resized(physical_size) => {
-                if self.resize_surface(physical_size, scale_factor).is_ok() {
-                    if let Some(size) = self.logical_size {
-                        self.dispatch(event_loop, WindowEvent::Resized(size));
-                    }
-                } else {
-                    event_loop.exit();
-                }
+                self.handle_resize(event_loop, physical_size, scale_factor);
             }
             WinitWindowEvent::ScaleFactorChanged { .. } => {
                 let physical_size = self.window.as_ref().expect("window exists").inner_size();
-                if self.resize_surface(physical_size, scale_factor).is_ok() {
-                    if let Some(size) = self.logical_size {
-                        self.dispatch(event_loop, WindowEvent::Resized(size));
-                    }
-                } else {
-                    event_loop.exit();
-                }
+                self.handle_resize(event_loop, physical_size, scale_factor);
             }
             WinitWindowEvent::CursorMoved { position, .. } => {
                 self.cursor = to_logical_point(position, scale_factor);
@@ -276,16 +358,30 @@ impl ApplicationHandler for Adapter {
                 self.dispatch(event_loop, WindowEvent::Input(InputEvent::TextInput(text)));
             }
             WinitWindowEvent::RedrawRequested => {
-                let (Some(pixels), Some(size)) = (&mut self.pixels, self.logical_size) else {
+                let Some(size) = self.logical_size else {
                     return;
                 };
-                let mut frame = Frame::new(size, pixels.frame_mut());
-                self.application.redraw(&mut frame);
+                if self.needs_render {
+                    self.needs_render = false;
+                    self.submit_display_list(size);
+                }
+                let last_completed_frame = self.last_completed_frame.as_ref();
+                let Some(pixels) = &mut self.pixels else {
+                    return;
+                };
+                Self::copy_last_completed_frame(last_completed_frame, size, pixels.frame_mut());
                 if pixels.render().is_err() {
                     event_loop.exit();
                 }
             }
             _ => {}
+        }
+    }
+
+    fn user_event(&mut self, _event_loop: &ActiveEventLoop, event: UserEvent) {
+        match event {
+            UserEvent::RenderCompleted if self.receive_render_results() => self.request_redraw(),
+            UserEvent::RenderCompleted => {}
         }
     }
 }

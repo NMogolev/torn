@@ -7,9 +7,8 @@ use std::{cell::Cell, rc::Rc};
 
 use torn::{
     Box as TornBox, Button, Color, Constraints, Size, Text, UiRuntime,
-    platform::{Frame, WindowAction, WindowApplication, WindowEvent, WindowOptions},
+    platform::{WindowAction, WindowApplication, WindowEvent, WindowOptions},
     render::{DisplayList, PaintContext, TextLayout},
-    software::{PixelBuffer, SoftwareRenderer},
 };
 
 fn main() -> Result<(), torn_platform_winit::RunError> {
@@ -19,7 +18,6 @@ fn main() -> Result<(), torn_platform_winit::RunError> {
 struct HelloTorn {
     runtime: UiRuntime,
     size: Size,
-    clicks: Rc<Cell<u32>>,
 }
 
 impl HelloTorn {
@@ -53,11 +51,7 @@ impl HelloTorn {
             .layout(Constraints::tight(size).expect("initial constraints are valid"))
             .expect("example widgets do not panic during layout");
 
-        Self {
-            runtime,
-            size,
-            clicks,
-        }
+        Self { runtime, size }
     }
 
     fn layout(&mut self, size: Size) {
@@ -92,38 +86,11 @@ impl WindowApplication for HelloTorn {
         }
     }
 
-    fn redraw(&mut self, frame: &mut Frame<'_>) {
-        let width = pixel_extent(self.size.width());
-        let height = pixel_extent(self.size.height());
+    fn redraw(&mut self) -> DisplayList {
         let mut display_list = DisplayList::new();
-        if self
+        let _ = self
             .runtime
-            .paint(&mut PaintContext::new(&mut display_list))
-            .is_err()
-        {
-            return;
-        }
-        let Ok(mut image) = PixelBuffer::new(width, height) else {
-            return;
-        };
-        if SoftwareRenderer.render(&display_list, &mut image).is_err() {
-            return;
-        }
-        for (destination, source) in frame.pixels_mut().chunks_exact_mut(4).zip(image.pixels()) {
-            destination.copy_from_slice(&[source.red, source.green, source.blue, source.alpha]);
-        }
-        let _ = self.clicks.get();
-    }
-}
-
-fn pixel_extent(value: f32) -> u32 {
-    let value = value.round().max(1.0);
-    if value >= 4_294_967_000.0 {
-        return u32::MAX;
-    }
-    // The lower bound and explicit upper guard establish a valid u32 range.
-    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-    {
-        value as u32
+            .paint(&mut PaintContext::new(&mut display_list));
+        display_list
     }
 }

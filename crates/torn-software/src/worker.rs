@@ -120,11 +120,29 @@ impl SoftwareRenderWorker {
     /// Returns the operating-system error if the worker thread cannot be
     /// created.
     pub fn spawn() -> std::io::Result<Self> {
+        Self::spawn_with_result_notifier(|| {})
+    }
+
+    /// Starts a dedicated worker thread and notifies `on_result` after each
+    /// completed frame is available to receive.
+    ///
+    /// The callback runs on the rendering thread. It should therefore only
+    /// perform a lightweight wake-up operation, such as sending a native event
+    /// to an event loop. Completed frames must still be retrieved with
+    /// [`Self::try_receive`] or [`Self::receive`].
+    ///
+    /// # Errors
+    ///
+    /// Returns the operating-system error if the worker thread cannot be
+    /// created.
+    pub fn spawn_with_result_notifier(
+        on_result: impl Fn() + Send + 'static,
+    ) -> std::io::Result<Self> {
         let (request_sender, request_receiver) = mpsc::sync_channel(FRAME_QUEUE_CAPACITY);
         let (result_sender, result_receiver) = mpsc::sync_channel(FRAME_QUEUE_CAPACITY);
         let thread = thread::Builder::new()
             .name("torn-software-render".into())
-            .spawn(move || render_frames(request_receiver, result_sender))?;
+            .spawn(move || render_frames(request_receiver, result_sender, on_result))?;
 
         Ok(Self {
             requests: Some(request_sender),
@@ -221,7 +239,11 @@ struct RenderRequest {
     height: u32,
 }
 
-fn render_frames(requests: Receiver<RenderRequest>, results: SyncSender<SoftwareRenderResult>) {
+fn render_frames(
+    requests: Receiver<RenderRequest>,
+    results: SyncSender<SoftwareRenderResult>,
+    on_result: impl Fn(),
+) {
     for request in requests {
         let result = PixelBuffer::new(request.width, request.height)
             .map_err(SoftwareRenderError::PixelBuffer)
@@ -240,12 +262,15 @@ fn render_frames(requests: Receiver<RenderRequest>, results: SyncSender<Software
         {
             break;
         }
+        on_result();
     }
     drop(results);
 }
 
 #[cfg(test)]
 mod tests {
+    use std::sync::mpsc;
+
     use torn_core::{Color, Point, Rect, Size};
     use torn_render::{DisplayList, PaintContext};
 
@@ -292,6 +317,30 @@ mod tests {
         assert_eq!(
             rendered.into_result(),
             Err(SoftwareRenderError::Render(RenderError::UnmatchedClipPop))
+        );
+    }
+
+    #[test]
+    fn notifies_after_a_frame_is_available() {
+        let (sender, receiver) = mpsc::channel();
+        let worker = SoftwareRenderWorker::spawn_with_result_notifier(move || {
+            sender.send(()).expect("test receiver remains available");
+        })
+        .expect("worker thread starts");
+
+        worker
+            .try_submit(1, DisplayList::new(), 1, 1)
+            .expect("empty queue accepts a frame");
+        receiver
+            .recv()
+            .expect("worker notifies after producing a frame");
+        assert_eq!(
+            worker
+                .try_receive()
+                .expect("worker remains connected")
+                .expect("notified frame is available")
+                .frame_id(),
+            1
         );
     }
 

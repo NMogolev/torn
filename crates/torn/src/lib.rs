@@ -23,7 +23,7 @@ pub use torn_workspace::{
 
 /// Platform-independent native-window contracts.
 pub mod platform {
-    pub use torn_platform::{Frame, WindowAction, WindowApplication, WindowEvent, WindowOptions};
+    pub use torn_platform::{WindowAction, WindowApplication, WindowEvent, WindowOptions};
 }
 
 /// Backend-neutral display-list and text-shaping contracts.
