@@ -1,3 +1,5 @@
+use std::collections::BTreeSet;
+
 use core::ops::{BitAnd, BitAndAssign, BitOr, BitOrAssign, Not};
 
 use crate::{Point, WidgetId};
@@ -20,48 +22,114 @@ pub enum PointerButton {
 }
 
 /// The set of pointer buttons currently pressed.
-#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
-pub struct PointerButtons(u16);
+#[derive(Clone, Debug, Default, Eq, Hash, PartialEq)]
+pub struct PointerButtons {
+    standard: u8,
+    other: BTreeSet<u16>,
+}
 
 impl PointerButtons {
     /// No pressed buttons.
-    pub const NONE: Self = Self(0);
+    pub const NONE: Self = Self {
+        standard: 0,
+        other: BTreeSet::new(),
+    };
     /// The primary button.
-    pub const PRIMARY: Self = Self(1 << 0);
+    pub const PRIMARY: Self = Self {
+        standard: 1 << 0,
+        other: BTreeSet::new(),
+    };
     /// The auxiliary button.
-    pub const AUXILIARY: Self = Self(1 << 1);
+    pub const AUXILIARY: Self = Self {
+        standard: 1 << 1,
+        other: BTreeSet::new(),
+    };
     /// The secondary button.
-    pub const SECONDARY: Self = Self(1 << 2);
+    pub const SECONDARY: Self = Self {
+        standard: 1 << 2,
+        other: BTreeSet::new(),
+    };
 
-    /// Returns the raw bit representation.
+    /// Returns a set containing `button`.
     #[must_use]
-    pub const fn bits(self) -> u16 {
-        self.0
+    pub fn from_button(button: PointerButton) -> Self {
+        let mut result = Self::NONE;
+        result.insert(button);
+        result
+    }
+
+    /// Returns the raw bit representation of the standard buttons.
+    ///
+    /// Platform-specific additional buttons are available through
+    /// [`Self::contains_button`].
+    #[must_use]
+    pub fn bits(&self) -> u16 {
+        self.standard as u16
     }
 
     /// Returns whether no buttons are pressed.
     #[must_use]
-    pub const fn is_empty(self) -> bool {
-        self.0 == 0
+    pub fn is_empty(&self) -> bool {
+        self.standard == 0 && self.other.is_empty()
     }
 
     /// Returns whether this set contains all `other` buttons.
     #[must_use]
-    pub const fn contains(self, other: Self) -> bool {
-        (self.0 & other.0) == other.0
+    pub fn contains(&self, other: &Self) -> bool {
+        (self.standard & other.standard) == other.standard
+            && other.other.iter().all(|button| self.other.contains(button))
+    }
+
+    /// Returns whether `button` is pressed.
+    #[must_use]
+    pub fn contains_button(&self, button: PointerButton) -> bool {
+        match button {
+            PointerButton::Primary => self.standard & Self::PRIMARY.standard != 0,
+            PointerButton::Auxiliary => self.standard & Self::AUXILIARY.standard != 0,
+            PointerButton::Secondary => self.standard & Self::SECONDARY.standard != 0,
+            PointerButton::Other(button) => self.other.contains(&button),
+        }
+    }
+
+    /// Adds `button` to this set.
+    pub fn insert(&mut self, button: PointerButton) {
+        match button {
+            PointerButton::Primary => self.standard |= Self::PRIMARY.standard,
+            PointerButton::Auxiliary => self.standard |= Self::AUXILIARY.standard,
+            PointerButton::Secondary => self.standard |= Self::SECONDARY.standard,
+            PointerButton::Other(button) => {
+                self.other.insert(button);
+            }
+        }
+    }
+
+    /// Removes `button` from this set.
+    pub fn remove(&mut self, button: PointerButton) {
+        match button {
+            PointerButton::Primary => self.standard &= !Self::PRIMARY.standard,
+            PointerButton::Auxiliary => self.standard &= !Self::AUXILIARY.standard,
+            PointerButton::Secondary => self.standard &= !Self::SECONDARY.standard,
+            PointerButton::Other(button) => {
+                self.other.remove(&button);
+            }
+        }
     }
 }
 impl BitOr for PointerButtons {
     type Output = Self;
 
     fn bitor(self, rhs: Self) -> Self::Output {
-        Self(self.0 | rhs.0)
+        Self {
+            standard: self.standard | rhs.standard,
+            other: self.other.union(&rhs.other).copied().collect(),
+        }
     }
 }
 
 impl BitOrAssign for PointerButtons {
     fn bitor_assign(&mut self, rhs: Self) {
-        *self = *self | rhs;
+        self.standard |= rhs.standard;
+        self.other.extend(rhs.other);
     }
 }
 
@@ -69,13 +137,17 @@ impl BitAnd for PointerButtons {
     type Output = Self;
 
     fn bitand(self, rhs: Self) -> Self::Output {
-        Self(self.0 & rhs.0)
+        Self {
+            standard: self.standard & rhs.standard,
+            other: self.other.intersection(&rhs.other).copied().collect(),
+        }
     }
 }
 
 impl BitAndAssign for PointerButtons {
     fn bitand_assign(&mut self, rhs: Self) {
-        *self = *self & rhs;
+        self.standard &= rhs.standard;
+        self.other.retain(|button| rhs.other.contains(button));
     }
 }
 
@@ -83,7 +155,12 @@ impl Not for PointerButtons {
     type Output = Self;
 
     fn not(self) -> Self::Output {
-        Self(!self.0)
+        Self {
+            standard: !self.standard & 0b111,
+            other: (u16::MIN..=u16::MAX)
+                .filter(|button| !self.other.contains(button))
+                .collect(),
+        }
     }
 }
 
@@ -125,7 +202,7 @@ impl BitOrAssign for Modifiers {
 }
 
 /// Pointer data shared by pointer-button events.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct PointerEvent {
     /// Device contact that produced the event.
     pub pointer_id: PointerId,
@@ -255,7 +332,7 @@ pub enum InputEvent {
 
 #[cfg(test)]
 mod tests {
-    use super::{Modifiers, PointerButtons};
+    use super::{Modifiers, PointerButton, PointerButtons};
 
     #[test]
     fn modifier_and_button_sets_support_composition() {
@@ -264,7 +341,25 @@ mod tests {
 
         assert!(modifiers.contains(Modifiers::CONTROL));
         assert!(!modifiers.contains(Modifiers::ALT));
-        assert!(buttons.contains(PointerButtons::PRIMARY));
-        assert!(!buttons.contains(PointerButtons::AUXILIARY));
+        assert!(buttons.contains(&PointerButtons::PRIMARY));
+        assert!(!buttons.contains(&PointerButtons::AUXILIARY));
+    }
+
+    #[test]
+    fn button_sets_distinguish_additional_buttons() {
+        let back = PointerButton::Other(4);
+        let extra = PointerButton::Other(u16::MAX);
+        let mut buttons = PointerButtons::PRIMARY;
+        buttons.insert(back);
+        buttons.insert(extra);
+
+        assert!(buttons.contains_button(PointerButton::Primary));
+        assert!(buttons.contains_button(back));
+        assert!(buttons.contains_button(extra));
+        assert!(!buttons.contains_button(PointerButton::Other(5)));
+
+        buttons.remove(back);
+        assert!(!buttons.contains_button(back));
+        assert!(buttons.contains_button(extra));
     }
 }

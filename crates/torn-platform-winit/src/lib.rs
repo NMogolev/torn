@@ -95,6 +95,7 @@ struct Adapter {
     next_frame_id: u64,
     needs_render: bool,
     cursor: Point,
+    buttons: PointerButtons,
     modifiers: Modifiers,
 }
 
@@ -119,6 +120,7 @@ impl Adapter {
             next_frame_id: 0,
             needs_render: false,
             cursor: Point::ZERO,
+            buttons: PointerButtons::NONE,
             modifiers: Modifiers::NONE,
         })
     }
@@ -308,21 +310,22 @@ impl ApplicationHandler<UserEvent> for Adapter {
                     WindowEvent::Input(pointer_input(
                         self.cursor,
                         None,
-                        PointerButtons::NONE,
-                        self.modifiers,
+                        &self.buttons,
+                        &self.modifiers,
                         false,
                     )),
                 );
             }
             WinitWindowEvent::MouseInput { state, button, .. } => {
-                let (button, buttons) = pointer_button(button, state);
+                let button = pointer_button(button);
+                update_pointer_buttons(&mut self.buttons, button, state);
                 self.dispatch(
                     event_loop,
                     WindowEvent::Input(pointer_input(
                         self.cursor,
                         Some(button),
-                        buttons,
-                        self.modifiers,
+                        &self.buttons,
+                        &self.modifiers,
                         state == ElementState::Pressed,
                     )),
                 );
@@ -434,16 +437,16 @@ fn to_pixel_coordinate(value: f32) -> u32 {
 fn pointer_input(
     position: Point,
     button: Option<PointerButton>,
-    buttons: PointerButtons,
-    modifiers: Modifiers,
+    buttons: &PointerButtons,
+    modifiers: &Modifiers,
     pressed: bool,
 ) -> InputEvent {
     let event = PointerEvent {
         pointer_id: PointerId(0),
         position,
         button,
-        buttons,
-        modifiers,
+        buttons: buttons.clone(),
+        modifiers: *modifiers,
     };
     if pressed {
         InputEvent::PointerDown(event)
@@ -454,25 +457,27 @@ fn pointer_input(
     }
 }
 
-fn pointer_button(button: MouseButton, state: ElementState) -> (PointerButton, PointerButtons) {
-    let button = match button {
+fn pointer_button(button: MouseButton) -> PointerButton {
+    match button {
         MouseButton::Left => PointerButton::Primary,
         MouseButton::Middle => PointerButton::Auxiliary,
         MouseButton::Right => PointerButton::Secondary,
         MouseButton::Back => PointerButton::Other(4),
         MouseButton::Forward => PointerButton::Other(5),
         MouseButton::Other(value) => PointerButton::Other(value),
-    };
-    let buttons = if state == ElementState::Pressed {
-        match button {
-            PointerButton::Primary => PointerButtons::PRIMARY,
-            PointerButton::Auxiliary => PointerButtons::AUXILIARY,
-            PointerButton::Secondary | PointerButton::Other(_) => PointerButtons::SECONDARY,
-        }
+    }
+}
+
+fn update_pointer_buttons(
+    buttons: &mut PointerButtons,
+    button: PointerButton,
+    state: ElementState,
+) {
+    if state == ElementState::Pressed {
+        buttons.insert(button);
     } else {
-        PointerButtons::NONE
-    };
-    (button, buttons)
+        buttons.remove(button);
+    }
 }
 
 fn modifiers_from_winit(modifiers: winit::keyboard::ModifiersState) -> Modifiers {
@@ -530,4 +535,48 @@ fn named_key(key: WinitNamedKey) -> Option<NamedKey> {
         WinitNamedKey::Delete => NamedKey::Delete,
         _ => return None,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{pointer_button, pointer_input, update_pointer_buttons};
+    use torn_core::{InputEvent, Modifiers, Point, PointerButton, PointerButtons};
+    use winit::event::{ElementState, MouseButton};
+
+    #[test]
+    fn pointer_button_state_is_preserved_across_move_and_release() {
+        let mut buttons = PointerButtons::NONE;
+        let primary = pointer_button(MouseButton::Left);
+        let back = pointer_button(MouseButton::Back);
+        update_pointer_buttons(&mut buttons, primary, ElementState::Pressed);
+        let InputEvent::PointerDown(event) =
+            pointer_input(Point::ZERO, Some(primary), &buttons, &Modifiers::NONE, true)
+        else {
+            panic!("expected pointer down");
+        };
+        assert!(event.buttons.contains_button(PointerButton::Primary));
+
+        update_pointer_buttons(&mut buttons, back, ElementState::Pressed);
+
+        let InputEvent::PointerMove(event) =
+            pointer_input(Point::ZERO, None, &buttons, &Modifiers::NONE, false)
+        else {
+            panic!("expected pointer move");
+        };
+        assert!(event.buttons.contains_button(PointerButton::Primary));
+        assert!(event.buttons.contains_button(PointerButton::Other(4)));
+
+        update_pointer_buttons(&mut buttons, primary, ElementState::Released);
+        let InputEvent::PointerUp(event) = pointer_input(
+            Point::ZERO,
+            Some(primary),
+            &buttons,
+            &Modifiers::NONE,
+            false,
+        ) else {
+            panic!("expected pointer up");
+        };
+        assert!(!event.buttons.contains_button(PointerButton::Primary));
+        assert!(event.buttons.contains_button(PointerButton::Other(4)));
+    }
 }
