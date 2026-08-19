@@ -1,4 +1,4 @@
-use torn_core::Color;
+use torn_core::{Color, Insets};
 
 /// A small, typed set of visual values shared by standard widgets.
 ///
@@ -29,6 +29,22 @@ pub trait Theme {
     /// should override it with an interaction-state color.
     fn button_pressed_background(&self) -> Color {
         self.accent()
+    }
+
+    /// Background color for a button whose pointer is hovering over it.
+    ///
+    /// The default preserves the appearance of themes written before hover
+    /// styling was introduced.
+    fn button_hover_background(&self) -> Color {
+        self.button_background()
+    }
+
+    /// Default inset between a button edge and its child, in logical pixels.
+    ///
+    /// The default preserves the historic button padding for existing custom
+    /// themes.
+    fn button_padding(&self) -> Insets {
+        Insets::all(8.0)
     }
 
     /// Standard gap between related controls, in logical pixels.
@@ -64,6 +80,10 @@ impl Theme for DarkTheme {
 
     fn button_pressed_background(&self) -> Color {
         Color::rgba8(80, 80, 80, 255)
+    }
+
+    fn button_hover_background(&self) -> Color {
+        Color::rgba8(70, 70, 70, 255)
     }
 
     fn spacing(&self) -> f32 {
@@ -102,6 +122,10 @@ impl Theme for LightTheme {
 
     fn button_pressed_background(&self) -> Color {
         Color::rgba8(210, 210, 210, 255)
+    }
+
+    fn button_hover_background(&self) -> Color {
+        Color::rgba8(225, 225, 225, 255)
     }
 
     fn spacing(&self) -> f32 {
@@ -193,6 +217,20 @@ impl Theme for SystemTheme {
         }
     }
 
+    fn button_hover_background(&self) -> Color {
+        match self.appearance {
+            SystemAppearance::Light => LightTheme.button_hover_background(),
+            SystemAppearance::Dark => DarkTheme.button_hover_background(),
+        }
+    }
+
+    fn button_padding(&self) -> Insets {
+        match self.appearance {
+            SystemAppearance::Light => LightTheme.button_padding(),
+            SystemAppearance::Dark => DarkTheme.button_padding(),
+        }
+    }
+
     fn spacing(&self) -> f32 {
         match self.appearance {
             SystemAppearance::Light => LightTheme.spacing(),
@@ -217,7 +255,7 @@ impl Theme for SystemTheme {
 
 #[cfg(test)]
 mod tests {
-    use torn_core::Color;
+    use torn_core::{Color, Insets};
 
     use super::{DarkTheme, LightTheme, SystemAppearance, SystemTheme, Theme};
 
@@ -235,5 +273,11 @@ mod tests {
         theme.set_appearance(SystemAppearance::Dark);
         assert_eq!(theme.appearance(), SystemAppearance::Dark);
         assert_eq!(theme.background(), DarkTheme.background());
+    }
+
+    #[test]
+    fn default_button_values_preserve_the_legacy_geometry() {
+        assert_eq!(LightTheme.button_padding(), Insets::all(8.0));
+        assert_eq!(DarkTheme.button_padding(), Insets::all(8.0));
     }
 }

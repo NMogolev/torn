@@ -8,6 +8,7 @@ mod layout;
 mod row;
 mod runtime;
 mod signal;
+mod style;
 mod theme;
 mod widget;
 
@@ -19,5 +20,6 @@ pub use layout::{ChildLayout, LayoutResult};
 pub use row::Row;
 pub use runtime::{DirtyFlags, LayoutContext, UiRuntime, UiRuntimeError};
 pub use signal::Signal;
+pub use style::{Border, SurfaceStyle};
 pub use theme::{DarkTheme, LightTheme, SystemAppearance, SystemTheme, Theme};
 pub use widget::Widget;

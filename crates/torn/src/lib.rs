@@ -10,13 +10,13 @@ pub use torn_core::{
     Rect, Size, SizeError, WheelDelta, WheelEvent, WidgetId,
 };
 pub use torn_ui::{
-    ChildLayout, Column, DarkTheme, DirtyFlags, EventContext, EventPhase, EventStatus, KeyChord,
-    KeyboardCommand, LayoutContext, LayoutResult, LightTheme, Row, Signal, SystemAppearance,
-    SystemTheme, Theme, UiEnvironment, UiRuntime, UiRuntimeError, Widget,
+    Border, ChildLayout, Column, DarkTheme, DirtyFlags, EventContext, EventPhase, EventStatus,
+    KeyChord, KeyboardCommand, LayoutContext, LayoutResult, LightTheme, Row, Signal, SurfaceStyle,
+    SystemAppearance, SystemTheme, Theme, UiEnvironment, UiRuntime, UiRuntimeError, Widget,
 };
 pub use torn_widgets::{
-    Align, Alignment, Box, Button, DockArea, DockAreaError, DockItem, ListView, Padding,
-    ScrollAxis, ScrollView, SizedBox, SplitAxis, Splitter, Stack, Text,
+    Align, Alignment, Box, Button, ButtonStyle, Container, DockArea, DockAreaError, DockItem,
+    ListView, Padding, ScrollAxis, ScrollView, SizedBox, SplitAxis, Splitter, Stack, Text,
 };
 pub use torn_workspace::{
     DockAxis, DocumentId, DocumentPresentation, FloatingDocument, FloatingPanel, LayoutNode,
