@@ -31,7 +31,11 @@ impl LayoutResult {
         self.size
     }
 
-    /// Returns direct child positions in widget-tree order.
+    /// Returns visible direct child positions in widget-tree order.
+    ///
+    /// Direct children omitted from this list remain retained but are excluded
+    /// from painting, hit testing, and focus traversal until a later layout
+    /// includes them again.
     pub fn children(&self) -> &[ChildLayout] {
         &self.children
     }

@@ -6,8 +6,11 @@ use crate::{EventContext, EventStatus, LayoutContext, LayoutResult, UiEnvironmen
 /// A retained UI element whose placement and relationships are owned by the runtime.
 ///
 /// A widget defines its own behavior. Its direct children are retained by
-/// [`crate::UiRuntime`], and can be measured through [`LayoutContext`] during
-/// layout. The returned [`LayoutResult`] must position every direct child once.
+/// [`crate::UiRuntime`], and visible children can be measured through
+/// [`LayoutContext`] during layout. Children omitted from the returned
+/// [`LayoutResult`] remain retained but are excluded from painting, hit testing,
+/// and focus traversal. This permits virtualized containers to measure only the
+/// currently visible range.
 pub trait Widget {
     /// Lays out this widget and positions its direct runtime-owned children.
     fn layout(&mut self, context: &mut LayoutContext<'_>, constraints: Constraints)

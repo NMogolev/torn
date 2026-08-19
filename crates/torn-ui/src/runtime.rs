@@ -93,6 +93,7 @@ pub struct UiRuntime {
     free_slots: Vec<u32>,
     root: WidgetId,
     layout: Option<LayoutResult>,
+    last_constraints: Option<Constraints>,
     diagnostics: Vec<Diagnostic>,
     reporter: Option<Box<dyn DiagnosticReporter>>,
     pointer_capture: HashMap<PointerId, WidgetId>,
@@ -123,7 +124,7 @@ struct Node {
 pub enum UiRuntimeError {
     /// Application widget code panicked during the requested operation.
     WidgetPanicked,
-    /// A widget supplied a layout that does not position each direct child once.
+    /// A widget supplied child layouts that do not match its retained children.
     InvalidLayout,
     /// A requested node handle is stale or does not belong to this runtime.
     InvalidWidgetId,
@@ -133,7 +134,9 @@ impl fmt::Display for UiRuntimeError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(match self {
             Self::WidgetPanicked => "application widget panicked; inspect runtime diagnostics",
-            Self::InvalidLayout => "widget layout must position every direct child exactly once",
+            Self::InvalidLayout => {
+                "widget layout must position distinct direct children in tree order"
+            }
             Self::InvalidWidgetId => "widget handle is stale or does not belong to this runtime",
         })
     }
@@ -156,6 +159,7 @@ impl UiRuntime {
             free_slots: Vec::new(),
             root: WidgetId::new(0, 0),
             layout: None,
+            last_constraints: None,
             diagnostics: Vec::new(),
             reporter: None,
             pointer_capture: HashMap::new(),
@@ -319,14 +323,15 @@ impl UiRuntime {
     /// # Errors
     ///
     /// Returns [`UiRuntimeError::WidgetPanicked`] when widget code panics, or
-    /// [`UiRuntimeError::InvalidLayout`] when a container does not position its
-    /// direct children exactly once.
+    /// [`UiRuntimeError::InvalidLayout`] when a container positions an unknown,
+    /// duplicate, or out-of-order child.
     pub fn layout(&mut self, constraints: Constraints) -> Result<&LayoutResult, UiRuntimeError> {
         match catch_unwind(AssertUnwindSafe(|| {
             self.layout_node(self.root, constraints, Point::ZERO)
         })) {
             Ok(Ok(layout)) => {
                 self.layout = Some(layout);
+                self.last_constraints = Some(constraints);
                 self.redraw_requested = true;
                 self.layout.as_ref().ok_or(UiRuntimeError::InvalidLayout)
             }
@@ -376,6 +381,11 @@ impl UiRuntime {
     ///
     /// Returns [`UiRuntimeError::WidgetPanicked`] when widget paint code panics.
     pub fn paint(&mut self, context: &mut PaintContext<'_>) -> Result<(), UiRuntimeError> {
+        if self.layout.is_none()
+            && let Some(constraints) = self.last_constraints
+        {
+            self.layout(constraints)?;
+        }
         if self.layout.is_none() {
             return Ok(());
         }
@@ -405,6 +415,7 @@ impl UiRuntime {
             pointer_capture: self.pointer_capture.clone(),
             focused: self.focused,
             focus_request: None,
+            layout_requested: false,
             redraw_requested: false,
         };
         let mut handled = EventStatus::Ignored;
@@ -479,18 +490,15 @@ impl UiRuntime {
             .ok_or(UiRuntimeError::InvalidWidgetId)?
             .children
             .clone();
-        if result.children().len() != children.len()
-            || result
-                .children()
+        let mut next_child = 0;
+        for layout in result.children() {
+            let Some(index) = children[next_child..]
                 .iter()
-                .any(|layout| !children.contains(&layout.id()))
-            || result
-                .children()
-                .iter()
-                .enumerate()
-                .any(|(index, layout)| layout.id() != children[index])
-        {
-            return Err(UiRuntimeError::InvalidLayout);
+                .position(|child| *child == layout.id())
+            else {
+                return Err(UiRuntimeError::InvalidLayout);
+            };
+            next_child += index + 1;
         }
 
         let accepts_focus = self
@@ -503,6 +511,9 @@ impl UiRuntime {
         node.bounds = Rect::new(origin, result.size());
         node.dirty = DirtyFlags::default();
         node.accepts_focus = accepts_focus;
+        for child in &children {
+            self.node_mut(*child).expect("child was validated").visible = false;
+        }
         for child in result.children() {
             self.node_mut(child.id())
                 .expect("child was validated")
@@ -602,6 +613,7 @@ impl UiRuntime {
             pointer_capture: self.pointer_capture.clone(),
             focused: self.focused,
             focus_request: None,
+            layout_requested: false,
             redraw_requested: false,
         };
         let route = self.route_to(target);
@@ -767,6 +779,9 @@ impl UiRuntime {
         }
         self.pointer_capture = effects.pointer_capture;
         self.redraw_requested |= effects.redraw_requested;
+        if effects.layout_requested {
+            self.invalidate_layout();
+        }
         let Some(request) = effects.focus_request else {
             return;
         };
@@ -793,6 +808,7 @@ impl UiRuntime {
                 pointer_capture: self.pointer_capture.clone(),
                 focused: self.focused,
                 focus_request: None,
+                layout_requested: false,
                 redraw_requested: false,
             };
             let _ = self.dispatch_to(

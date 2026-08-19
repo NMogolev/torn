@@ -111,6 +111,15 @@ impl<'a> EventContext<'a> {
     pub fn request_redraw(&mut self) {
         self.effects.redraw_requested = true;
     }
+
+    /// Requests another layout pass before the next paint.
+    ///
+    /// Use this when event handling changes geometry, child visibility, or a
+    /// child origin. A layout request also schedules a redraw.
+    pub fn request_layout(&mut self) {
+        self.effects.layout_requested = true;
+        self.effects.redraw_requested = true;
+    }
 }
 
 pub(crate) struct EventEffects {
@@ -118,6 +127,7 @@ pub(crate) struct EventEffects {
     pub(crate) pointer_capture: HashMap<PointerId, WidgetId>,
     pub(crate) focused: Option<WidgetId>,
     pub(crate) focus_request: Option<FocusRequest>,
+    pub(crate) layout_requested: bool,
     pub(crate) redraw_requested: bool,
 }
 
