@@ -492,6 +492,28 @@ impl WorkspaceLayout {
         })
     }
 
+    /// Resizes the innermost dock split that contains `panel`.
+    ///
+    /// This lets a projected workspace view resize a splitter without exposing
+    /// mutable layout nodes. The ratio is normalized to the supported
+    /// `0.1..=0.9` range.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`WorkspaceError::PanelNotFound`] when `panel` is not docked
+    /// beneath a split.
+    pub fn resize_split_for_panel(
+        &mut self,
+        panel: &PanelId,
+        ratio: f32,
+    ) -> Result<(), WorkspaceError> {
+        self.apply_transaction(|candidate| {
+            resize_split_for_panel(&mut candidate.root, panel, ratio)
+                .then_some(())
+                .ok_or_else(|| WorkspaceError::PanelNotFound(panel.clone()))
+        })
+    }
+
     /// Moves a docked document into a visible free-form child window.
     ///
     /// # Errors
@@ -980,6 +1002,40 @@ fn activate_panel(node: &mut LayoutNode, panel: &PanelId) -> bool {
     }
 }
 
+fn resize_split_for_panel(node: &mut LayoutNode, panel: &PanelId, ratio: f32) -> bool {
+    let LayoutNode::Split {
+        ratio: split_ratio,
+        first,
+        second,
+        ..
+    } = node
+    else {
+        return false;
+    };
+
+    if contains_panel(first, panel) || contains_panel(second, panel) {
+        if resize_split_for_panel(first, panel, ratio)
+            || resize_split_for_panel(second, panel, ratio)
+        {
+            return true;
+        }
+        *split_ratio = normalize_ratio(ratio);
+        return true;
+    }
+    false
+}
+
+fn contains_panel(node: &LayoutNode, panel: &PanelId) -> bool {
+    match node {
+        LayoutNode::Split { first, second, .. } => {
+            contains_panel(first, panel) || contains_panel(second, panel)
+        }
+        LayoutNode::Tabs { items, .. } => items.contains(panel),
+        LayoutNode::Panel { id } => id == panel,
+        LayoutNode::Documents { .. } | LayoutNode::Empty => false,
+    }
+}
+
 fn detach_document(node: &mut LayoutNode, document: &DocumentId) -> bool {
     match node {
         LayoutNode::Split { first, second, .. } => {
@@ -1146,6 +1202,28 @@ mod tests {
             Err(WorkspaceError::PanelNotFound(missing_target))
         );
         assert_eq!(layout, original);
+    }
+
+    #[test]
+    fn resizing_a_split_clamps_the_ratio_and_preserves_the_layout() {
+        let left = panel("left");
+        let right = panel("right");
+        let mut layout = WorkspaceLayout::new(LayoutNode::split(
+            DockAxis::Horizontal,
+            0.5,
+            LayoutNode::Panel { id: left.clone() },
+            LayoutNode::Panel { id: right },
+        ))
+        .expect("initial layout is valid");
+
+        layout
+            .resize_split_for_panel(&left, 2.0)
+            .expect("docked panel identifies its split");
+
+        assert!(
+            matches!(layout.root(), LayoutNode::Split { ratio, .. } if (*ratio - 0.9).abs() < f32::EPSILON)
+        );
+        assert!(layout.validate().is_ok());
     }
 
     #[test]

@@ -64,7 +64,7 @@ impl PointerButtons {
     /// [`Self::contains_button`].
     #[must_use]
     pub fn bits(&self) -> u16 {
-        self.standard as u16
+        u16::from(self.standard)
     }
 
     /// Returns whether no buttons are pressed.

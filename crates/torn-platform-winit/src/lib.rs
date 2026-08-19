@@ -319,7 +319,7 @@ impl ApplicationHandler<UserEvent> for Adapter {
                         self.cursor,
                         None,
                         &self.buttons,
-                        &self.modifiers,
+                        self.modifiers,
                         false,
                     )),
                 );
@@ -333,7 +333,7 @@ impl ApplicationHandler<UserEvent> for Adapter {
                         self.cursor,
                         Some(button),
                         &self.buttons,
-                        &self.modifiers,
+                        self.modifiers,
                         state == ElementState::Pressed,
                     )),
                 );
@@ -440,7 +440,7 @@ fn pointer_input(
     position: Point,
     button: Option<PointerButton>,
     buttons: &PointerButtons,
-    modifiers: &Modifiers,
+    modifiers: Modifiers,
     pressed: bool,
 ) -> InputEvent {
     let event = PointerEvent {
@@ -448,7 +448,7 @@ fn pointer_input(
         position,
         button,
         buttons: buttons.clone(),
-        modifiers: *modifiers,
+        modifiers,
     };
     if pressed {
         InputEvent::PointerDown(event)
@@ -552,7 +552,7 @@ mod tests {
         let back = pointer_button(MouseButton::Back);
         update_pointer_buttons(&mut buttons, primary, ElementState::Pressed);
         let InputEvent::PointerDown(event) =
-            pointer_input(Point::ZERO, Some(primary), &buttons, &Modifiers::NONE, true)
+            pointer_input(Point::ZERO, Some(primary), &buttons, Modifiers::NONE, true)
         else {
             panic!("expected pointer down");
         };
@@ -561,7 +561,7 @@ mod tests {
         update_pointer_buttons(&mut buttons, back, ElementState::Pressed);
 
         let InputEvent::PointerMove(event) =
-            pointer_input(Point::ZERO, None, &buttons, &Modifiers::NONE, false)
+            pointer_input(Point::ZERO, None, &buttons, Modifiers::NONE, false)
         else {
             panic!("expected pointer move");
         };
@@ -569,13 +569,9 @@ mod tests {
         assert!(event.buttons.contains_button(PointerButton::Other(4)));
 
         update_pointer_buttons(&mut buttons, primary, ElementState::Released);
-        let InputEvent::PointerUp(event) = pointer_input(
-            Point::ZERO,
-            Some(primary),
-            &buttons,
-            &Modifiers::NONE,
-            false,
-        ) else {
+        let InputEvent::PointerUp(event) =
+            pointer_input(Point::ZERO, Some(primary), &buttons, Modifiers::NONE, false)
+        else {
             panic!("expected pointer up");
         };
         assert!(!event.buttons.contains_button(PointerButton::Primary));

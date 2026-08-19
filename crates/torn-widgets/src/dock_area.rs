@@ -1,11 +1,16 @@
 use std::{cell::RefCell, rc::Rc};
 
-use torn_core::{Color, Constraints, Point, Rect, Size};
-use torn_render::PaintContext;
-use torn_ui::{ChildLayout, LayoutContext, LayoutResult, UiEnvironment, Widget};
+use torn_core::{Color, Constraints, InputEvent, Point, PointerButton, PointerId, Rect, Size};
+use torn_render::{FontdueTextShaper, PaintContext, TextStyle};
+use torn_ui::{
+    ChildLayout, EventContext, EventPhase, EventStatus, LayoutContext, LayoutResult, UiEnvironment,
+    Widget,
+};
 use torn_workspace::{DockAxis, DocumentId, LayoutNode, PanelId, WorkspaceLayout};
 
 const SPLITTER_THICKNESS: f32 = 4.0;
+const TAB_BAR_HEIGHT: f32 = 30.0;
+const TAB_PADDING: f32 = 10.0;
 
 /// Stable workspace item represented by one direct child of a [`DockArea`].
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
@@ -45,7 +50,31 @@ pub struct DockArea {
     layout: Rc<RefCell<WorkspaceLayout>>,
     items: Vec<DockItem>,
     missing_items: Vec<Rect>,
-    splitters: Vec<Rect>,
+    splitters: Vec<Splitter>,
+    tabs: Vec<Tab>,
+    dragging: Option<SplitterDrag>,
+}
+
+#[derive(Clone, Debug)]
+struct Splitter {
+    bounds: Rect,
+    resize_panel: Option<PanelId>,
+    axis: DockAxis,
+    content_origin: f32,
+    content_length: f32,
+}
+
+#[derive(Clone, Debug)]
+struct SplitterDrag {
+    pointer_id: PointerId,
+    splitter: Splitter,
+}
+
+#[derive(Clone, Debug)]
+struct Tab {
+    bounds: Rect,
+    item: DockItem,
+    active: bool,
 }
 
 impl DockArea {
@@ -57,6 +86,8 @@ impl DockArea {
             items: Vec::new(),
             missing_items: Vec::new(),
             splitters: Vec::new(),
+            tabs: Vec::new(),
+            dragging: None,
         }
     }
 
@@ -76,6 +107,10 @@ impl DockArea {
     ///
     /// Append that child to the `DockArea` in the runtime after all bindings
     /// have been registered.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DockAreaError::DuplicateItem`] when `panel` is already bound.
     pub fn register_panel(&mut self, panel: PanelId) -> Result<(), DockAreaError> {
         self.register_item(DockItem::Panel(panel))
     }
@@ -84,6 +119,10 @@ impl DockArea {
     ///
     /// Append that child to the `DockArea` in the runtime after all bindings
     /// have been registered.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DockAreaError::DuplicateItem`] when `document` is already bound.
     pub fn register_document(&mut self, document: DocumentId) -> Result<(), DockAreaError> {
         self.register_item(DockItem::Document(document))
     }
@@ -108,6 +147,7 @@ impl Widget for DockArea {
         let mut item_bounds = vec![None; self.items.len()];
         self.missing_items.clear();
         self.splitters.clear();
+        self.tabs.clear();
         project_node(
             &root,
             Rect::new(Point::ZERO, size),
@@ -115,6 +155,7 @@ impl Widget for DockArea {
             &mut item_bounds,
             &mut self.missing_items,
             &mut self.splitters,
+            &mut self.tabs,
         );
 
         let mut children = Vec::with_capacity(context.child_count());
@@ -137,13 +178,117 @@ impl Widget for DockArea {
         context.fill_rect(bounds, environment.theme().background());
         let splitter_color = environment.theme().button_background();
         for splitter in &self.splitters {
-            context.fill_rect(offset_rect(*splitter, bounds.origin), splitter_color);
+            context.fill_rect(offset_rect(splitter.bounds, bounds.origin), splitter_color);
+        }
+        for tab in &self.tabs {
+            let color = if tab.active {
+                environment.theme().accent()
+            } else {
+                environment.theme().button_background()
+            };
+            let tab_bounds = offset_rect(tab.bounds, bounds.origin);
+            context.fill_rect(tab_bounds, color);
+            let label = match &tab.item {
+                DockItem::Panel(id) => id.as_str(),
+                DockItem::Document(id) => id.as_str(),
+            };
+            let text = FontdueTextShaper::ubuntu_light().layout(
+                label,
+                &TextStyle::new(12.0, environment.theme().foreground()),
+                Some((tab_bounds.size.width() - TAB_PADDING * 2.0).max(0.0)),
+            );
+            context.draw_text(
+                text,
+                Point::new(tab_bounds.origin.x + TAB_PADDING, tab_bounds.origin.y + 8.0),
+            );
         }
         for missing in &self.missing_items {
             context.fill_rect(
                 offset_rect(*missing, bounds.origin),
                 Color::rgba(0.8, 0.2, 0.2, 1.0),
             );
+        }
+    }
+
+    fn handle_event(&mut self, context: &mut EventContext<'_>, event: &InputEvent) -> EventStatus {
+        if context.phase() != EventPhase::Target {
+            return EventStatus::Ignored;
+        }
+
+        match event {
+            InputEvent::PointerDown(pointer) if pointer.button == Some(PointerButton::Primary) => {
+                if let Some(tab) = self
+                    .tabs
+                    .iter()
+                    .find(|tab| tab.bounds.contains(pointer.position))
+                {
+                    let result = match &tab.item {
+                        DockItem::Panel(panel) => self.layout.borrow_mut().activate_panel(panel),
+                        DockItem::Document(document) => {
+                            self.layout.borrow_mut().activate_document(document)
+                        }
+                    };
+                    if result.is_ok() {
+                        context.request_redraw();
+                        return EventStatus::Handled;
+                    }
+                }
+                let Some(splitter) = self
+                    .splitters
+                    .iter()
+                    .find(|splitter| splitter.bounds.contains(pointer.position))
+                    .cloned()
+                else {
+                    return EventStatus::Ignored;
+                };
+                if splitter.resize_panel.is_none() || splitter.content_length <= 0.0 {
+                    return EventStatus::Ignored;
+                }
+                self.dragging = Some(SplitterDrag {
+                    pointer_id: pointer.pointer_id,
+                    splitter,
+                });
+                context.capture_pointer(pointer.pointer_id);
+                context.request_redraw();
+                EventStatus::Handled
+            }
+            InputEvent::PointerMove(pointer) => {
+                let Some(dragging) = &self.dragging else {
+                    return EventStatus::Ignored;
+                };
+                if dragging.pointer_id != pointer.pointer_id {
+                    return EventStatus::Ignored;
+                }
+                let coordinate = match dragging.splitter.axis {
+                    DockAxis::Horizontal => pointer.position.x,
+                    DockAxis::Vertical => pointer.position.y,
+                };
+                let ratio = (coordinate - dragging.splitter.content_origin)
+                    / dragging.splitter.content_length;
+                if let Some(panel) = &dragging.splitter.resize_panel {
+                    let _ = self
+                        .layout
+                        .borrow_mut()
+                        .resize_split_for_panel(panel, ratio);
+                    context.request_redraw();
+                    EventStatus::Handled
+                } else {
+                    EventStatus::Ignored
+                }
+            }
+            InputEvent::PointerUp(pointer) if pointer.button == Some(PointerButton::Primary) => {
+                let Some(dragging) = &self.dragging else {
+                    return EventStatus::Ignored;
+                };
+                if dragging.pointer_id != pointer.pointer_id {
+                    return EventStatus::Ignored;
+                }
+                self.dragging = None;
+                context.release_pointer(pointer.pointer_id);
+                context.request_redraw();
+                EventStatus::Handled
+            }
+            _ => EventStatus::Ignored,
         }
     }
 }
@@ -170,7 +315,8 @@ fn project_node(
     items: &[DockItem],
     item_bounds: &mut [Option<Rect>],
     missing_items: &mut Vec<Rect>,
-    splitters: &mut Vec<Rect>,
+    splitters: &mut Vec<Splitter>,
+    tabs: &mut Vec<Tab>,
 ) {
     match node {
         LayoutNode::Split {
@@ -180,7 +326,23 @@ fn project_node(
             second,
         } => {
             let (first_bounds, splitter, second_bounds) = split_bounds(bounds, *axis, *ratio);
-            splitters.push(splitter);
+            let (content_origin, content_length) = match axis {
+                DockAxis::Horizontal => (
+                    bounds.origin.x,
+                    (bounds.size.width() - splitter.size.width()).max(0.0),
+                ),
+                DockAxis::Vertical => (
+                    bounds.origin.y,
+                    (bounds.size.height() - splitter.size.height()).max(0.0),
+                ),
+            };
+            splitters.push(Splitter {
+                bounds: splitter,
+                resize_panel: first_panel(first).or_else(|| first_panel(second)),
+                axis: *axis,
+                content_origin,
+                content_length,
+            });
             project_node(
                 first,
                 first_bounds,
@@ -188,6 +350,7 @@ fn project_node(
                 item_bounds,
                 missing_items,
                 splitters,
+                tabs,
             );
             project_node(
                 second,
@@ -196,17 +359,20 @@ fn project_node(
                 item_bounds,
                 missing_items,
                 splitters,
+                tabs,
             );
         }
         LayoutNode::Tabs {
-            active: Some(panel),
-            ..
-        } => project_item(
-            &DockItem::Panel(panel.clone()),
+            items: tab_items,
+            active,
+        } => project_tabs(
+            tab_items.iter().cloned().map(DockItem::Panel),
+            active.as_ref().map(|panel| DockItem::Panel(panel.clone())),
             bounds,
             items,
             item_bounds,
             missing_items,
+            tabs,
         ),
         LayoutNode::Panel { id } => project_item(
             &DockItem::Panel(id.clone()),
@@ -216,18 +382,76 @@ fn project_node(
             missing_items,
         ),
         LayoutNode::Documents {
-            active: Some(document),
+            items: document_items,
+            active,
             ..
-        } => project_item(
-            &DockItem::Document(document.clone()),
+        } => project_tabs(
+            document_items.iter().cloned().map(DockItem::Document),
+            active
+                .as_ref()
+                .map(|document| DockItem::Document(document.clone())),
             bounds,
             items,
             item_bounds,
             missing_items,
+            tabs,
         ),
-        LayoutNode::Tabs { active: None, .. }
-        | LayoutNode::Documents { active: None, .. }
-        | LayoutNode::Empty => {}
+        LayoutNode::Empty => {}
+    }
+}
+
+fn project_tabs(
+    tab_items: impl IntoIterator<Item = DockItem>,
+    active: Option<DockItem>,
+    bounds: Rect,
+    items: &[DockItem],
+    item_bounds: &mut [Option<Rect>],
+    missing_items: &mut Vec<Rect>,
+    tabs: &mut Vec<Tab>,
+) {
+    let tab_items = tab_items.into_iter().collect::<Vec<_>>();
+    if tab_items.is_empty() {
+        return;
+    }
+    let tab_height = bounds.size.height().min(TAB_BAR_HEIGHT);
+    let tab_count = u16::try_from(tab_items.len()).expect("workspace tab count fits in u16");
+    let tab_width = bounds.size.width() / f32::from(tab_count);
+    for (item, index) in tab_items.iter().zip(0..tab_count) {
+        tabs.push(Tab {
+            bounds: rect(
+                bounds.origin.x + tab_width * f32::from(index),
+                bounds.origin.y,
+                tab_width,
+                tab_height,
+            ),
+            item: item.clone(),
+            active: active.as_ref() == Some(item),
+        });
+    }
+    if let Some(active) = active {
+        project_item(
+            &active,
+            rect(
+                bounds.origin.x,
+                bounds.origin.y + tab_height,
+                bounds.size.width(),
+                (bounds.size.height() - tab_height).max(0.0),
+            ),
+            items,
+            item_bounds,
+            missing_items,
+        );
+    }
+}
+
+fn first_panel(node: &LayoutNode) -> Option<PanelId> {
+    match node {
+        LayoutNode::Split { first, second, .. } => {
+            first_panel(first).or_else(|| first_panel(second))
+        }
+        LayoutNode::Tabs { items, .. } => items.first().cloned(),
+        LayoutNode::Panel { id } => Some(id.clone()),
+        LayoutNode::Documents { .. } | LayoutNode::Empty => None,
     }
 }
 
@@ -417,34 +641,31 @@ mod tests {
         assert_eq!(runtime.bounds(inactive_widget), Some(Rect::ZERO));
         assert_eq!(
             runtime.bounds(active_widget),
-            Some(Rect::new(Point::new(28.0, 0.0), size(72.0, 60.0)))
+            Some(Rect::new(Point::new(28.0, 30.0), size(72.0, 30.0)))
         );
 
         let mut list = DisplayList::new();
         runtime
             .paint(&mut PaintContext::new(&mut list))
             .expect("dock paint succeeds");
-        assert_eq!(
+        assert!(matches!(
             list.commands(),
-            &[
-                DisplayCommand::FillRect {
-                    rect: Rect::new(Point::ZERO, size(100.0, 60.0)),
-                    color: LightTheme.background()
-                },
-                DisplayCommand::FillRect {
-                    rect: Rect::new(Point::new(24.0, 0.0), size(4.0, 60.0)),
-                    color: LightTheme.button_background()
-                },
-                DisplayCommand::FillRect {
-                    rect: Rect::new(Point::ZERO, size(24.0, 60.0)),
-                    color: Color::rgba8(10, 20, 30, 255)
-                },
-                DisplayCommand::FillRect {
-                    rect: Rect::new(Point::new(28.0, 0.0), size(72.0, 60.0)),
-                    color: Color::rgba8(70, 80, 90, 255)
-                },
-            ]
-        );
+            [
+                DisplayCommand::FillRect { color, .. },
+                DisplayCommand::FillRect { color: splitter, .. },
+                DisplayCommand::FillRect { color: first_tab, .. },
+                DisplayCommand::DrawText { .. },
+                DisplayCommand::FillRect { color: active_tab, .. },
+                DisplayCommand::DrawText { .. },
+                DisplayCommand::FillRect { color: left, .. },
+                DisplayCommand::FillRect { color: active, .. },
+            ] if *color == LightTheme.background()
+                && *splitter == LightTheme.button_background()
+                && *first_tab == LightTheme.button_background()
+                && *active_tab == LightTheme.accent()
+                && *left == Color::rgba8(10, 20, 30, 255)
+                && *active == Color::rgba8(70, 80, 90, 255)
+        ));
     }
 
     #[test]
@@ -475,7 +696,7 @@ mod tests {
         runtime.layout(canvas).expect("initial layout succeeds");
         assert_eq!(
             runtime.bounds(first_widget),
-            Some(Rect::new(Point::ZERO, size(80.0, 40.0)))
+            Some(Rect::new(Point::new(0.0, 30.0), size(80.0, 10.0)))
         );
         assert_eq!(runtime.bounds(second_widget), Some(Rect::ZERO));
 
@@ -488,7 +709,7 @@ mod tests {
         assert_eq!(runtime.bounds(first_widget), Some(Rect::ZERO));
         assert_eq!(
             runtime.bounds(second_widget),
-            Some(Rect::new(Point::ZERO, size(80.0, 40.0)))
+            Some(Rect::new(Point::new(0.0, 30.0), size(80.0, 10.0)))
         );
     }
 
@@ -518,7 +739,7 @@ mod tests {
         let canvas = Constraints::tight(size(80.0, 40.0)).expect("tight canvas");
         let pointer_down = InputEvent::PointerDown(PointerEvent {
             pointer_id: PointerId(1),
-            position: Point::new(20.0, 10.0),
+            position: Point::new(20.0, 35.0),
             button: Some(PointerButton::Primary),
             buttons: PointerButtons::PRIMARY,
             modifiers: Modifiers::NONE,
@@ -537,5 +758,94 @@ mod tests {
         assert!(runtime.dispatch_event(&pointer_down).is_handled());
         assert_eq!(first_events.get(), 1);
         assert_eq!(second_events.get(), 1);
+    }
+
+    #[test]
+    fn clicking_a_tab_activates_its_registered_panel() {
+        let first = panel("first");
+        let second = panel("second");
+        let layout = Rc::new(RefCell::new(
+            WorkspaceLayout::new(LayoutNode::tabs(vec![first.clone(), second.clone()]))
+                .expect("valid workspace"),
+        ));
+        let mut dock_area = DockArea::new(layout.clone());
+        dock_area.register_panel(first).expect("unique binding");
+        dock_area
+            .register_panel(second.clone())
+            .expect("unique binding");
+        let mut runtime = UiRuntime::new(dock_area);
+        let root = runtime.root();
+        runtime
+            .append_child(root, Fill(Color::BLACK))
+            .expect("root exists");
+        runtime
+            .append_child(root, Fill(Color::WHITE))
+            .expect("root exists");
+        runtime
+            .layout(Constraints::tight(size(100.0, 80.0)).expect("tight canvas"))
+            .expect("initial layout succeeds");
+        let click_second_tab = InputEvent::PointerDown(PointerEvent {
+            pointer_id: PointerId(1),
+            position: Point::new(75.0, 10.0),
+            button: Some(PointerButton::Primary),
+            buttons: PointerButtons::PRIMARY,
+            modifiers: Modifiers::NONE,
+        });
+
+        assert!(runtime.dispatch_event(&click_second_tab).is_handled());
+        assert!(matches!(
+            layout.borrow().root(),
+            LayoutNode::Tabs { active: Some(active), .. } if active == &second
+        ));
+    }
+
+    #[test]
+    fn dragging_a_splitter_updates_the_persisted_ratio() {
+        let left = panel("left");
+        let right = panel("right");
+        let layout = Rc::new(RefCell::new(
+            WorkspaceLayout::new(LayoutNode::split(
+                DockAxis::Horizontal,
+                0.5,
+                LayoutNode::Panel { id: left.clone() },
+                LayoutNode::Panel { id: right.clone() },
+            ))
+            .expect("valid workspace"),
+        ));
+        let mut dock_area = DockArea::new(layout.clone());
+        dock_area.register_panel(left).expect("unique binding");
+        dock_area.register_panel(right).expect("unique binding");
+        let mut runtime = UiRuntime::new(dock_area);
+        let root = runtime.root();
+        runtime
+            .append_child(root, Fill(Color::BLACK))
+            .expect("root exists");
+        runtime
+            .append_child(root, Fill(Color::WHITE))
+            .expect("root exists");
+        runtime
+            .layout(Constraints::tight(size(100.0, 80.0)).expect("tight canvas"))
+            .expect("initial layout succeeds");
+        let down = InputEvent::PointerDown(PointerEvent {
+            pointer_id: PointerId(1),
+            position: Point::new(49.0, 20.0),
+            button: Some(PointerButton::Primary),
+            buttons: PointerButtons::PRIMARY,
+            modifiers: Modifiers::NONE,
+        });
+        let move_right = InputEvent::PointerMove(PointerEvent {
+            pointer_id: PointerId(1),
+            position: Point::new(86.0, 20.0),
+            button: None,
+            buttons: PointerButtons::PRIMARY,
+            modifiers: Modifiers::NONE,
+        });
+
+        assert!(runtime.dispatch_event(&down).is_handled());
+        assert!(runtime.dispatch_event(&move_right).is_handled());
+        assert!(matches!(
+            layout.borrow().root(),
+            LayoutNode::Split { ratio, .. } if (*ratio - (86.0 / 96.0)).abs() < f32::EPSILON
+        ));
     }
 }
