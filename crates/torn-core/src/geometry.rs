@@ -190,6 +190,12 @@ impl Size {
         self.height
     }
 
+    /// Returns whether `point` lies within a rectangle of this size at the origin.
+    #[must_use]
+    pub fn contains(self, point: Point) -> bool {
+        Rect::new(Point::ZERO, self).contains(point)
+    }
+
     /// Returns this size clamped to the inclusive range between `min` and `max`.
     #[must_use]
     pub fn clamp(self, min: Self, max: Self) -> Self {

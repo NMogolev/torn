@@ -33,9 +33,9 @@ impl HelloTorn {
             Color::rgba8(180, 220, 255, 255),
             Color::rgba8(120, 180, 230, 255),
         );
-        button.set_on_click({
+        button.activated().subscribe({
             let clicks = Rc::clone(&clicks);
-            move || {
+            move |()| {
                 clicks.set(clicks.get() + 1);
                 println!("Нажато: {}", clicks.get());
             }

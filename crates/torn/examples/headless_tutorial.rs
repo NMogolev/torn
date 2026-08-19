@@ -21,9 +21,9 @@ fn main() -> Result<(), std::boxed::Box<dyn std::error::Error>> {
         Color::rgba8(180, 220, 255, 255),
         Color::rgba8(120, 180, 230, 255),
     );
-    button.set_on_click({
+    button.activated().subscribe({
         let click_count = Rc::clone(&click_count);
-        move || click_count.set(click_count.get() + 1)
+        move |()| click_count.set(click_count.get() + 1)
     });
 
     let mut root = TornBox::new();
@@ -39,11 +39,12 @@ fn main() -> Result<(), std::boxed::Box<dyn std::error::Error>> {
         runtime.dispatch_event(&pointer_down(Point::new(12.0, 12.0))),
         torn::EventStatus::Handled
     );
-    assert_eq!(click_count.get(), 1);
+    assert_eq!(click_count.get(), 0);
     assert_eq!(
         runtime.dispatch_event(&pointer_up(Point::new(12.0, 12.0))),
         torn::EventStatus::Handled
     );
+    assert_eq!(click_count.get(), 1);
 
     let mut display_list = DisplayList::new();
     runtime.paint(&mut PaintContext::new(&mut display_list))?;

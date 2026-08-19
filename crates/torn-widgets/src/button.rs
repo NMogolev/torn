@@ -1,10 +1,10 @@
-use std::boxed::Box as HeapBox;
-
-use torn_core::{Color, Constraints, InputEvent, Insets, Point, PointerButton, Rect, Size};
+use torn_core::{
+    Color, Constraints, InputEvent, Insets, Key, NamedKey, Point, PointerButton, Rect, Size,
+};
 use torn_render::PaintContext;
 use torn_ui::{
-    ChildLayout, EventContext, EventPhase, EventStatus, LayoutContext, LayoutResult, UiEnvironment,
-    Widget,
+    ChildLayout, EventContext, EventPhase, EventStatus, LayoutContext, LayoutResult, Signal,
+    UiEnvironment, Widget,
 };
 
 /// A clickable single-child control with a rectangular background.
@@ -13,9 +13,12 @@ use torn_ui::{
 /// the button node before layout.
 pub struct Button {
     backgrounds: Option<(Color, Color)>,
-    on_click: Option<HeapBox<dyn FnMut()>>,
+    activated: Signal<()>,
     padding: Insets,
     pressed: bool,
+    pressed_pointer: Option<torn_core::PointerId>,
+    pointer_inside: bool,
+    size: Size,
 }
 
 impl Button {
@@ -27,9 +30,12 @@ impl Button {
     pub fn new() -> Self {
         Self {
             backgrounds: None,
-            on_click: None,
+            activated: Signal::new(),
             padding: Insets::all(8.0),
             pressed: false,
+            pressed_pointer: None,
+            pointer_inside: false,
+            size: Size::ZERO,
         }
     }
 
@@ -43,9 +49,10 @@ impl Button {
         self.padding = padding;
     }
 
-    /// Sets a callback invoked for a primary pointer press within the button.
-    pub fn set_on_click(&mut self, callback: impl FnMut() + 'static) {
-        self.on_click = Some(HeapBox::new(callback));
+    /// Returns a signal emitted after a completed primary click or keyboard activation.
+    #[must_use]
+    pub fn activated(&self) -> Signal<()> {
+        self.activated.clone()
     }
 
     /// Returns whether the button is currently pressed.
@@ -89,6 +96,7 @@ impl Widget for Button {
             content_size.width() + self.padding.horizontal(),
             content_size.height() + self.padding.vertical(),
         ));
+        self.size = size;
         LayoutResult::with_children(size, children)
     }
 
@@ -99,7 +107,11 @@ impl Widget for Button {
                 environment.theme().button_pressed_background(),
             )
         });
-        let background = if self.pressed { pressed } else { normal };
+        let background = if self.pressed && self.pointer_inside {
+            pressed
+        } else {
+            normal
+        };
         context.fill_rounded_rect(bounds, environment.theme().corner_radius(), background);
     }
 
@@ -110,17 +122,47 @@ impl Widget for Button {
         match event {
             InputEvent::PointerDown(pointer) if pointer.button == Some(PointerButton::Primary) => {
                 self.pressed = true;
+                self.pressed_pointer = Some(pointer.pointer_id);
+                self.pointer_inside = true;
                 context.capture_pointer(pointer.pointer_id);
                 context.request_focus();
                 context.request_redraw();
-                if let Some(callback) = &mut self.on_click {
-                    callback();
+                EventStatus::Handled
+            }
+            InputEvent::PointerUp(pointer)
+                if pointer.button == Some(PointerButton::Primary)
+                    && self.pressed_pointer == Some(pointer.pointer_id) =>
+            {
+                let activate = self.pressed && self.size.contains(pointer.position);
+                self.pressed = false;
+                self.pressed_pointer = None;
+                self.pointer_inside = false;
+                context.release_pointer(pointer.pointer_id);
+                context.request_redraw();
+                if activate {
+                    self.activated.emit(&());
                 }
                 EventStatus::Handled
             }
-            InputEvent::PointerUp(pointer) if pointer.button == Some(PointerButton::Primary) => {
-                self.pressed = false;
-                context.release_pointer(pointer.pointer_id);
+            InputEvent::PointerEnter(pointer)
+                if self.pressed_pointer == Some(pointer.pointer_id) =>
+            {
+                self.pointer_inside = true;
+                context.request_redraw();
+                EventStatus::Handled
+            }
+            InputEvent::PointerLeave(pointer)
+                if self.pressed_pointer == Some(pointer.pointer_id) =>
+            {
+                self.pointer_inside = false;
+                context.request_redraw();
+                EventStatus::Handled
+            }
+            InputEvent::KeyDown(key)
+                if !key.repeat
+                    && matches!(key.key, Key::Named(NamedKey::Enter | NamedKey::Space)) =>
+            {
+                self.activated.emit(&());
                 context.request_redraw();
                 EventStatus::Handled
             }
@@ -139,7 +181,11 @@ fn size(width: f32, height: f32) -> Size {
 
 #[cfg(test)]
 mod tests {
-    use torn_core::{Color, Constraints, Modifiers, PointerButtons, PointerEvent, PointerId};
+    use std::{cell::Cell, rc::Rc};
+
+    use torn_core::{
+        Color, Constraints, Modifiers, Point, PointerButtons, PointerEvent, PointerId,
+    };
     use torn_render::{DisplayCommand, DisplayList};
     use torn_ui::{LightTheme, Theme, UiRuntime};
 
@@ -235,10 +281,51 @@ mod tests {
         assert_eq!(fill_color(&list), normal);
     }
 
+    #[test]
+    fn activates_only_when_the_primary_pointer_is_released_inside() {
+        let activations = Rc::new(Cell::new(0));
+        let button = Button::new();
+        button.activated().subscribe({
+            let activations = Rc::clone(&activations);
+            move |()| activations.set(activations.get() + 1)
+        });
+        let mut runtime = UiRuntime::new(button);
+        runtime
+            .layout(Constraints::UNBOUNDED)
+            .expect("button layout succeeds");
+
+        let _ = runtime.dispatch_event(&pointer_event(Point::new(1.0, 1.0), true));
+        let _ = runtime.dispatch_event(&pointer_event(Point::new(30.0, 30.0), false));
+        assert_eq!(activations.get(), 0);
+
+        let _ = runtime.dispatch_event(&pointer_event(Point::new(1.0, 1.0), true));
+        let _ = runtime.dispatch_event(&pointer_event(Point::new(1.0, 1.0), false));
+        assert_eq!(activations.get(), 1);
+    }
+
     fn fill_color(list: &DisplayList) -> Color {
         let [DisplayCommand::FillRoundedRect { color, .. }] = list.commands() else {
             panic!("button should record one fill command");
         };
         *color
+    }
+
+    fn pointer_event(position: Point, pressed: bool) -> torn_core::InputEvent {
+        let event = PointerEvent {
+            pointer_id: PointerId(1),
+            position,
+            button: Some(torn_core::PointerButton::Primary),
+            buttons: if pressed {
+                PointerButtons::PRIMARY
+            } else {
+                PointerButtons::NONE
+            },
+            modifiers: Modifiers::NONE,
+        };
+        if pressed {
+            torn_core::InputEvent::PointerDown(event)
+        } else {
+            torn_core::InputEvent::PointerUp(event)
+        }
     }
 }

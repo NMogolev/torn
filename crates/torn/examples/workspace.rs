@@ -37,22 +37,23 @@ impl WorkspaceDemo {
         let mut runtime = UiRuntime::new(WorkspaceShell);
         let root = runtime.root();
 
-        let mut save = Button::new();
+        let save = Button::new();
         {
             let layout = Rc::clone(&layout);
             let layout_path = layout_path.clone();
-            save.set_on_click(move || save_layout(&layout.borrow(), &layout_path));
+            save.activated()
+                .subscribe(move |()| save_layout(&layout.borrow(), &layout_path));
         }
         let save = runtime.append_child(root, save).expect("root exists");
         runtime
             .append_child(save, label("Сохранить", 13.0, Color::WHITE))
             .expect("save button exists");
 
-        let mut restore = Button::new();
+        let restore = Button::new();
         {
             let layout = Rc::clone(&layout);
             let layout_path = layout_path.clone();
-            restore.set_on_click(move || {
+            restore.activated().subscribe(move |()| {
                 if let Some(restored) = load_layout(&layout_path) {
                     *layout.borrow_mut() = restored;
                     println!("Рабочая область восстановлена из {}", layout_path.display());

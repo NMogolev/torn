@@ -31,6 +31,11 @@ pub trait Widget {
     fn accepts_focus(&self) -> bool {
         false
     }
+
+    /// Returns whether the runtime clips all descendant painting to this widget's bounds.
+    fn clips_children(&self) -> bool {
+        false
+    }
 }
 
 impl<W> Widget for Box<W>
@@ -55,5 +60,9 @@ where
 
     fn accepts_focus(&self) -> bool {
         (**self).accepts_focus()
+    }
+
+    fn clips_children(&self) -> bool {
+        (**self).clips_children()
     }
 }

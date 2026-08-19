@@ -6,12 +6,15 @@ use std::{
 };
 
 use torn_core::{
-    Constraints, Diagnostic, DiagnosticReporter, FocusChanged, InputEvent, Point, PointerId, Rect,
-    WidgetId,
+    Constraints, Diagnostic, DiagnosticReporter, FocusChanged, InputEvent, Key, Modifiers,
+    NamedKey, Point, PointerId, Rect, WidgetId,
 };
 use torn_render::PaintContext;
 
-use crate::{EventContext, EventPhase, EventStatus, LayoutResult, UiEnvironment, Widget, event};
+use crate::{
+    EventContext, EventPhase, EventStatus, KeyboardCommand, LayoutResult, UiEnvironment, Widget,
+    event,
+};
 use event::{EventEffects, FocusRequest};
 
 /// Per-node invalidation state maintained by [`UiRuntime`].
@@ -93,7 +96,9 @@ pub struct UiRuntime {
     diagnostics: Vec<Diagnostic>,
     reporter: Option<Box<dyn DiagnosticReporter>>,
     pointer_capture: HashMap<PointerId, WidgetId>,
+    hovered: HashMap<PointerId, WidgetId>,
     focused: Option<WidgetId>,
+    commands: Vec<KeyboardCommand>,
     redraw_requested: bool,
     environment: UiEnvironment,
 }
@@ -154,7 +159,9 @@ impl UiRuntime {
             diagnostics: Vec::new(),
             reporter: None,
             pointer_capture: HashMap::new(),
+            hovered: HashMap::new(),
             focused: None,
+            commands: Vec::new(),
             redraw_requested: true,
             environment,
         };
@@ -353,6 +360,11 @@ impl UiRuntime {
         self.pointer_capture.get(&pointer_id).copied()
     }
 
+    /// Registers an application keyboard command.
+    pub fn register_command(&mut self, command: KeyboardCommand) {
+        self.commands.push(command);
+    }
+
     /// Returns whether a handler requested another frame since the last call.
     pub fn take_redraw_request(&mut self) -> bool {
         std::mem::replace(&mut self.redraw_requested, false)
@@ -378,6 +390,12 @@ impl UiRuntime {
 
     /// Delivers an input event through capture, target, and bubble phases.
     pub fn dispatch_event(&mut self, event: &InputEvent) -> EventStatus {
+        if let InputEvent::KeyDown(key) = event {
+            if self.dispatch_tab_navigation(key) || self.dispatch_command(key) {
+                return EventStatus::Handled;
+            }
+        }
+        self.update_hover(event);
         let Some(target) = self.select_target(event) else {
             return EventStatus::Ignored;
         };
@@ -523,8 +541,21 @@ impl UiRuntime {
             .as_ref()
             .expect("widget is present outside layout call")
             .paint(context, &self.environment, node.bounds);
-        for child in &node.children {
-            self.paint_node(*child, context);
+        let clips_children = node
+            .widget
+            .as_ref()
+            .expect("widget is present outside layout call")
+            .clips_children();
+        if clips_children {
+            context.with_clip(node.bounds, |context| {
+                for child in &node.children {
+                    self.paint_node(*child, context);
+                }
+            });
+        } else {
+            for child in &node.children {
+                self.paint_node(*child, context);
+            }
         }
     }
 
@@ -543,6 +574,112 @@ impl UiRuntime {
             return event::pointer_position(event).and_then(|position| self.hit_test(position));
         }
         self.focused.filter(|id| self.is_visible(*id))
+    }
+
+    fn update_hover(&mut self, event: &InputEvent) {
+        let InputEvent::PointerMove(pointer) = event else {
+            return;
+        };
+        let next = self.hit_test(pointer.position);
+        let previous = self.hovered.get(&pointer.pointer_id).copied();
+        if previous == next {
+            return;
+        }
+        if let Some(previous) = previous.filter(|id| self.is_visible(*id)) {
+            self.dispatch_synthetic_pointer(previous, &InputEvent::PointerLeave(pointer.clone()));
+        }
+        if let Some(next) = next {
+            self.hovered.insert(pointer.pointer_id, next);
+            self.dispatch_synthetic_pointer(next, &InputEvent::PointerEnter(pointer.clone()));
+        } else {
+            self.hovered.remove(&pointer.pointer_id);
+        }
+    }
+
+    fn dispatch_synthetic_pointer(&mut self, target: WidgetId, event: &InputEvent) {
+        let mut effects = EventEffects {
+            propagation_stopped: false,
+            pointer_capture: self.pointer_capture.clone(),
+            focused: self.focused,
+            focus_request: None,
+            redraw_requested: false,
+        };
+        let route = self.route_to(target);
+        for id in route.iter().take(route.len().saturating_sub(1)) {
+            let _ = self.dispatch_to(*id, target, EventPhase::Capture, event, &mut effects);
+            if effects.propagation_stopped {
+                self.finish_event(event, effects);
+                return;
+            }
+        }
+        let _ = self.dispatch_to(target, target, EventPhase::Target, event, &mut effects);
+        if !effects.propagation_stopped {
+            for id in route.iter().rev().skip(1) {
+                let _ = self.dispatch_to(*id, target, EventPhase::Bubble, event, &mut effects);
+                if effects.propagation_stopped {
+                    break;
+                }
+            }
+        }
+        self.finish_event(event, effects);
+    }
+
+    fn dispatch_command(&mut self, key: &torn_core::KeyEvent) -> bool {
+        let Some(command) = self
+            .commands
+            .iter()
+            .find(|command| command.shortcut().matches(key))
+        else {
+            return false;
+        };
+        command.activate();
+        self.redraw_requested = true;
+        true
+    }
+
+    fn dispatch_tab_navigation(&mut self, key: &torn_core::KeyEvent) -> bool {
+        if key.repeat || key.key != Key::Named(NamedKey::Tab) {
+            return false;
+        }
+        if key.modifiers != Modifiers::NONE && key.modifiers != Modifiers::SHIFT {
+            return false;
+        }
+        let focusable = self.focusable_nodes();
+        if focusable.is_empty() {
+            return false;
+        }
+        let current = self
+            .focused
+            .and_then(|focused| focusable.iter().position(|id| *id == focused));
+        let index = match (current, key.modifiers == Modifiers::SHIFT) {
+            (Some(index), false) => (index + 1) % focusable.len(),
+            (Some(0), true) => focusable.len() - 1,
+            (Some(index), true) => index - 1,
+            (None, _) => 0,
+        };
+        self.set_focus(Some(focusable[index]));
+        true
+    }
+
+    fn focusable_nodes(&self) -> Vec<WidgetId> {
+        let mut result = Vec::new();
+        self.collect_focusable(self.root, &mut result);
+        result
+    }
+
+    fn collect_focusable(&self, id: WidgetId, result: &mut Vec<WidgetId>) {
+        let Some(node) = self.node(id) else {
+            return;
+        };
+        if !node.visible {
+            return;
+        }
+        if node.accepts_focus {
+            result.push(id);
+        }
+        for child in &node.children {
+            self.collect_focusable(*child, result);
+        }
     }
 
     fn hit_test(&self, position: Point) -> Option<WidgetId> {
@@ -640,12 +777,17 @@ impl UiRuntime {
                 .then_some(id),
             FocusRequest::Clear => None,
         };
+        self.set_focus(requested);
+    }
+
+    fn set_focus(&mut self, requested: Option<WidgetId>) {
         if requested == self.focused {
             return;
         }
+        let previous = self.focused;
         self.focused = requested;
         self.redraw_requested = true;
-        if let Some(target) = requested {
+        for target in previous.into_iter().chain(requested) {
             let mut focus_effects = EventEffects {
                 propagation_stopped: false,
                 pointer_capture: self.pointer_capture.clone(),
@@ -702,6 +844,7 @@ impl UiRuntime {
             self.free_slots.push(id.index());
         }
         self.pointer_capture.retain(|_, captured| *captured != id);
+        self.hovered.retain(|_, hovered| *hovered != id);
         if self.focused == Some(id) {
             self.focused = None;
         }
@@ -732,6 +875,7 @@ impl UiRuntime {
     fn clear_layout_state(&mut self) {
         self.layout = None;
         self.pointer_capture.clear();
+        self.hovered.clear();
         self.focused = None;
     }
 
@@ -752,6 +896,8 @@ fn pointer_id(event: &InputEvent) -> Option<PointerId> {
     match event {
         InputEvent::PointerDown(event)
         | InputEvent::PointerMove(event)
+        | InputEvent::PointerEnter(event)
+        | InputEvent::PointerLeave(event)
         | InputEvent::PointerUp(event) => Some(event.pointer_id),
         InputEvent::Wheel(_)
         | InputEvent::KeyDown(_)
@@ -784,8 +930,8 @@ mod tests {
     use std::{cell::RefCell, rc::Rc};
 
     use torn_core::{
-        Color, Constraints, InputEvent, Modifiers, Point, PointerButton, PointerButtons,
-        PointerEvent, PointerId, Rect, Size,
+        Color, Constraints, InputEvent, Key, Modifiers, NamedKey, Point, PointerButton,
+        PointerButtons, PointerEvent, PointerId, Rect, Size,
     };
     use torn_render::{DisplayList, PaintContext};
 
@@ -1176,6 +1322,55 @@ mod tests {
             events.borrow().last().map(|event| event.0),
             Some("capturing")
         );
+    }
+
+    #[test]
+    fn tab_and_shift_tab_cycle_focusable_widgets_in_tree_order() {
+        let events = Rc::new(RefCell::new(Vec::new()));
+        let mut runtime = UiRuntime::new(Row::new());
+        let root = runtime.root();
+        let first = runtime
+            .append_child(
+                root,
+                Recorder {
+                    size: size(10.0, 10.0),
+                    name: "first",
+                    events: Rc::clone(&events),
+                    capture_on_down: false,
+                    focus_on_down: true,
+                },
+            )
+            .expect("add first focusable widget");
+        let second = runtime
+            .append_child(
+                root,
+                Recorder {
+                    size: size(10.0, 10.0),
+                    name: "second",
+                    events,
+                    capture_on_down: false,
+                    focus_on_down: true,
+                },
+            )
+            .expect("add second focusable widget");
+        runtime
+            .layout(Constraints::UNBOUNDED)
+            .expect("layout succeeds");
+        let tab = |modifiers| {
+            InputEvent::KeyDown(torn_core::KeyEvent {
+                key: Key::Named(NamedKey::Tab),
+                code: torn_core::KeyCode::Unidentified,
+                repeat: false,
+                modifiers,
+            })
+        };
+
+        let _ = runtime.dispatch_event(&tab(Modifiers::NONE));
+        assert_eq!(runtime.focused_widget(), Some(first));
+        let _ = runtime.dispatch_event(&tab(Modifiers::NONE));
+        assert_eq!(runtime.focused_widget(), Some(second));
+        let _ = runtime.dispatch_event(&tab(Modifiers::SHIFT));
+        assert_eq!(runtime.focused_widget(), Some(first));
     }
 
     #[test]

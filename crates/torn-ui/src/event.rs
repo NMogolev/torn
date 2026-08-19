@@ -130,6 +130,8 @@ pub(crate) fn pointer_position(event: &InputEvent) -> Option<Point> {
     match event {
         InputEvent::PointerDown(event)
         | InputEvent::PointerMove(event)
+        | InputEvent::PointerEnter(event)
+        | InputEvent::PointerLeave(event)
         | InputEvent::PointerUp(event) => Some(event.position),
         InputEvent::Wheel(event) => Some(event.position),
         InputEvent::KeyDown(_)
@@ -144,6 +146,8 @@ pub(crate) fn with_local_position(event: &InputEvent, origin: Point) -> InputEve
     match &mut event {
         InputEvent::PointerDown(pointer)
         | InputEvent::PointerMove(pointer)
+        | InputEvent::PointerEnter(pointer)
+        | InputEvent::PointerLeave(pointer)
         | InputEvent::PointerUp(pointer) => {
             pointer.position.x -= origin.x;
             pointer.position.y -= origin.y;

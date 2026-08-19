@@ -316,6 +316,10 @@ pub enum InputEvent {
     PointerDown(PointerEvent),
     /// A pointing-device contact moved.
     PointerMove(PointerEvent),
+    /// A pointing-device contact entered a widget's hit-test bounds.
+    PointerEnter(PointerEvent),
+    /// A pointing-device contact left a widget's hit-test bounds.
+    PointerLeave(PointerEvent),
     /// A pointer button was released.
     PointerUp(PointerEvent),
     /// The pointing device wheel moved.
