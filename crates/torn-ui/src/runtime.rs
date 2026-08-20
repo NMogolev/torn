@@ -17,6 +17,8 @@ use crate::{
 };
 use event::{EventEffects, FocusRequest};
 
+const MAX_RETAINED_DIAGNOSTICS: usize = 256;
+
 /// Per-node invalidation state maintained by [`UiRuntime`].
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct DirtyFlags {
@@ -306,7 +308,11 @@ impl UiRuntime {
         self.reporter = None;
     }
 
-    /// Returns diagnostics emitted since the runtime was created or last drained.
+    /// Returns up to the 256 most recent diagnostics emitted by the runtime.
+    ///
+    /// Older diagnostics are discarded so a repeatedly failing application widget
+    /// cannot make the runtime retain unbounded error messages. An external
+    /// [`DiagnosticReporter`] still receives every emitted diagnostic.
     #[must_use]
     pub fn diagnostics(&self) -> &[Diagnostic] {
         &self.diagnostics
@@ -904,6 +910,9 @@ impl UiRuntime {
         if let Some(reporter) = &mut self.reporter {
             reporter.report(&diagnostic);
         }
+        if self.diagnostics.len() == MAX_RETAINED_DIAGNOSTICS {
+            self.diagnostics.remove(0);
+        }
         self.diagnostics.push(diagnostic);
     }
 }
@@ -943,7 +952,10 @@ fn panic_message(payload: Box<dyn Any + Send>) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::{cell::RefCell, rc::Rc};
+    use std::{
+        cell::{Cell, RefCell},
+        rc::Rc,
+    };
 
     use torn_core::{
         Color, Constraints, InputEvent, Key, Modifiers, NamedKey, Point, PointerButton,
@@ -971,6 +983,10 @@ mod tests {
         observed: Rc<RefCell<Vec<(Color, f32, String)>>>,
     }
 
+    struct RepeatedlyPanickingWidget {
+        panic_count: Rc<Cell<usize>>,
+    }
+
     impl Widget for EnvironmentRecorder {
         fn layout(
             &mut self,
@@ -992,6 +1008,13 @@ mod tests {
                 environment.scale_factor(),
                 environment.locale().to_owned(),
             ));
+        }
+    }
+
+    impl Widget for RepeatedlyPanickingWidget {
+        fn layout(&mut self, _: &mut LayoutContext<'_>, _: Constraints) -> LayoutResult {
+            self.panic_count.set(self.panic_count.get() + 1);
+            panic!("repeated application failure")
         }
     }
 
@@ -1416,5 +1439,27 @@ mod tests {
             .expect("paint succeeds");
 
         assert_eq!(*observed.borrow(), vec![expected.clone(), expected]);
+    }
+
+    #[test]
+    fn retains_a_bounded_history_of_repeated_widget_panics() {
+        let panic_count = Rc::new(Cell::new(0));
+        let mut runtime = UiRuntime::new(RepeatedlyPanickingWidget {
+            panic_count: Rc::clone(&panic_count),
+        });
+
+        for _ in 0..=super::MAX_RETAINED_DIAGNOSTICS {
+            assert_eq!(
+                runtime.layout(Constraints::UNBOUNDED),
+                Err(UiRuntimeError::WidgetPanicked)
+            );
+        }
+
+        assert_eq!(panic_count.get(), super::MAX_RETAINED_DIAGNOSTICS + 1);
+        assert_eq!(runtime.diagnostics().len(), super::MAX_RETAINED_DIAGNOSTICS);
+        assert_eq!(
+            runtime.take_diagnostics().len(),
+            super::MAX_RETAINED_DIAGNOSTICS
+        );
     }
 }
