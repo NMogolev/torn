@@ -64,6 +64,12 @@ impl FontFace {
             .clone()
     }
 
+    /// Returns whether this face contains a glyph for `character`.
+    #[must_use]
+    pub fn has_glyph(&self, character: char) -> bool {
+        self.inner.has_glyph(character)
+    }
+
     /// Rasterizes one glyph to an 8-bit coverage bitmap.
     #[must_use]
     pub fn rasterize(&self, glyph_id: u16, font_size: f32) -> GlyphBitmap {
@@ -285,21 +291,42 @@ pub trait TextShaper {
     fn layout(&self, text: &str, style: &TextStyle, width: Option<f32>) -> TextLayout;
 }
 
-/// A small deterministic shaper for one font face.
+/// A small deterministic shaper for a primary face and optional fallback faces.
 ///
 /// It performs glyph lookup, line breaking, placement, and line metric
 /// calculation through `fontdue`. It intentionally does not implement kerning,
-/// complex OpenType shaping, bidirectional reordering, or fallback font selection.
+/// complex OpenType shaping, or bidirectional reordering.
 #[derive(Clone, Debug, PartialEq)]
 pub struct FontdueTextShaper {
-    font: FontFace,
+    fonts: Vec<FontFace>,
 }
 
 impl FontdueTextShaper {
-    /// Creates a shaper that uses `font` for every glyph.
+    /// Creates a shaper that uses `font` as its primary face.
     #[must_use]
-    pub const fn new(font: FontFace) -> Self {
-        Self { font }
+    pub fn new(font: FontFace) -> Self {
+        Self { fonts: vec![font] }
+    }
+
+    /// Adds fallback faces used when the primary face lacks a character.
+    ///
+    /// Faces are consulted in insertion order. When no configured face contains
+    /// a printable character, the shaper uses `?` from the primary face rather
+    /// than rendering the font's `.notdef` square.
+    #[must_use]
+    pub fn with_fallbacks(
+        font: FontFace,
+        fallback_fonts: impl IntoIterator<Item = FontFace>,
+    ) -> Self {
+        let mut fonts = vec![font];
+        fonts.extend(fallback_fonts);
+        Self { fonts }
+    }
+
+    /// Returns the primary font face.
+    #[must_use]
+    pub fn primary_font(&self) -> &FontFace {
+        &self.fonts[0]
     }
 
     /// Creates a shaper using Torn's bundled Ubuntu Light font.
@@ -321,6 +348,9 @@ impl TextShaper for FontdueTextShaper {
             return TextLayout::empty(text, style.color);
         }
 
+        let normalized_text = text.replace("\r\n", "\n").replace('\r', "\n");
+        let prepared_text = self.prepare_text(&normalized_text);
+        let font_refs = self.fonts.iter().map(FontFace::font).collect::<Vec<_>>();
         let mut layout =
             fontdue::layout::Layout::new(fontdue::layout::CoordinateSystem::PositiveYDown);
         let max_width = width.filter(|value| value.is_finite() && *value >= 0.0);
@@ -328,19 +358,37 @@ impl TextShaper for FontdueTextShaper {
             max_width,
             ..fontdue::layout::LayoutSettings::default()
         });
-        layout.append(
-            &[self.font.font()],
-            &fontdue::layout::TextStyle::new(text, style.font_size, 0),
-        );
+        for (font_index, segment) in prepared_text {
+            layout.append(
+                &font_refs,
+                &fontdue::layout::TextStyle::new(&segment, style.font_size, font_index),
+            );
+        }
 
-        let glyphs = layout
+        let mut glyph_runs = Vec::new();
+        for glyph in layout
             .glyphs()
             .iter()
-            .map(|glyph| PositionedGlyph {
+            .filter(|glyph| glyph.char_data.rasterize())
+        {
+            let font = self.fonts[glyph.font_index].clone();
+            let positioned = PositionedGlyph {
                 glyph_id: glyph.key.glyph_index,
                 position: Point::new(glyph.x, glyph.y),
-            })
-            .collect();
+            };
+            if let Some(run) = glyph_runs
+                .last_mut()
+                .filter(|run: &&mut GlyphRun| run.font == font)
+            {
+                run.glyphs.push(positioned);
+            } else {
+                glyph_runs.push(GlyphRun {
+                    font,
+                    font_size: style.font_size,
+                    glyphs: vec![positioned],
+                });
+            }
+        }
         let lines = layout
             .lines()
             .into_iter()
@@ -354,7 +402,7 @@ impl TextShaper for FontdueTextShaper {
             })
             .collect::<Vec<_>>();
         let size = Size::new(
-            measured_width(&layout, self.font.font(), style.font_size),
+            measured_width(&layout, &self.fonts, style.font_size),
             layout.height(),
         )
         .expect("fontdue produces finite non-negative layout metrics");
@@ -363,22 +411,46 @@ impl TextShaper for FontdueTextShaper {
             text: text.to_owned(),
             size,
             color: style.color,
-            glyph_runs: vec![GlyphRun {
-                font: self.font.clone(),
-                font_size: style.font_size,
-                glyphs,
-            }],
+            glyph_runs,
             lines,
         }
     }
 }
 
-fn measured_width(layout: &fontdue::layout::Layout, font: &Font, font_size: f32) -> f32 {
+impl FontdueTextShaper {
+    fn prepare_text(&self, text: &str) -> Vec<(usize, String)> {
+        let mut segments = Vec::<(usize, String)>::new();
+        for character in text.chars() {
+            let (font_index, character) = if character.is_control() {
+                (0, character)
+            } else if let Some(font_index) =
+                self.fonts.iter().position(|font| font.has_glyph(character))
+            {
+                (font_index, character)
+            } else {
+                (0, '?')
+            };
+            if let Some((previous_index, segment)) = segments.last_mut()
+                && *previous_index == font_index
+            {
+                segment.push(character);
+            } else {
+                segments.push((font_index, character.to_string()));
+            }
+        }
+        segments
+    }
+}
+
+fn measured_width(layout: &fontdue::layout::Layout, fonts: &[FontFace], font_size: f32) -> f32 {
     layout
         .glyphs()
         .iter()
+        .filter(|glyph| glyph.char_data.rasterize())
         .map(|glyph| {
-            let metrics = font.metrics_indexed(glyph.key.glyph_index, font_size);
+            let metrics = fonts[glyph.font_index]
+                .font()
+                .metrics_indexed(glyph.key.glyph_index, font_size);
             glyph.x - as_logical_coordinate(metrics.xmin) + metrics.advance_width
         })
         .fold(0.0, f32::max)
@@ -428,5 +500,51 @@ mod tests {
 
         assert!(layout.lines().len() > 1);
         assert!(layout.size().height() > 16.0);
+    }
+
+    #[test]
+    fn handles_explicit_line_breaks_without_emitting_notdef_glyphs() {
+        let layout = FontdueTextShaper::ubuntu_light().layout(
+            "first\nsecond",
+            &TextStyle::new(16.0, Color::BLACK),
+            None,
+        );
+
+        assert_eq!(layout.lines().len(), 2);
+        assert!(
+            layout
+                .glyph_runs()
+                .iter()
+                .flat_map(|run| run.glyphs())
+                .all(|glyph| glyph.glyph_id() != 0)
+        );
+    }
+
+    #[test]
+    fn treats_windows_line_endings_as_single_line_breaks() {
+        let layout = FontdueTextShaper::ubuntu_light().layout(
+            "first\r\nsecond\rthird",
+            &TextStyle::new(16.0, Color::BLACK),
+            None,
+        );
+
+        assert_eq!(layout.lines().len(), 3);
+    }
+
+    #[test]
+    fn replaces_unsupported_characters_instead_of_rendering_notdef_glyphs() {
+        let layout = FontdueTextShaper::ubuntu_light().layout(
+            "Torn 🦀",
+            &TextStyle::new(16.0, Color::BLACK),
+            None,
+        );
+
+        assert!(
+            layout
+                .glyph_runs()
+                .iter()
+                .flat_map(|run| run.glyphs())
+                .all(|glyph| glyph.glyph_id() != 0)
+        );
     }
 }

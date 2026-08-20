@@ -250,14 +250,18 @@ impl Widget for ShowcaseShell {
         context.fill_rect(bounds, CANVAS);
         let shaper = FontdueTextShaper::ubuntu_light();
         context.draw_text(
-            shaper.layout("TORN / COMPONENT LAB", &TextStyle::new(12.0, TEAL), None),
+            shaper.layout(
+                "TORN / COMPONENT LAB",
+                &TextStyle::new(12.0, TEAL),
+                Some(bounds.size.width()),
+            ),
             Point::new(bounds.origin.x + PAGE_INSET, bounds.origin.y + 24.0),
         );
         context.draw_text(
             shaper.layout(
                 "Интерфейс — это ваш язык.",
                 &TextStyle::new(26.0, TEXT),
-                None,
+                Some(bounds.size.width()),
             ),
             Point::new(bounds.origin.x + PAGE_INSET, bounds.origin.y + 43.0),
         );
@@ -302,7 +306,7 @@ impl Widget for HeroContent {
             shaper.layout(
                 "Стиль — не клетка, а набор возможностей.",
                 &TextStyle::new(30.0, TEXT),
-                None,
+                Some((bounds.size.width() - 230.0).max(0.0)),
             ),
             Point::new(bounds.origin.x, bounds.origin.y + 2.0),
         );
@@ -310,7 +314,7 @@ impl Widget for HeroContent {
             shaper.layout(
                 "Собирайте строгие ретро-панели, мягкие карточки или собственный визуальный язык.\nТема даёт старт, а каждый виджет можно настроить точечно.",
                 &TextStyle::new(15.0, MUTED),
-                None,
+                Some((bounds.size.width() - 230.0).max(0.0)),
             ),
             Point::new(bounds.origin.x, bounds.origin.y + 52.0),
         );
@@ -384,11 +388,19 @@ impl Widget for CardContent {
             Point::new(bounds.origin.x + 12.0, bounds.origin.y + 6.0),
         );
         context.draw_text(
-            shaper.layout(self.title, &TextStyle::new(19.0, TEXT), None),
+            shaper.layout(
+                self.title,
+                &TextStyle::new(19.0, TEXT),
+                Some(bounds.size.width()),
+            ),
             Point::new(bounds.origin.x, bounds.origin.y + 48.0),
         );
         context.draw_text(
-            shaper.layout(self.body, &TextStyle::new(14.0, MUTED), None),
+            shaper.layout(
+                self.body,
+                &TextStyle::new(14.0, MUTED),
+                Some(bounds.size.width()),
+            ),
             Point::new(bounds.origin.x, bounds.origin.y + 82.0),
         );
         let line_y = bounds.origin.y + (bounds.size.height() - 12.0).max(100.0);

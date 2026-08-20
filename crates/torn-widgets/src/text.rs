@@ -1,20 +1,45 @@
 use torn_core::{Constraints, Rect};
-use torn_render::{PaintContext, TextLayout};
+use torn_render::{FontdueTextShaper, PaintContext, TextLayout, TextStyle};
 use torn_ui::{LayoutContext, LayoutResult, UiEnvironment, Widget};
 
-/// A widget that paints a pre-shaped text layout.
+/// A widget that paints text.
 ///
-/// Text shaping remains separate from the widget layer. Construct `Text` from
-/// a [`TextLayout`] supplied by a [`torn_render::TextShaper`].
+/// [`Self::new`] accepts a pre-shaped layout for fixed-size text. Use
+/// [`Self::wrapping`] for text that must reflow to its available width.
 pub struct Text {
     layout: TextLayout,
+    source: Option<TextSource>,
+}
+
+struct TextSource {
+    text: String,
+    shaper: FontdueTextShaper,
+    style: TextStyle,
 }
 
 impl Text {
     /// Creates a text widget from a pre-shaped layout.
     #[must_use]
     pub const fn new(layout: TextLayout) -> Self {
-        Self { layout }
+        Self {
+            layout,
+            source: None,
+        }
+    }
+
+    /// Creates text that reshapes and wraps to its available width during layout.
+    #[must_use]
+    pub fn wrapping(text: impl Into<String>, shaper: FontdueTextShaper, style: TextStyle) -> Self {
+        let text = text.into();
+        let layout = shaper.layout(&text, &style, None);
+        Self {
+            layout,
+            source: Some(TextSource {
+                text,
+                shaper,
+                style,
+            }),
+        }
     }
 
     /// Returns the pre-shaped text layout.
@@ -26,6 +51,11 @@ impl Text {
 
 impl Widget for Text {
     fn layout(&mut self, _: &mut LayoutContext<'_>, constraints: Constraints) -> LayoutResult {
+        if let Some(source) = &self.source {
+            let max_width = constraints.max().width();
+            let width = max_width.is_finite().then_some(max_width.max(0.0));
+            self.layout = source.shaper.layout(&source.text, &source.style, width);
+        }
         LayoutResult::new(constraints.constrain(self.layout.size()))
     }
 
@@ -70,5 +100,23 @@ mod tests {
                 origin: Point::ZERO,
             }]
         );
+    }
+
+    #[test]
+    fn wraps_to_the_available_width() {
+        let mut runtime = UiRuntime::new(Text::wrapping(
+            "one two three",
+            FontdueTextShaper::ubuntu_light(),
+            TextStyle::new(16.0, Color::BLACK),
+        ));
+
+        let result = runtime
+            .layout(Constraints::loose(
+                torn_core::Size::new(30.0, 200.0).expect("valid text constraints"),
+            ))
+            .expect("wrapping text layout succeeds");
+
+        assert!(result.size().height() > 16.0);
+        assert!(result.size().width() <= 30.0);
     }
 }
