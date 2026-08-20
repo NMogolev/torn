@@ -46,6 +46,11 @@ pub mod software {
     };
 }
 
+/// GPU display-list rendering powered by `wgpu`.
+pub mod gpu {
+    pub use torn_wgpu::{GpuError, GpuRenderer, GpuRendererError, RenderStatus};
+}
+
 #[cfg(test)]
 mod tests {
     use super::{Box, Button, Color, Constraints, Size, Text, UiRuntime, render};

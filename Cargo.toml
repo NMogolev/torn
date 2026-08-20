@@ -5,6 +5,7 @@ members = [
     "crates/torn-ui",
     "crates/torn-widgets",
     "crates/torn-software",
+    "crates/torn-wgpu",
     "crates/torn-platform",
     "crates/torn-platform-winit",
     "crates/torn-workspace",

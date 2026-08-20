@@ -14,6 +14,7 @@ workspace = true
 torn-core = { path = "../torn-core" }
 torn-render = { path = "../torn-render" }
 torn-software = { path = "../torn-software" }
+torn-wgpu = { path = "../torn-wgpu" }
 torn-platform = { path = "../torn-platform" }
 torn-ui = { path = "../torn-ui" }
 torn-widgets = { path = "../torn-widgets" }

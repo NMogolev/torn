@@ -1,6 +1,6 @@
 [package]
-name = "torn-platform-winit"
-description = "Winit native-window adapter for Torn"
+name = "torn-wgpu"
+description = "wgpu display-list renderer for Torn"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -11,7 +11,8 @@ repository.workspace = true
 workspace = true
 
 [dependencies]
+bytemuck = { version = "1.25.2", features = ["derive"] }
+pollster = "0.4.0"
 torn-core = { path = "../torn-core" }
-torn-platform = { path = "../torn-platform" }
-torn-wgpu = { path = "../torn-wgpu" }
-winit = { version = "0.30.13", features = ["rwh_06"] }
+torn-render = { path = "../torn-render" }
+wgpu = "29.0.4"
