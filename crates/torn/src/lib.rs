@@ -16,9 +16,9 @@ pub use torn_ui::{
 };
 pub use torn_widgets::{
     Align, Alignment, Box, Button, ButtonStyle, Checkbox, ComboBox, Container, DockArea,
-    DockAreaError, DockItem, Dropdown, ListView, Padding, ProgressBar, RadioButton, RadioGroup,
-    ScrollAxis, ScrollView, SizedBox, Slider, SplitAxis, Splitter, Stack, Text, TextField,
-    TextInput,
+    DockAreaError, DockItem, Dropdown, Image, ListView, MenuBar, Padding, ProgressBar, RadioButton,
+    RadioGroup, ScrollAxis, ScrollView, SizedBox, Slider, SplitAxis, Splitter, Stack, TabBar, Text,
+    TextField, TextInput, Toolbar,
 };
 pub use torn_workspace::{
     DockAxis, DocumentId, DocumentPresentation, FloatingDocument, FloatingPanel, LayoutNode,
@@ -35,7 +35,8 @@ pub mod platform {
 pub mod render {
     pub use torn_render::{
         DisplayCommand, DisplayList, FontError, FontFace, FontdueTextShaper, GlyphBitmap, GlyphRun,
-        LineMetrics, PaintContext, PositionedGlyph, TextLayout, TextShaper, TextStyle,
+        LineMetrics, PaintContext, PositionedGlyph, RasterImage, RasterImageError, TextLayout,
+        TextShaper, TextStyle,
     };
 }
 
