@@ -15,9 +15,10 @@ pub use torn_ui::{
     SystemAppearance, SystemTheme, Theme, UiEnvironment, UiRuntime, UiRuntimeError, Widget,
 };
 pub use torn_widgets::{
-    Align, Alignment, Box, Button, ButtonStyle, Checkbox, Container, DockArea, DockAreaError,
-    DockItem, ListView, Padding, RadioButton, RadioGroup, ScrollAxis, ScrollView, SizedBox,
-    SplitAxis, Splitter, Stack, Text, TextField, TextInput,
+    Align, Alignment, Box, Button, ButtonStyle, Checkbox, ComboBox, Container, DockArea,
+    DockAreaError, DockItem, Dropdown, ListView, Padding, ProgressBar, RadioButton, RadioGroup,
+    ScrollAxis, ScrollView, SizedBox, Slider, SplitAxis, Splitter, Stack, Text, TextField,
+    TextInput,
 };
 pub use torn_workspace::{
     DockAxis, DocumentId, DocumentPresentation, FloatingDocument, FloatingPanel, LayoutNode,

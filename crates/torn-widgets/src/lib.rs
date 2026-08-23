@@ -5,11 +5,14 @@ mod box_widget;
 mod button;
 mod checkbox;
 mod dock_area;
+mod dropdown;
 mod list_view;
 mod padding;
+mod progress_bar;
 mod radio_button;
 mod scroll_view;
 mod sized_box;
+mod slider;
 mod splitter;
 mod stack;
 mod text;
@@ -20,11 +23,14 @@ pub use box_widget::Box;
 pub use button::{Button, ButtonStyle};
 pub use checkbox::Checkbox;
 pub use dock_area::{DockArea, DockAreaError, DockItem};
+pub use dropdown::Dropdown;
 pub use list_view::ListView;
 pub use padding::Padding;
+pub use progress_bar::ProgressBar;
 pub use radio_button::{RadioButton, RadioGroup};
 pub use scroll_view::{ScrollAxis, ScrollView};
 pub use sized_box::SizedBox;
+pub use slider::Slider;
 pub use splitter::{SplitAxis, Splitter};
 pub use stack::Stack;
 pub use text::Text;
@@ -38,3 +44,6 @@ pub type Container = Box;
 
 /// Compatibility alias for [`TextField`].
 pub type TextInput = TextField;
+
+/// Compatibility alias for [`Dropdown`].
+pub type ComboBox = Dropdown;
