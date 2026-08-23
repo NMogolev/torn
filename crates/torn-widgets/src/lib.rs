@@ -6,7 +6,9 @@ mod button;
 mod checkbox;
 mod dock_area;
 mod dropdown;
+mod image;
 mod list_view;
+mod menu_bar;
 mod padding;
 mod progress_bar;
 mod radio_button;
@@ -15,8 +17,10 @@ mod sized_box;
 mod slider;
 mod splitter;
 mod stack;
+mod tab_bar;
 mod text;
 mod text_field;
+mod toolbar;
 
 pub use align::{Align, Alignment};
 pub use box_widget::Box;
@@ -24,7 +28,9 @@ pub use button::{Button, ButtonStyle};
 pub use checkbox::Checkbox;
 pub use dock_area::{DockArea, DockAreaError, DockItem};
 pub use dropdown::Dropdown;
+pub use image::Image;
 pub use list_view::ListView;
+pub use menu_bar::MenuBar;
 pub use padding::Padding;
 pub use progress_bar::ProgressBar;
 pub use radio_button::{RadioButton, RadioGroup};
@@ -33,8 +39,10 @@ pub use sized_box::SizedBox;
 pub use slider::Slider;
 pub use splitter::{SplitAxis, Splitter};
 pub use stack::Stack;
+pub use tab_bar::TabBar;
 pub use text::Text;
 pub use text_field::TextField;
+pub use toolbar::Toolbar;
 
 /// A single-child surface container.
 ///

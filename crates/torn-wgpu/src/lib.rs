@@ -10,7 +10,7 @@ use core::{fmt, ops::Range};
 
 use bytemuck::{Pod, Zeroable};
 use torn_core::{Affine, Color, Point, Rect};
-use torn_render::{DisplayCommand, DisplayList, TextLayout};
+use torn_render::{DisplayCommand, DisplayList, RasterImage, TextLayout};
 
 const SHAPE_SHADER: &str = r"
 struct VertexInput {
@@ -587,6 +587,9 @@ impl PreparedFrame {
                 DisplayCommand::DrawText { layout, origin } => {
                     self.add_text(layout, *origin)?;
                 }
+                DisplayCommand::DrawImage { image, destination } => {
+                    self.add_image(image, *destination)?;
+                }
             }
         }
         self.saved_states
@@ -750,6 +753,52 @@ impl PreparedFrame {
             width,
             height,
             pixels,
+            vertices,
+            scissor: self.scissor(),
+        });
+        Ok(())
+    }
+
+    fn add_image(
+        &mut self,
+        image: &RasterImage,
+        destination: Rect,
+    ) -> Result<(), GpuRendererError> {
+        validate_rect(destination)?;
+        if image.width() == 0
+            || image.height() == 0
+            || destination.size.width() == 0.0
+            || destination.size.height() == 0.0
+        {
+            return Ok(());
+        }
+        let positions = [
+            destination.origin,
+            Point::new(destination.right(), destination.origin.y),
+            Point::new(destination.origin.x, destination.bottom()),
+            Point::new(destination.origin.x, destination.bottom()),
+            Point::new(destination.right(), destination.origin.y),
+            Point::new(destination.right(), destination.bottom()),
+        ];
+        let uvs = [
+            [0.0, 0.0],
+            [1.0, 0.0],
+            [0.0, 1.0],
+            [0.0, 1.0],
+            [1.0, 0.0],
+            [1.0, 1.0],
+        ];
+        let mut vertices = [TextVertex::zeroed(); 6];
+        for (vertex, (position, uv)) in vertices.iter_mut().zip(positions.into_iter().zip(uvs)) {
+            *vertex = TextVertex {
+                position: self.ndc(self.state.transform.transform_point(position)),
+                uv,
+            };
+        }
+        self.texts.push(PreparedText {
+            width: image.width(),
+            height: image.height(),
+            pixels: image.pixels().to_vec(),
             vertices,
             scissor: self.scissor(),
         });

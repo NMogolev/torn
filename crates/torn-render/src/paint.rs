@@ -1,6 +1,6 @@
 use torn_core::{Affine, Color, Point, Rect};
 
-use crate::{DisplayCommand, DisplayList, TextLayout};
+use crate::{DisplayCommand, DisplayList, RasterImage, TextLayout};
 
 /// A recording interface that appends paint operations to a [`DisplayList`].
 pub struct PaintContext<'a> {
@@ -111,6 +111,12 @@ impl<'a> PaintContext<'a> {
     pub fn draw_text(&mut self, layout: TextLayout, origin: Point) {
         self.display_list
             .push(DisplayCommand::DrawText { layout, origin });
+    }
+
+    /// Records a raster image scaled into `destination`.
+    pub fn draw_image(&mut self, image: RasterImage, destination: Rect) {
+        self.display_list
+            .push(DisplayCommand::DrawImage { image, destination });
     }
 }
 

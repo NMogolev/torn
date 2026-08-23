@@ -1,6 +1,6 @@
 use torn_core::{Affine, Color, Point, Rect};
 
-use crate::TextLayout;
+use crate::{RasterImage, TextLayout};
 
 /// An ordered, backend-neutral sequence of paint operations.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -101,5 +101,12 @@ pub enum DisplayCommand {
         layout: TextLayout,
         /// Top-left text origin in logical pixels.
         origin: Point,
+    },
+    /// Draws a raster image scaled into the supplied destination rectangle.
+    DrawImage {
+        /// Source pixels in 8-bit sRGBA format.
+        image: RasterImage,
+        /// Destination rectangle in logical pixels.
+        destination: Rect,
     },
 }

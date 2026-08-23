@@ -1,7 +1,7 @@
 use core::fmt;
 
 use torn_core::{Affine, Color, Diagnostic, DiagnosticReporter, Point, Rect, Size};
-use torn_render::{DisplayCommand, DisplayList, TextLayout};
+use torn_render::{DisplayCommand, DisplayList, RasterImage, TextLayout};
 
 use crate::{Pixel, PixelBuffer};
 
@@ -119,6 +119,9 @@ impl SoftwareRenderer {
                 }
                 DisplayCommand::DrawText { layout, origin } => {
                     Self::draw_text(target, layout, *origin, &state, scale_factor)?;
+                }
+                DisplayCommand::DrawImage { image, destination } => {
+                    Self::draw_image(target, image, *destination, &state, scale_factor)?;
                 }
             }
         }
@@ -260,6 +263,63 @@ impl SoftwareRenderer {
                         );
                     }
                 }
+            }
+        }
+        Ok(())
+    }
+
+    fn draw_image(
+        target: &mut PixelBuffer,
+        image: &RasterImage,
+        destination: Rect,
+        state: &RenderState,
+        scale_factor: f32,
+    ) -> Result<(), RenderError> {
+        validate_rect(destination)?;
+        if image.width() == 0
+            || image.height() == 0
+            || destination.size.width() == 0.0
+            || destination.size.height() == 0.0
+        {
+            return Ok(());
+        }
+        let inverse = state
+            .transform
+            .inverse()
+            .ok_or(RenderError::SingularTransform)?;
+        let (start_x, start_y, end_x, end_y) =
+            physical_bounds(destination, state.transform, target, scale_factor);
+        for y in start_y..end_y {
+            for x in start_x..end_x {
+                let point = logical_pixel_center(x, y, scale_factor);
+                if !is_visible(point, state) {
+                    continue;
+                }
+                let local = inverse.transform_point(point);
+                if !destination.contains(local) {
+                    continue;
+                }
+                let source_x = image_coordinate(
+                    (local.x - destination.origin.x) / destination.size.width(),
+                    image.width(),
+                );
+                let source_y = image_coordinate(
+                    (local.y - destination.origin.y) / destination.size.height(),
+                    image.height(),
+                );
+                let offset = source_y
+                    .saturating_mul(usize::try_from(image.width()).unwrap_or(usize::MAX))
+                    .saturating_add(source_x)
+                    .saturating_mul(4);
+                let Some(rgba) = image.pixels().get(offset..offset.saturating_add(4)) else {
+                    continue;
+                };
+                blend_pixel(
+                    target,
+                    x,
+                    y,
+                    Color::rgba8(rgba[0], rgba[1], rgba[2], rgba[3]),
+                );
             }
         }
         Ok(())
@@ -545,10 +605,19 @@ fn coordinate_to_usize(coordinate: f32) -> usize {
     }
 }
 
+fn image_coordinate(position: f32, length: u32) -> usize {
+    let coordinate = (position * as_logical_coordinate(length)).floor();
+    let coordinate = coordinate.clamp(0.0, as_logical_coordinate(length.saturating_sub(1)));
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    {
+        coordinate as usize
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use torn_core::{Affine, Color, DiagnosticSeverity, Point, Rect, Size};
-    use torn_render::{DisplayList, FontdueTextShaper, PaintContext, TextStyle};
+    use torn_render::{DisplayList, FontdueTextShaper, PaintContext, RasterImage, TextStyle};
 
     use super::{Pixel, PixelBuffer, RenderError, SoftwareRenderer};
 
@@ -630,6 +699,31 @@ mod tests {
                 .iter()
                 .all(|pixel| *pixel == Pixel::rgba(0, 0, 0, 255))
         );
+    }
+
+    #[test]
+    fn scales_and_rasterizes_images() {
+        let image = RasterImage::new(
+            2,
+            1,
+            vec![
+                255, 0, 0, 255, // red
+                0, 0, 255, 255, // blue
+            ],
+        )
+        .expect("valid RGBA image");
+        let mut list = DisplayList::new();
+        PaintContext::new(&mut list).draw_image(image, rect(0.0, 0.0, 4.0, 1.0));
+        let mut pixels = PixelBuffer::new(4, 1).expect("small test buffer");
+
+        SoftwareRenderer
+            .render(&list, &mut pixels)
+            .expect("valid image display list");
+
+        assert_eq!(pixels.get(0, 0), Some(Pixel::rgba(255, 0, 0, 255)));
+        assert_eq!(pixels.get(1, 0), Some(Pixel::rgba(255, 0, 0, 255)));
+        assert_eq!(pixels.get(2, 0), Some(Pixel::rgba(0, 0, 255, 255)));
+        assert_eq!(pixels.get(3, 0), Some(Pixel::rgba(0, 0, 255, 255)));
     }
 
     #[test]
