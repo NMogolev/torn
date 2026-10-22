@@ -101,7 +101,7 @@ impl Widget for ScrollView {
     }
 
     fn handle_event(&mut self, context: &mut EventContext<'_>, event: &InputEvent) -> EventStatus {
-        if context.phase() != EventPhase::Bubble {
+        if context.phase() == EventPhase::Capture {
             return EventStatus::Ignored;
         }
         let InputEvent::Wheel(wheel) = event else {
@@ -116,7 +116,7 @@ impl Widget for ScrollView {
         if (self.offset - old).abs() <= f32::EPSILON {
             return EventStatus::Ignored;
         }
-        context.request_redraw();
+        context.request_layout();
         EventStatus::Handled
     }
 
@@ -141,4 +141,46 @@ fn axis_coordinate(point: Point, axis: ScrollAxis) -> f32 {
 
 fn size(width: f32, height: f32) -> Size {
     Size::new(width, height).expect("scroll layout sizes are non-negative and not NaN")
+}
+
+#[cfg(test)]
+mod tests {
+    use torn_core::{Modifiers, Rect, WheelEvent};
+    use torn_render::{DisplayList, PaintContext};
+    use torn_ui::UiRuntime;
+
+    use crate::SizedBox;
+
+    use super::*;
+
+    #[test]
+    fn wheel_scrolling_relayouts_children_before_the_next_paint() {
+        let mut runtime = UiRuntime::new(ScrollView::vertical());
+        let child = runtime
+            .append_child(runtime.root(), SizedBox::new(Some(100.0), Some(100.0)))
+            .expect("scroll view exists");
+        let viewport = Constraints::tight(size(100.0, 20.0)).expect("viewport is finite");
+        runtime.layout(viewport).expect("initial layout succeeds");
+        assert_eq!(
+            runtime.bounds(child),
+            Some(Rect::new(Point::ZERO, size(100.0, 100.0)))
+        );
+
+        let wheel = InputEvent::Wheel(WheelEvent {
+            position: Point::new(5.0, 5.0),
+            delta: WheelDelta::Pixels(Point::new(0.0, -20.0)),
+            modifiers: Modifiers::NONE,
+        });
+        assert_eq!(runtime.dispatch_event(&wheel), EventStatus::Handled);
+        assert!(runtime.last_layout().is_none());
+
+        let mut display_list = DisplayList::new();
+        runtime
+            .paint(&mut PaintContext::new(&mut display_list))
+            .expect("deferred layout and paint succeed");
+        assert_eq!(
+            runtime.bounds(child),
+            Some(Rect::new(Point::new(0.0, -20.0), size(100.0, 100.0)))
+        );
+    }
 }

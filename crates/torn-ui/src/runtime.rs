@@ -406,6 +406,13 @@ impl UiRuntime {
 
     /// Delivers an input event through capture, target, and bubble phases.
     pub fn dispatch_event(&mut self, event: &InputEvent) -> EventStatus {
+        if matches!(event, InputEvent::WindowFocusChanged(false)) {
+            self.cancel_interactions();
+            return EventStatus::Handled;
+        }
+        if let InputEvent::PointerLeave(pointer) = event {
+            return self.clear_hover(pointer);
+        }
         if let InputEvent::KeyDown(key) = event {
             if self.dispatch_tab_navigation(key) || self.dispatch_command(key) {
                 return EventStatus::Handled;
@@ -453,6 +460,45 @@ impl UiRuntime {
         }
         self.finish_event(event, effects);
         handled
+    }
+
+    fn cancel_interactions(&mut self) {
+        let captures: Vec<_> = self
+            .pointer_capture
+            .iter()
+            .map(|(id, target)| (*id, *target))
+            .collect();
+        for (pointer_id, target) in captures {
+            let event = InputEvent::PointerCancel(torn_core::PointerEvent {
+                pointer_id,
+                position: Point::ZERO,
+                button: None,
+                buttons: torn_core::PointerButtons::NONE,
+                modifiers: Modifiers::NONE,
+            });
+            let _ = self.dispatch_synthetic_pointer(target, &event);
+        }
+        self.pointer_capture.clear();
+
+        let hovered: Vec<_> = self.hovered.drain().collect();
+        for (pointer_id, target) in hovered {
+            let event = InputEvent::PointerLeave(torn_core::PointerEvent {
+                pointer_id,
+                position: Point::ZERO,
+                button: None,
+                buttons: torn_core::PointerButtons::NONE,
+                modifiers: Modifiers::NONE,
+            });
+            let _ = self.dispatch_synthetic_pointer(target, &event);
+        }
+        self.set_focus(None);
+    }
+
+    fn clear_hover(&mut self, pointer: &torn_core::PointerEvent) -> EventStatus {
+        let Some(target) = self.hovered.remove(&pointer.pointer_id) else {
+            return EventStatus::Ignored;
+        };
+        self.dispatch_synthetic_pointer(target, &InputEvent::PointerLeave(pointer.clone()))
     }
 
     fn layout_node(
@@ -613,7 +659,7 @@ impl UiRuntime {
         }
     }
 
-    fn dispatch_synthetic_pointer(&mut self, target: WidgetId, event: &InputEvent) {
+    fn dispatch_synthetic_pointer(&mut self, target: WidgetId, event: &InputEvent) -> EventStatus {
         let mut effects = EventEffects {
             propagation_stopped: false,
             pointer_capture: self.pointer_capture.clone(),
@@ -623,23 +669,34 @@ impl UiRuntime {
             redraw_requested: false,
         };
         let route = self.route_to(target);
+        let mut handled = EventStatus::Ignored;
         for id in route.iter().take(route.len().saturating_sub(1)) {
-            let _ = self.dispatch_to(*id, target, EventPhase::Capture, event, &mut effects);
+            handled = merge_status(
+                handled,
+                self.dispatch_to(*id, target, EventPhase::Capture, event, &mut effects),
+            );
             if effects.propagation_stopped {
                 self.finish_event(event, effects);
-                return;
+                return handled;
             }
         }
-        let _ = self.dispatch_to(target, target, EventPhase::Target, event, &mut effects);
+        handled = merge_status(
+            handled,
+            self.dispatch_to(target, target, EventPhase::Target, event, &mut effects),
+        );
         if !effects.propagation_stopped {
             for id in route.iter().rev().skip(1) {
-                let _ = self.dispatch_to(*id, target, EventPhase::Bubble, event, &mut effects);
+                handled = merge_status(
+                    handled,
+                    self.dispatch_to(*id, target, EventPhase::Bubble, event, &mut effects),
+                );
                 if effects.propagation_stopped {
                     break;
                 }
             }
         }
         self.finish_event(event, effects);
+        handled
     }
 
     fn dispatch_command(&mut self, key: &torn_core::KeyEvent) -> bool {
@@ -715,7 +772,11 @@ impl UiRuntime {
                 return Some(hit);
             }
         }
-        Some(id)
+        node.widget
+            .as_ref()
+            .expect("widget is present outside layout call")
+            .participates_in_hit_test()
+            .then_some(id)
     }
 
     fn route_to(&self, target: WidgetId) -> Vec<WidgetId> {
@@ -779,7 +840,10 @@ impl UiRuntime {
 
     fn finish_event(&mut self, event: &InputEvent, mut effects: EventEffects) {
         if let Some(pointer_id) = pointer_id(event) {
-            if matches!(event, InputEvent::PointerUp(_)) {
+            if matches!(
+                event,
+                InputEvent::PointerUp(_) | InputEvent::PointerCancel(_)
+            ) {
                 effects.pointer_capture.remove(&pointer_id);
             }
         }
@@ -923,12 +987,15 @@ fn pointer_id(event: &InputEvent) -> Option<PointerId> {
         | InputEvent::PointerMove(event)
         | InputEvent::PointerEnter(event)
         | InputEvent::PointerLeave(event)
-        | InputEvent::PointerUp(event) => Some(event.pointer_id),
+        | InputEvent::PointerUp(event)
+        | InputEvent::PointerCancel(event) => Some(event.pointer_id),
         InputEvent::Wheel(_)
         | InputEvent::KeyDown(_)
         | InputEvent::KeyUp(_)
         | InputEvent::TextInput(_)
-        | InputEvent::FocusChanged(_) => None,
+        | InputEvent::TextPreedit(_)
+        | InputEvent::FocusChanged(_)
+        | InputEvent::WindowFocusChanged(_) => None,
     }
 }
 
@@ -1361,6 +1428,44 @@ mod tests {
             events.borrow().last().map(|event| event.0),
             Some("capturing")
         );
+    }
+
+    #[test]
+    fn window_focus_loss_cancels_captures_clears_hover_and_focus() {
+        let events = Rc::new(RefCell::new(Vec::new()));
+        let mut runtime = UiRuntime::new(Recorder {
+            size: size(10.0, 10.0),
+            name: "root",
+            events: Rc::clone(&events),
+            capture_on_down: true,
+            focus_on_down: true,
+        });
+        runtime
+            .layout(Constraints::UNBOUNDED)
+            .expect("layout succeeds");
+        let _ = runtime.dispatch_event(&pointer(Point::new(5.0, 5.0), true));
+        let _ = runtime.dispatch_event(&InputEvent::PointerMove(PointerEvent {
+            pointer_id: PointerId(1),
+            position: Point::new(5.0, 5.0),
+            button: None,
+            buttons: PointerButtons::PRIMARY,
+            modifiers: Modifiers::NONE,
+        }));
+        assert_eq!(runtime.pointer_capture(PointerId(1)), Some(runtime.root()));
+        assert_eq!(runtime.focused_widget(), Some(runtime.root()));
+        let events_before_loss = events.borrow().len();
+
+        assert_eq!(
+            runtime.dispatch_event(&InputEvent::WindowFocusChanged(false)),
+            EventStatus::Handled
+        );
+
+        assert!(runtime.pointer_capture(PointerId(1)).is_none());
+        assert!(runtime.focused_widget().is_none());
+        let events = events.borrow();
+        assert_eq!(events.len(), events_before_loss + 2);
+        assert_eq!(events[events_before_loss].2, Point::ZERO);
+        assert_eq!(events[events_before_loss + 1].2, Point::ZERO);
     }
 
     #[test]

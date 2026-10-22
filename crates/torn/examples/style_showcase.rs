@@ -9,8 +9,8 @@ use torn::{
     Align, Alignment, Border, Box as TornBox, Button, Checkbox, ChildLayout, Color, Column,
     Constraints, DockArea, DockAxis, Dropdown, Image, Insets, LayoutContext, LayoutNode,
     LayoutResult, ListView, MenuBar, Padding, PanelId, Point, ProgressBar, RadioButton, RadioGroup,
-    Rect, Row, ScrollView, Size, SizedBox, Slider, SplitAxis, Splitter, Stack, TabBar, Text,
-    TextField, Toolbar, UiEnvironment, UiRuntime, Widget, WorkspaceLayout,
+    Rect, Row, ScrollView, Size, SizedBox, Slider, SplitAxis, Splitter, Stack, Subscription,
+    TabBar, Text, TextField, Toolbar, UiEnvironment, UiRuntime, Widget, WorkspaceLayout,
     platform::{WindowAction, WindowApplication, WindowEvent, WindowOptions},
     render::{DisplayList, FontdueTextShaper, PaintContext, RasterImage, TextStyle},
 };
@@ -40,6 +40,7 @@ fn main() -> Result<(), torn_platform_winit::RunError> {
 struct StyleShowcase {
     runtime: UiRuntime,
     size: Size,
+    _subscriptions: Vec<Subscription>,
 }
 
 impl StyleShowcase {
@@ -47,12 +48,13 @@ impl StyleShowcase {
         let size = valid_size(WINDOW_WIDTH, WINDOW_HEIGHT);
         let mut runtime = UiRuntime::new(ShowcaseShell);
         let root = runtime.root();
+        let mut subscriptions = Vec::new();
 
         let menu = MenuBar::new(["File", "Edit", "View", "Help"]);
-        menu.activated().subscribe(|index| {
+        subscriptions.push(menu.activated().subscribe(|index| {
             let name = ["File", "Edit", "View", "Help"][*index];
             println!("MenuBar: открыт раздел {name}.");
-        });
+        }));
         runtime
             .append_child(root, menu)
             .expect("showcase root exists");
@@ -66,20 +68,26 @@ impl StyleShowcase {
             ("↶", "Отмена действия."),
             ("⚙", "Открыты настройки."),
         ] {
-            append_toolbar_button(&mut runtime, toolbar, icon, action);
+            append_toolbar_button(&mut runtime, &mut subscriptions, toolbar, icon, action);
         }
 
         let tabs = TabBar::new(["Компоненты", "Компоновка", "Рабочая область"]);
-        tabs.changed()
-            .subscribe(|index| println!("TabBar: открыта страница {}.", index + 1));
+        subscriptions.push(
+            tabs.changed()
+                .subscribe(|index| println!("TabBar: открыта страница {}.", index + 1)),
+        );
         let tabs = runtime
             .append_child(root, tabs)
             .expect("showcase root exists");
-        append_components_page(&mut runtime, tabs);
+        append_components_page(&mut runtime, &mut subscriptions, tabs);
         append_layout_page(&mut runtime, tabs);
         append_workspace_page(&mut runtime, tabs);
 
-        let mut app = Self { runtime, size };
+        let mut app = Self {
+            runtime,
+            size,
+            _subscriptions: subscriptions,
+        };
         app.layout(size);
         app
     }
@@ -105,11 +113,8 @@ impl WindowApplication for StyleShowcase {
                 WindowAction::RequestRedraw
             }
             WindowEvent::Input(event) => {
-                let handled = self.runtime.dispatch_event(&event).is_handled();
-                if handled {
-                    self.layout(self.size);
-                }
-                if self.runtime.take_redraw_request() || handled {
+                let _ = self.runtime.dispatch_event(&event);
+                if self.runtime.take_redraw_request() {
                     WindowAction::RequestRedraw
                 } else {
                     WindowAction::None
@@ -529,7 +534,11 @@ impl Widget for WorkspacePanel {
     }
 }
 
-fn append_components_page(runtime: &mut UiRuntime, tabs: torn::WidgetId) {
+fn append_components_page(
+    runtime: &mut UiRuntime,
+    subscriptions: &mut Vec<Subscription>,
+    tabs: torn::WidgetId,
+) {
     let page = runtime
         .append_child(tabs, ComponentsPage)
         .expect("tab bar exists");
@@ -548,7 +557,7 @@ fn append_components_page(runtime: &mut UiRuntime, tabs: torn::WidgetId) {
     let controls = runtime
         .append_child(controls_padding, ControlsPanel)
         .expect("controls padding exists");
-    append_controls(runtime, controls);
+    append_controls(runtime, subscriptions, controls);
 
     let gallery = runtime
         .append_child(page, GalleryPanel)
@@ -580,26 +589,36 @@ fn append_components_page(runtime: &mut UiRuntime, tabs: torn::WidgetId) {
         .expect("document column exists");
 }
 
-fn append_controls(runtime: &mut UiRuntime, parent: torn::WidgetId) {
+fn append_controls(
+    runtime: &mut UiRuntime,
+    subscriptions: &mut Vec<Subscription>,
+    parent: torn::WidgetId,
+) {
     let text_field = TextField::with_text("Наберите что-нибудь");
-    text_field
-        .changed()
-        .subscribe(|text| println!("TextField: {text}"));
+    subscriptions.push(
+        text_field
+            .changed()
+            .subscribe(|text| println!("TextField: {text}")),
+    );
     runtime
         .append_child(parent, text_field)
         .expect("controls panel exists");
 
     let checkbox = Checkbox::with_checked(true);
-    checkbox
-        .toggled()
-        .subscribe(|checked| println!("Checkbox: {checked}"));
+    subscriptions.push(
+        checkbox
+            .toggled()
+            .subscribe(|checked| println!("Checkbox: {checked}")),
+    );
     append_labeled(runtime, parent, checkbox, "Включить анимации");
 
     let group = RadioGroup::new();
     group.set_selected(&"Темная");
-    group
-        .changed()
-        .subscribe(|theme| println!("RadioGroup: {theme}"));
+    subscriptions.push(
+        group
+            .changed()
+            .subscribe(|theme| println!("RadioGroup: {theme}")),
+    );
     append_labeled(
         runtime,
         parent,
@@ -614,17 +633,21 @@ fn append_controls(runtime: &mut UiRuntime, parent: torn::WidgetId) {
     );
 
     let dropdown = Dropdown::new(["Авто", "Компактно", "Просторно"]);
-    dropdown
-        .changed()
-        .subscribe(|index| println!("Dropdown: выбран вариант {index}"));
+    subscriptions.push(
+        dropdown
+            .changed()
+            .subscribe(|index| println!("Dropdown: выбран вариант {index}")),
+    );
     runtime
         .append_child(parent, dropdown)
         .expect("controls panel exists");
 
     let slider = Slider::with_value(0.0, 100.0, 64.0);
-    slider
-        .changed()
-        .subscribe(|value| println!("Slider: {value:.0}"));
+    subscriptions.push(
+        slider
+            .changed()
+            .subscribe(|value| println!("Slider: {value:.0}")),
+    );
     runtime
         .append_child(parent, slider)
         .expect("controls panel exists");
@@ -720,6 +743,7 @@ fn append_workspace_page(runtime: &mut UiRuntime, tabs: torn::WidgetId) {
 
 fn append_toolbar_button(
     runtime: &mut UiRuntime,
+    subscriptions: &mut Vec<Subscription>,
     toolbar: torn::WidgetId,
     icon: &'static str,
     action: &'static str,
@@ -731,7 +755,7 @@ fn append_toolbar_button(
         .with_corner_radius(7.0)
         .with_border(Border::new(1.0, CARD_BORDER))
         .with_padding(Insets::all(7.0));
-    button.activated().subscribe(move |()| println!("{action}"));
+    subscriptions.push(button.activated().subscribe(move |()| println!("{action}")));
     let button = runtime
         .append_child(toolbar, button)
         .expect("toolbar exists");

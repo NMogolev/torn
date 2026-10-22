@@ -156,6 +156,13 @@ impl Widget for Checkbox {
                 }
                 EventStatus::Handled
             }
+            InputEvent::PointerCancel(pointer)
+                if self.pressed_pointer == Some(pointer.pointer_id) =>
+            {
+                self.pressed_pointer = None;
+                context.release_pointer(pointer.pointer_id);
+                EventStatus::Handled
+            }
             InputEvent::KeyDown(key)
                 if !key.repeat
                     && matches!(key.key, Key::Named(NamedKey::Space | NamedKey::Enter)) =>
@@ -199,7 +206,7 @@ mod tests {
     fn toggles_with_pointer_and_keyboard() {
         let checkbox = Checkbox::new();
         let values = Rc::new(RefCell::new(Vec::new()));
-        checkbox.toggled().subscribe({
+        let _subscription = checkbox.toggled().subscribe({
             let values = Rc::clone(&values);
             move |value| values.borrow_mut().push(*value)
         });

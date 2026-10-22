@@ -1,5 +1,6 @@
 use torn_core::{
     Color, Constraints, FocusChanged, InputEvent, Insets, Key, NamedKey, Point, Rect, Size,
+    TextPreedit,
 };
 use torn_render::{PaintContext, TextLayout, TextStyle};
 use torn_ui::{
@@ -22,6 +23,7 @@ pub struct TextField {
     cursor: usize,
     changed: Signal<String>,
     focused: bool,
+    preedit: Option<TextPreedit>,
     text_layout: TextLayout,
 }
 
@@ -42,6 +44,7 @@ impl TextField {
             cursor,
             changed: Signal::new(),
             focused: false,
+            preedit: None,
             text_layout: empty_layout(),
         }
     }
@@ -59,6 +62,7 @@ impl TextField {
     pub fn set_text(&mut self, text: impl Into<String>) {
         self.text = single_line(&text.into());
         self.cursor = self.text.chars().count();
+        self.preedit = None;
     }
 
     /// Returns the current caret position in Unicode scalar values.
@@ -122,6 +126,34 @@ impl TextField {
         text.replace_range(start..end, "");
         self.replace_text(text, context);
     }
+
+    fn display_text(&self) -> String {
+        let cursor = byte_index(&self.text, self.cursor);
+        let preedit = self
+            .preedit
+            .as_ref()
+            .map_or("", |preedit| preedit.text.as_str());
+        format!(
+            "{}{}{}",
+            &self.text[..cursor],
+            preedit,
+            &self.text[cursor..]
+        )
+    }
+
+    fn display_cursor(&self) -> usize {
+        let preedit_cursor = self.preedit.as_ref().map_or(0, |preedit| {
+            let end = preedit
+                .cursor
+                .map_or(preedit.text.len(), |(_, end)| end)
+                .min(preedit.text.len());
+            preedit
+                .text
+                .get(..end)
+                .map_or_else(|| preedit.text.chars().count(), |text| text.chars().count())
+        });
+        self.cursor + preedit_cursor
+    }
 }
 
 impl Default for TextField {
@@ -138,7 +170,7 @@ impl Widget for TextField {
     ) -> LayoutResult {
         let theme = context.environment().theme();
         self.text_layout = context.environment().text_shaper().layout(
-            &self.text,
+            &self.display_text(),
             &TextStyle::new(theme.font_size(), theme.foreground()),
             None,
         );
@@ -164,7 +196,8 @@ impl Widget for TextField {
         context.with_clip(text_bounds, |context| {
             context.draw_text(self.text_layout.clone(), text_bounds.origin);
             if self.focused {
-                let prefix = &self.text[..byte_index(&self.text, self.cursor)];
+                let display_text = self.display_text();
+                let prefix = &display_text[..byte_index(&display_text, self.display_cursor())];
                 let prefix_layout = environment.text_shaper().layout(
                     prefix,
                     &TextStyle::new(theme.font_size(), theme.foreground()),
@@ -197,7 +230,15 @@ impl Widget for TextField {
                 EventStatus::Handled
             }
             InputEvent::TextInput(text) => {
+                if self.preedit.take().is_some() {
+                    context.request_layout();
+                }
                 self.insert(text, context);
+                EventStatus::Handled
+            }
+            InputEvent::TextPreedit(preedit) => {
+                self.preedit = (!preedit.text.is_empty()).then(|| preedit.clone());
+                context.request_layout();
                 EventStatus::Handled
             }
             InputEvent::KeyDown(key) => match key.key {
@@ -233,7 +274,11 @@ impl Widget for TextField {
             },
             InputEvent::FocusChanged(FocusChanged { focused }) => {
                 self.focused = *focused == Some(context.current_target());
-                context.request_redraw();
+                if !self.focused && self.preedit.take().is_some() {
+                    context.request_layout();
+                } else {
+                    context.request_redraw();
+                }
                 EventStatus::Handled
             }
             _ => EventStatus::Ignored,
@@ -283,6 +328,7 @@ mod tests {
     use std::{cell::RefCell, rc::Rc};
 
     use torn_core::{KeyCode, Modifiers, PointerButton, PointerButtons, PointerEvent, PointerId};
+    use torn_render::{DisplayCommand, DisplayList, PaintContext};
     use torn_ui::UiRuntime;
 
     use super::*;
@@ -291,7 +337,7 @@ mod tests {
     fn commits_text_and_edits_at_unicode_scalar_boundaries() {
         let field = TextField::new();
         let changes = Rc::new(RefCell::new(Vec::new()));
-        field.changed().subscribe({
+        let _subscription = field.changed().subscribe({
             let changes = Rc::clone(&changes);
             move |value| changes.borrow_mut().push(value.clone())
         });
@@ -324,7 +370,7 @@ mod tests {
     fn navigation_moves_the_caret_before_insertions() {
         let field = TextField::with_text("ab");
         let changes = Rc::new(RefCell::new(Vec::new()));
-        field.changed().subscribe({
+        let _subscription = field.changed().subscribe({
             let changes = Rc::clone(&changes);
             move |value| changes.borrow_mut().push(value.clone())
         });
@@ -338,6 +384,57 @@ mod tests {
         let _ = runtime.dispatch_event(&InputEvent::TextInput("X".to_owned()));
 
         assert_eq!(*changes.borrow(), vec!["aXb"]);
+    }
+
+    #[test]
+    fn displays_preedit_without_committing_then_commits_input() {
+        let field = TextField::with_text("base");
+        let changes = Rc::new(RefCell::new(Vec::new()));
+        let _subscription = field.changed().subscribe({
+            let changes = Rc::clone(&changes);
+            move |value| changes.borrow_mut().push(value.clone())
+        });
+        let mut runtime = UiRuntime::new(field);
+        runtime
+            .layout(Constraints::UNBOUNDED)
+            .expect("field layout succeeds");
+        let _ = runtime.dispatch_event(&pointer_down());
+
+        assert_eq!(
+            runtime.dispatch_event(&InputEvent::TextPreedit(TextPreedit {
+                text: "ввод".to_owned(),
+                cursor: Some((0, "ввод".len())),
+            })),
+            EventStatus::Handled
+        );
+        assert!(runtime.last_layout().is_none());
+        let mut preedit_list = DisplayList::new();
+        runtime
+            .paint(&mut PaintContext::new(&mut preedit_list))
+            .expect("preedit paint succeeds");
+        assert_eq!(painted_text(&preedit_list), "baseввод");
+        assert!(changes.borrow().is_empty());
+
+        assert_eq!(
+            runtime.dispatch_event(&InputEvent::TextInput("ввод".to_owned())),
+            EventStatus::Handled
+        );
+        let mut committed_list = DisplayList::new();
+        runtime
+            .paint(&mut PaintContext::new(&mut committed_list))
+            .expect("committed text paint succeeds");
+        assert_eq!(painted_text(&committed_list), "baseввод");
+        assert_eq!(*changes.borrow(), vec!["baseввод"]);
+    }
+
+    fn painted_text(list: &DisplayList) -> &str {
+        list.commands()
+            .iter()
+            .find_map(|command| match command {
+                DisplayCommand::DrawText { layout, .. } => Some(layout.text()),
+                _ => None,
+            })
+            .expect("text field paints its text")
     }
 
     fn pointer_down() -> InputEvent {

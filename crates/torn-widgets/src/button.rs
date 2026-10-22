@@ -204,7 +204,7 @@ impl Widget for Button {
     }
 
     fn handle_event(&mut self, context: &mut EventContext<'_>, event: &InputEvent) -> EventStatus {
-        if context.phase() == EventPhase::Capture {
+        if context.phase() != EventPhase::Target {
             return EventStatus::Ignored;
         }
         match event {
@@ -232,6 +232,16 @@ impl Widget for Button {
                 }
                 EventStatus::Handled
             }
+            InputEvent::PointerCancel(pointer)
+                if self.pressed_pointer == Some(pointer.pointer_id) =>
+            {
+                self.pressed = false;
+                self.pressed_pointer = None;
+                self.pointer_inside = false;
+                context.release_pointer(pointer.pointer_id);
+                context.request_redraw();
+                EventStatus::Handled
+            }
             InputEvent::PointerEnter(_) => {
                 self.pointer_inside = true;
                 context.request_redraw();
@@ -244,6 +254,7 @@ impl Widget for Button {
             }
             InputEvent::KeyDown(key)
                 if !key.repeat
+                    && context.current_target() == context.target()
                     && matches!(key.key, Key::Named(NamedKey::Enter | NamedKey::Space)) =>
             {
                 self.activated.emit(&());
@@ -268,11 +279,13 @@ mod tests {
     use std::{cell::Cell, rc::Rc};
 
     use torn_core::{
-        Color, Constraints, InputEvent, Modifiers, Point, PointerButtons, PointerEvent, PointerId,
-        Size,
+        Color, Constraints, InputEvent, Key, KeyCode, Modifiers, NamedKey, Point, PointerButtons,
+        PointerEvent, PointerId, Size,
     };
-    use torn_render::{DisplayCommand, DisplayList};
-    use torn_ui::{LightTheme, Theme, UiRuntime};
+    use torn_render::{DisplayCommand, DisplayList, FontdueTextShaper, TextStyle};
+    use torn_ui::{EventStatus, LightTheme, Theme, UiRuntime};
+
+    use crate::{Checkbox, Text};
 
     use super::Button;
 
@@ -403,6 +416,19 @@ mod tests {
         assert_eq!(fill_color(&hover_list), hover);
         assert!((fill_radius(&hover_list) - 9.0).abs() < f32::EPSILON);
 
+        let _ = runtime.dispatch_event(&InputEvent::PointerLeave(PointerEvent {
+            pointer_id: PointerId(1),
+            position: Point::new(30.0, 30.0),
+            button: None,
+            buttons: PointerButtons::NONE,
+            modifiers: Modifiers::NONE,
+        }));
+        let mut normal_list = DisplayList::new();
+        runtime
+            .paint(&mut torn_render::PaintContext::new(&mut normal_list))
+            .expect("button paint after pointer leave succeeds");
+        assert_eq!(fill_color(&normal_list), normal);
+
         let _ = runtime.dispatch_event(&pointer_event(Point::ZERO, true));
         let mut pressed_list = DisplayList::new();
         runtime
@@ -415,7 +441,7 @@ mod tests {
     fn activates_only_when_the_primary_pointer_is_released_inside() {
         let activations = Rc::new(Cell::new(0));
         let button = Button::new();
-        button.activated().subscribe({
+        let _subscription = button.activated().subscribe({
             let activations = Rc::clone(&activations);
             move |()| activations.set(activations.get() + 1)
         });
@@ -429,7 +455,100 @@ mod tests {
         assert_eq!(activations.get(), 0);
 
         let _ = runtime.dispatch_event(&pointer_event(Point::new(1.0, 1.0), true));
+        let _ = runtime.dispatch_event(&InputEvent::WindowFocusChanged(false));
         let _ = runtime.dispatch_event(&pointer_event(Point::new(1.0, 1.0), false));
+        assert_eq!(activations.get(), 0);
+
+        let _ = runtime.dispatch_event(&pointer_event(Point::new(1.0, 1.0), true));
+        let _ = runtime.dispatch_event(&pointer_event(Point::new(1.0, 1.0), false));
+        assert_eq!(activations.get(), 1);
+    }
+
+    #[test]
+    fn lets_interactive_children_receive_pointer_and_keyboard_input() {
+        let activations = Rc::new(Cell::new(0));
+        let button = Button::new();
+        let _button_subscription = button.activated().subscribe({
+            let activations = Rc::clone(&activations);
+            move |()| activations.set(activations.get() + 1)
+        });
+        let changes = Rc::new(Cell::new(0));
+        let checkbox = Checkbox::new();
+        let _checkbox_subscription = checkbox.toggled().subscribe({
+            let changes = Rc::clone(&changes);
+            move |_| changes.set(changes.get() + 1)
+        });
+        let mut runtime = UiRuntime::new(button);
+        let checkbox = runtime
+            .append_child(runtime.root(), checkbox)
+            .expect("button exists");
+        runtime
+            .layout(Constraints::UNBOUNDED)
+            .expect("button layout succeeds");
+        let position = runtime
+            .bounds(checkbox)
+            .expect("checkbox remains live")
+            .origin;
+
+        assert_eq!(
+            runtime.dispatch_event(&pointer_event(position, true)),
+            EventStatus::Handled
+        );
+        assert_eq!(
+            runtime.dispatch_event(&pointer_event(position, false)),
+            EventStatus::Handled
+        );
+        assert_eq!(runtime.focused_widget(), Some(checkbox));
+        assert_eq!(changes.get(), 1);
+        assert_eq!(activations.get(), 0);
+
+        assert_eq!(
+            runtime.dispatch_event(&key(NamedKey::Space)),
+            EventStatus::Handled
+        );
+        assert_eq!(changes.get(), 2);
+        assert_eq!(activations.get(), 0);
+
+        assert_eq!(
+            runtime.dispatch_event(&key(NamedKey::Enter)),
+            EventStatus::Handled
+        );
+        assert_eq!(changes.get(), 3);
+        assert_eq!(activations.get(), 0);
+    }
+
+    #[test]
+    fn treats_decorative_text_as_transparent_to_pointer_hit_testing() {
+        let activations = Rc::new(Cell::new(0));
+        let button = Button::new();
+        let _subscription = button.activated().subscribe({
+            let activations = Rc::clone(&activations);
+            move |()| activations.set(activations.get() + 1)
+        });
+        let mut runtime = UiRuntime::new(button);
+        let label = runtime
+            .append_child(
+                runtime.root(),
+                Text::new(FontdueTextShaper::ubuntu_light().layout(
+                    "Нажать",
+                    &TextStyle::new(16.0, Color::BLACK),
+                    None,
+                )),
+            )
+            .expect("button exists");
+        runtime
+            .layout(Constraints::UNBOUNDED)
+            .expect("button layout succeeds");
+        let position = runtime.bounds(label).expect("label remains live").origin;
+
+        assert_eq!(
+            runtime.dispatch_event(&pointer_event(position, true)),
+            EventStatus::Handled
+        );
+        assert_eq!(
+            runtime.dispatch_event(&pointer_event(position, false)),
+            EventStatus::Handled
+        );
         assert_eq!(activations.get(), 1);
     }
 
@@ -474,5 +593,14 @@ mod tests {
         } else {
             torn_core::InputEvent::PointerUp(event)
         }
+    }
+
+    fn key(key: NamedKey) -> InputEvent {
+        InputEvent::KeyDown(torn_core::KeyEvent {
+            key: Key::Named(key),
+            code: KeyCode::Unidentified,
+            repeat: false,
+            modifiers: Modifiers::NONE,
+        })
     }
 }

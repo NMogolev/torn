@@ -62,6 +62,10 @@ impl Widget for Text {
     fn paint(&self, context: &mut PaintContext<'_>, _: &UiEnvironment, bounds: Rect) {
         context.draw_text(self.layout.clone(), bounds.origin);
     }
+
+    fn participates_in_hit_test(&self) -> bool {
+        false
+    }
 }
 
 #[cfg(test)]

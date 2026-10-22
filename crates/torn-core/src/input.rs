@@ -309,6 +309,15 @@ pub struct FocusChanged {
     pub focused: Option<WidgetId>,
 }
 
+/// Uncommitted text supplied by an input method.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TextPreedit {
+    /// Text currently being composed by the input method.
+    pub text: String,
+    /// The input method's cursor or selection range, in UTF-8 byte offsets.
+    pub cursor: Option<(usize, usize)>,
+}
+
 /// Framework-defined input sent through the widget event router.
 #[derive(Clone, Debug, PartialEq)]
 pub enum InputEvent {
@@ -322,6 +331,8 @@ pub enum InputEvent {
     PointerLeave(PointerEvent),
     /// A pointer button was released.
     PointerUp(PointerEvent),
+    /// The platform cancelled an active pointing-device contact.
+    PointerCancel(PointerEvent),
     /// The pointing device wheel moved.
     Wheel(WheelEvent),
     /// A keyboard key was pressed.
@@ -330,8 +341,12 @@ pub enum InputEvent {
     KeyUp(KeyEvent),
     /// Text committed by the input method.
     TextInput(String),
+    /// Uncommitted text currently composed by the input method.
+    TextPreedit(TextPreedit),
     /// Focus changed within the widget tree.
     FocusChanged(FocusChanged),
+    /// The native window gained or lost keyboard focus.
+    WindowFocusChanged(bool),
 }
 
 #[cfg(test)]

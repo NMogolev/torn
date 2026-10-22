@@ -175,6 +175,11 @@ impl Widget for Slider {
                 context.release_pointer(pointer.pointer_id);
                 EventStatus::Handled
             }
+            InputEvent::PointerCancel(pointer) if self.dragging == Some(pointer.pointer_id) => {
+                self.dragging = None;
+                context.release_pointer(pointer.pointer_id);
+                EventStatus::Handled
+            }
             InputEvent::KeyDown(key) if !key.repeat => match key.key {
                 Key::Named(NamedKey::ArrowLeft | NamedKey::ArrowDown) => {
                     self.set_user_value(self.value - self.keyboard_step(), context);
@@ -256,7 +261,7 @@ mod tests {
     fn pointer_drag_and_keyboard_emit_clamped_values() {
         let slider = Slider::new(0.0, 100.0);
         let changes = Rc::new(RefCell::new(Vec::new()));
-        slider.changed().subscribe({
+        let _subscription = slider.changed().subscribe({
             let changes = Rc::clone(&changes);
             move |value| changes.borrow_mut().push(*value)
         });
@@ -277,7 +282,7 @@ mod tests {
     fn programmatic_value_is_clamped_without_emitting() {
         let mut slider = Slider::with_value(10.0, 20.0, 30.0);
         let changes = Rc::new(RefCell::new(Vec::new()));
-        slider.changed().subscribe({
+        let _subscription = slider.changed().subscribe({
             let changes = Rc::clone(&changes);
             move |value| changes.borrow_mut().push(*value)
         });

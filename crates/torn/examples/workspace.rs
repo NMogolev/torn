@@ -8,7 +8,8 @@ use std::{cell::RefCell, fs, path::PathBuf, rc::Rc};
 
 use torn::{
     Button, ChildLayout, Color, Constraints, DockArea, DocumentId, LayoutContext, LayoutNode,
-    LayoutResult, PanelId, Point, Rect, Size, UiEnvironment, UiRuntime, Widget, WorkspaceLayout,
+    LayoutResult, PanelId, Point, Rect, Size, Subscription, UiEnvironment, UiRuntime, Widget,
+    WorkspaceLayout,
     platform::{WindowAction, WindowApplication, WindowEvent, WindowOptions},
     render::{DisplayList, FontdueTextShaper, PaintContext, TextStyle},
 };
@@ -25,6 +26,7 @@ struct WorkspaceDemo {
     size: Size,
     layout: Rc<RefCell<WorkspaceLayout>>,
     layout_path: PathBuf,
+    _subscriptions: Vec<Subscription>,
 }
 
 impl WorkspaceDemo {
@@ -36,21 +38,22 @@ impl WorkspaceDemo {
         ));
         let mut runtime = UiRuntime::new(WorkspaceShell);
         let root = runtime.root();
+        let mut subscriptions = Vec::new();
 
         let save = Button::new();
-        {
+        subscriptions.push({
             let layout = Rc::clone(&layout);
             let layout_path = layout_path.clone();
             save.activated()
-                .subscribe(move |()| save_layout(&layout.borrow(), &layout_path));
-        }
+                .subscribe(move |()| save_layout(&layout.borrow(), &layout_path))
+        });
         let save = runtime.append_child(root, save).expect("root exists");
         runtime
             .append_child(save, label("Сохранить", 13.0, Color::WHITE))
             .expect("save button exists");
 
         let restore = Button::new();
-        {
+        subscriptions.push({
             let layout = Rc::clone(&layout);
             let layout_path = layout_path.clone();
             restore.activated().subscribe(move |()| {
@@ -58,8 +61,8 @@ impl WorkspaceDemo {
                     *layout.borrow_mut() = restored;
                     println!("Рабочая область восстановлена из {}", layout_path.display());
                 }
-            });
-        }
+            })
+        });
         let restore = runtime.append_child(root, restore).expect("root exists");
         runtime
             .append_child(restore, label("Восстановить", 13.0, Color::WHITE))
@@ -118,6 +121,7 @@ impl WorkspaceDemo {
             size,
             layout,
             layout_path,
+            _subscriptions: subscriptions,
         };
         app.layout(size);
         app
@@ -150,13 +154,8 @@ impl WindowApplication for WorkspaceDemo {
                 WindowAction::RequestRedraw
             }
             WindowEvent::Input(event) => {
-                let handled = self.runtime.dispatch_event(&event).is_handled();
-                if handled {
-                    // Tab activation and splitter dragging alter the model, so its
-                    // retained projection needs a fresh layout before painting.
-                    self.layout(self.size);
-                }
-                if self.runtime.take_redraw_request() || handled {
+                let _ = self.runtime.dispatch_event(&event);
+                if self.runtime.take_redraw_request() {
                     WindowAction::RequestRedraw
                 } else {
                     WindowAction::None

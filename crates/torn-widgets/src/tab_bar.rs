@@ -233,7 +233,7 @@ mod tests {
         let tab_bar = TabBar::new(["First", "Second"]);
         assert_eq!(tab_bar.selected(), Some(0));
         let changes = Rc::new(RefCell::new(Vec::new()));
-        tab_bar.changed().subscribe({
+        let _subscription = tab_bar.changed().subscribe({
             let changes = Rc::clone(&changes);
             move |index| changes.borrow_mut().push(*index)
         });

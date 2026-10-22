@@ -156,11 +156,13 @@ impl Widget for Splitter {
                 if content_length > 0.0 {
                     self.ratio = (coordinate / content_length).clamp(0.0, 1.0);
                     self.resized.emit(&self.ratio);
-                    context.request_redraw();
+                    context.request_layout();
                 }
                 EventStatus::Handled
             }
-            InputEvent::PointerUp(pointer) if self.dragging == Some(pointer.pointer_id) => {
+            InputEvent::PointerUp(pointer) | InputEvent::PointerCancel(pointer)
+                if self.dragging == Some(pointer.pointer_id) =>
+            {
                 self.dragging = None;
                 context.release_pointer(pointer.pointer_id);
                 EventStatus::Handled
@@ -186,4 +188,60 @@ fn valid_size(width: f32, height: f32) -> Size {
 
 fn rect(x: f32, y: f32, width: f32, height: f32) -> Rect {
     Rect::new(Point::new(x, y), valid_size(width, height))
+}
+
+#[cfg(test)]
+mod tests {
+    use torn_core::{Modifiers, PointerButtons, PointerEvent};
+    use torn_render::{DisplayList, PaintContext};
+    use torn_ui::UiRuntime;
+
+    use crate::SizedBox;
+
+    use super::*;
+
+    #[test]
+    fn dragging_relayouts_panes_before_the_next_paint() {
+        let mut runtime = UiRuntime::new(Splitter::new(SplitAxis::Horizontal, 0.5));
+        let first = runtime
+            .append_child(runtime.root(), SizedBox::new(None, None))
+            .expect("splitter exists");
+        let second = runtime
+            .append_child(runtime.root(), SizedBox::new(None, None))
+            .expect("splitter exists");
+        runtime
+            .layout(Constraints::tight(valid_size(100.0, 40.0)).expect("canvas is finite"))
+            .expect("initial layout succeeds");
+
+        let down = InputEvent::PointerDown(PointerEvent {
+            pointer_id: PointerId(1),
+            position: Point::new(49.0, 20.0),
+            button: Some(PointerButton::Primary),
+            buttons: PointerButtons::PRIMARY,
+            modifiers: Modifiers::NONE,
+        });
+        let move_right = InputEvent::PointerMove(PointerEvent {
+            pointer_id: PointerId(1),
+            position: Point::new(80.0, 20.0),
+            button: None,
+            buttons: PointerButtons::PRIMARY,
+            modifiers: Modifiers::NONE,
+        });
+        assert_eq!(runtime.dispatch_event(&down), EventStatus::Handled);
+        assert_eq!(runtime.dispatch_event(&move_right), EventStatus::Handled);
+        assert!(runtime.last_layout().is_none());
+
+        let mut display_list = DisplayList::new();
+        runtime
+            .paint(&mut PaintContext::new(&mut display_list))
+            .expect("deferred layout and paint succeed");
+        assert_eq!(
+            runtime.bounds(first),
+            Some(Rect::new(Point::ZERO, valid_size(80.0, 40.0)))
+        );
+        assert_eq!(
+            runtime.bounds(second),
+            Some(Rect::new(Point::new(84.0, 0.0), valid_size(16.0, 40.0)))
+        );
+    }
 }

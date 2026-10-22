@@ -8,7 +8,7 @@ use std::{error::Error, fmt, sync::Arc};
 
 use torn_core::{
     InputEvent, Key, KeyCode, KeyEvent, Modifiers, NamedKey, Point, PointerButton, PointerButtons,
-    PointerEvent, PointerId, Size, WheelDelta, WheelEvent,
+    PointerEvent, PointerId, Size, TextPreedit, WheelDelta, WheelEvent,
 };
 use torn_platform::{WindowAction, WindowApplication, WindowEvent, WindowOptions};
 use torn_wgpu::{GpuError, GpuRenderer, RenderStatus};
@@ -173,6 +173,96 @@ impl Adapter {
         self.apply_action(event_loop, action);
     }
 
+    fn handle_input_event(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        event: WinitWindowEvent,
+        scale_factor: f64,
+    ) -> bool {
+        let input = match event {
+            WinitWindowEvent::CursorMoved { position, .. } => {
+                self.cursor = to_logical_point(position, scale_factor);
+                pointer_input(self.cursor, None, &self.buttons, self.modifiers, false)
+            }
+            WinitWindowEvent::CursorLeft { .. } => InputEvent::PointerLeave(PointerEvent {
+                pointer_id: PointerId(0),
+                position: self.cursor,
+                button: None,
+                buttons: self.buttons.clone(),
+                modifiers: self.modifiers,
+            }),
+            WinitWindowEvent::MouseInput { state, button, .. } => {
+                let button = pointer_button(button);
+                update_pointer_buttons(&mut self.buttons, button, state);
+                pointer_input(
+                    self.cursor,
+                    Some(button),
+                    &self.buttons,
+                    self.modifiers,
+                    state == ElementState::Pressed,
+                )
+            }
+            WinitWindowEvent::MouseWheel { delta, .. } => {
+                let delta = match delta {
+                    MouseScrollDelta::LineDelta(x, y) => WheelDelta::Lines(Point::new(x, y)),
+                    MouseScrollDelta::PixelDelta(position) => {
+                        WheelDelta::Pixels(to_logical_point(position, scale_factor))
+                    }
+                };
+                InputEvent::Wheel(WheelEvent {
+                    position: self.cursor,
+                    delta,
+                    modifiers: self.modifiers,
+                })
+            }
+            WinitWindowEvent::ModifiersChanged(modifiers) => {
+                self.modifiers = modifiers_from_winit(modifiers.state());
+                return true;
+            }
+            WinitWindowEvent::Focused(focused) => {
+                if !focused {
+                    self.buttons = PointerButtons::NONE;
+                    self.modifiers = Modifiers::NONE;
+                }
+                InputEvent::WindowFocusChanged(focused)
+            }
+            WinitWindowEvent::KeyboardInput { event, .. } => {
+                if event.state == ElementState::Pressed {
+                    InputEvent::KeyDown(key_event(&event, self.modifiers))
+                } else {
+                    InputEvent::KeyUp(key_event(&event, self.modifiers))
+                }
+            }
+            WinitWindowEvent::Ime(ime) => match ime_input(ime) {
+                Some(input) => input,
+                None => return false,
+            },
+            _ => return false,
+        };
+        self.dispatch(event_loop, WindowEvent::Input(input));
+        true
+    }
+
+    fn handle_redraw(&mut self, event_loop: &ActiveEventLoop, scale_factor: f64) {
+        if self.logical_size.is_none() {
+            return;
+        }
+        self.dispatch(event_loop, WindowEvent::RedrawRequested);
+        self.needs_render = false;
+        match self.render_display_list() {
+            Ok(RenderStatus::Presented | RenderStatus::Skipped) => {}
+            Ok(RenderStatus::Suboptimal | RenderStatus::Reconfigure) => {
+                let physical_size = self.window.as_ref().expect("window exists").inner_size();
+                if self.resize_surface(physical_size, scale_factor).is_ok() {
+                    self.request_render();
+                } else {
+                    event_loop.exit();
+                }
+            }
+            Err(_) => event_loop.exit(),
+        }
+    }
+
     fn render_display_list(&mut self) -> Result<RenderStatus, RunError> {
         let window = self.window.as_ref().expect("window exists while rendering");
         let scale_factor = to_scale_factor(window.scale_factor())?;
@@ -231,89 +321,16 @@ impl ApplicationHandler for Adapter {
             WinitWindowEvent::Resized(physical_size) => {
                 self.handle_resize(event_loop, physical_size, scale_factor);
             }
-            WinitWindowEvent::ScaleFactorChanged { .. } => {
+            WinitWindowEvent::ScaleFactorChanged { scale_factor, .. } => {
                 let physical_size = self.window.as_ref().expect("window exists").inner_size();
                 self.handle_resize(event_loop, physical_size, scale_factor);
             }
-            WinitWindowEvent::CursorMoved { position, .. } => {
-                self.cursor = to_logical_point(position, scale_factor);
-                self.dispatch(
-                    event_loop,
-                    WindowEvent::Input(pointer_input(
-                        self.cursor,
-                        None,
-                        &self.buttons,
-                        self.modifiers,
-                        false,
-                    )),
-                );
-            }
-            WinitWindowEvent::MouseInput { state, button, .. } => {
-                let button = pointer_button(button);
-                update_pointer_buttons(&mut self.buttons, button, state);
-                self.dispatch(
-                    event_loop,
-                    WindowEvent::Input(pointer_input(
-                        self.cursor,
-                        Some(button),
-                        &self.buttons,
-                        self.modifiers,
-                        state == ElementState::Pressed,
-                    )),
-                );
-            }
-            WinitWindowEvent::MouseWheel { delta, .. } => {
-                let delta = match delta {
-                    MouseScrollDelta::LineDelta(x, y) => WheelDelta::Lines(Point::new(x, y)),
-                    MouseScrollDelta::PixelDelta(position) => {
-                        WheelDelta::Pixels(to_logical_point(position, scale_factor))
-                    }
-                };
-                self.dispatch(
-                    event_loop,
-                    WindowEvent::Input(InputEvent::Wheel(WheelEvent {
-                        position: self.cursor,
-                        delta,
-                        modifiers: self.modifiers,
-                    })),
-                );
-            }
-            WinitWindowEvent::ModifiersChanged(modifiers) => {
-                self.modifiers = modifiers_from_winit(modifiers.state());
-            }
-            WinitWindowEvent::KeyboardInput { event, .. } => {
-                let input = if event.state == ElementState::Pressed {
-                    InputEvent::KeyDown(key_event(&event, self.modifiers))
-                } else {
-                    InputEvent::KeyUp(key_event(&event, self.modifiers))
-                };
-                self.dispatch(event_loop, WindowEvent::Input(input));
-            }
-            WinitWindowEvent::Ime(Ime::Commit(text)) => {
-                self.dispatch(event_loop, WindowEvent::Input(InputEvent::TextInput(text)));
-            }
             WinitWindowEvent::RedrawRequested => {
-                if self.logical_size.is_none() {
-                    return;
-                }
-                if self.needs_render {
-                    self.needs_render = false;
-                    match self.render_display_list() {
-                        Ok(RenderStatus::Presented | RenderStatus::Skipped) => {}
-                        Ok(RenderStatus::Suboptimal | RenderStatus::Reconfigure) => {
-                            let physical_size =
-                                self.window.as_ref().expect("window exists").inner_size();
-                            if self.resize_surface(physical_size, scale_factor).is_ok() {
-                                self.request_render();
-                            } else {
-                                event_loop.exit();
-                            }
-                        }
-                        Err(_) => event_loop.exit(),
-                    }
-                }
+                self.handle_redraw(event_loop, scale_factor);
             }
-            _ => {}
+            event => {
+                let _ = self.handle_input_event(event_loop, event, scale_factor);
+            }
         }
     }
 }
@@ -375,6 +392,18 @@ fn pointer_input(
     } else {
         InputEvent::PointerMove(event)
     }
+}
+
+fn ime_input(ime: Ime) -> Option<InputEvent> {
+    Some(match ime {
+        Ime::Commit(text) => InputEvent::TextInput(text),
+        Ime::Preedit(text, cursor) => InputEvent::TextPreedit(TextPreedit { text, cursor }),
+        Ime::Disabled => InputEvent::TextPreedit(TextPreedit {
+            text: String::new(),
+            cursor: None,
+        }),
+        Ime::Enabled => return None,
+    })
 }
 
 fn pointer_button(button: MouseButton) -> PointerButton {

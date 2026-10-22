@@ -60,6 +60,10 @@ impl Widget for Image {
     fn paint(&self, context: &mut PaintContext<'_>, _: &UiEnvironment, bounds: Rect) {
         context.draw_image(self.image.clone(), bounds);
     }
+
+    fn participates_in_hit_test(&self) -> bool {
+        false
+    }
 }
 
 fn size(width: f32, height: f32) -> Size {

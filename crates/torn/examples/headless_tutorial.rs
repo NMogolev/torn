@@ -21,7 +21,7 @@ fn main() -> Result<(), std::boxed::Box<dyn std::error::Error>> {
         Color::rgba8(180, 220, 255, 255),
         Color::rgba8(120, 180, 230, 255),
     );
-    button.activated().subscribe({
+    let _subscription = button.activated().subscribe({
         let click_count = Rc::clone(&click_count);
         move |()| click_count.set(click_count.get() + 1)
     });

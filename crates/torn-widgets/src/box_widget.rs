@@ -119,6 +119,10 @@ impl Widget for Box {
             }
         }
     }
+
+    fn participates_in_hit_test(&self) -> bool {
+        false
+    }
 }
 
 fn size(width: f32, height: f32) -> Size {

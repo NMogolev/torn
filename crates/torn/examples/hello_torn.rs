@@ -6,7 +6,7 @@
 use std::{cell::Cell, rc::Rc};
 
 use torn::{
-    Box as TornBox, Button, Color, Constraints, Size, Text, UiRuntime,
+    Box as TornBox, Button, Color, Constraints, Size, Subscription, Text, UiRuntime,
     platform::{WindowAction, WindowApplication, WindowEvent, WindowOptions},
     render::{DisplayList, FontdueTextShaper, PaintContext, TextStyle},
 };
@@ -18,6 +18,7 @@ fn main() -> Result<(), torn_platform_winit::RunError> {
 struct HelloTorn {
     runtime: UiRuntime,
     size: Size,
+    _subscriptions: Vec<Subscription>,
 }
 
 impl HelloTorn {
@@ -33,7 +34,7 @@ impl HelloTorn {
             Color::rgba8(180, 220, 255, 255),
             Color::rgba8(120, 180, 230, 255),
         );
-        button.activated().subscribe({
+        let subscription = button.activated().subscribe({
             let clicks = Rc::clone(&clicks);
             move |()| {
                 clicks.set(clicks.get() + 1);
@@ -52,7 +53,11 @@ impl HelloTorn {
             .layout(Constraints::tight(size).expect("initial constraints are valid"))
             .expect("example widgets do not panic during layout");
 
-        Self { runtime, size }
+        Self {
+            runtime,
+            size,
+            _subscriptions: vec![subscription],
+        }
     }
 
     fn layout(&mut self, size: Size) {

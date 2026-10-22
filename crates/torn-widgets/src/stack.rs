@@ -33,6 +33,10 @@ impl Widget for Stack {
         }
         LayoutResult::with_children(constraints.constrain(size), children)
     }
+
+    fn participates_in_hit_test(&self) -> bool {
+        false
+    }
 }
 
 fn valid_size(width: f32, height: f32) -> Size {

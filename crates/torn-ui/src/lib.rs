@@ -20,7 +20,7 @@ pub use event::{EventContext, EventPhase, EventStatus};
 pub use layout::{ChildLayout, LayoutResult};
 pub use row::Row;
 pub use runtime::{DirtyFlags, LayoutContext, UiRuntime, UiRuntimeError};
-pub use signal::Signal;
+pub use signal::{Signal, Subscription};
 pub use style::{Border, SurfaceStyle};
 pub use theme::{DarkTheme, LightTheme, SystemAppearance, SystemTheme, Theme};
 pub use tss::{

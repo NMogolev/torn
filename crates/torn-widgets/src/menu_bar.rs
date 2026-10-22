@@ -146,7 +146,7 @@ mod tests {
     fn emits_the_activated_menu_index() {
         let menu_bar = MenuBar::new(["File", "Edit"]);
         let activated = Rc::new(RefCell::new(Vec::new()));
-        menu_bar.activated().subscribe({
+        let _subscription = menu_bar.activated().subscribe({
             let activated = Rc::clone(&activated);
             move |index| activated.borrow_mut().push(*index)
         });

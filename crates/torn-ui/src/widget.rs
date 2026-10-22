@@ -35,6 +35,14 @@ pub trait Widget {
         false
     }
 
+    /// Returns whether this widget itself may be selected as a pointer hit-test target.
+    ///
+    /// Decorative widgets should return `false` so an interactive ancestor can
+    /// receive pointer input while still owning the decoration as a child.
+    fn participates_in_hit_test(&self) -> bool {
+        true
+    }
+
     /// Returns whether the runtime clips all descendant painting to this widget's bounds.
     fn clips_children(&self) -> bool {
         false
@@ -63,6 +71,10 @@ where
 
     fn accepts_focus(&self) -> bool {
         (**self).accepts_focus()
+    }
+
+    fn participates_in_hit_test(&self) -> bool {
+        (**self).participates_in_hit_test()
     }
 
     fn clips_children(&self) -> bool {

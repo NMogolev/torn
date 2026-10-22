@@ -305,7 +305,7 @@ mod tests {
     fn opens_and_selects_an_option_with_the_pointer() {
         let dropdown = Dropdown::new(["One", "Two"]);
         let changes = Rc::new(RefCell::new(Vec::new()));
-        dropdown.changed().subscribe({
+        let _subscription = dropdown.changed().subscribe({
             let changes = Rc::clone(&changes);
             move |index| changes.borrow_mut().push(*index)
         });

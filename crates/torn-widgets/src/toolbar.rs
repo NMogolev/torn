@@ -80,6 +80,10 @@ impl Widget for Toolbar {
     fn paint(&self, context: &mut PaintContext<'_>, environment: &UiEnvironment, bounds: Rect) {
         context.fill_rect(bounds, environment.theme().button_background());
     }
+
+    fn participates_in_hit_test(&self) -> bool {
+        false
+    }
 }
 
 fn size(width: f32, height: f32) -> Size {

@@ -23,7 +23,7 @@ pub struct RadioGroup<T> {
 
 impl<T> RadioGroup<T>
 where
-    T: Clone + Eq,
+    T: Clone + Eq + 'static,
 {
     /// Creates a group without an initial selection.
     #[must_use]
@@ -63,7 +63,7 @@ where
 
 impl<T> Default for RadioGroup<T>
 where
-    T: Clone + Eq,
+    T: Clone + Eq + 'static,
 {
     fn default() -> Self {
         Self::new()
@@ -83,7 +83,7 @@ pub struct RadioButton<T> {
 
 impl<T> RadioButton<T>
 where
-    T: Clone + Eq,
+    T: Clone + Eq + 'static,
 {
     /// Creates a button that selects `value` in `group`.
     #[must_use]
@@ -199,6 +199,13 @@ where
                 }
                 EventStatus::Handled
             }
+            InputEvent::PointerCancel(pointer)
+                if self.pressed_pointer == Some(pointer.pointer_id) =>
+            {
+                self.pressed_pointer = None;
+                context.release_pointer(pointer.pointer_id);
+                EventStatus::Handled
+            }
             InputEvent::KeyDown(key)
                 if !key.repeat
                     && matches!(key.key, Key::Named(NamedKey::Space | NamedKey::Enter)) =>
@@ -242,7 +249,7 @@ mod tests {
     fn selecting_one_button_replaces_the_previous_selection() {
         let group = RadioGroup::new();
         let changes = Rc::new(RefCell::new(Vec::new()));
-        group.changed().subscribe({
+        let _subscription = group.changed().subscribe({
             let changes = Rc::clone(&changes);
             move |value| changes.borrow_mut().push(*value)
         });

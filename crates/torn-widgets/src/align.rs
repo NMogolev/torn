@@ -62,6 +62,10 @@ impl Widget for Align {
         };
         LayoutResult::with_children(constraints.constrain(child_size), children)
     }
+
+    fn participates_in_hit_test(&self) -> bool {
+        false
+    }
 }
 
 fn offset(available: f32, content: f32, alignment: Alignment) -> f32 {

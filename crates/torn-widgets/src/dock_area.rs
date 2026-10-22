@@ -229,7 +229,7 @@ impl Widget for DockArea {
                         }
                     };
                     if result.is_ok() {
-                        context.request_redraw();
+                        context.request_layout();
                         return EventStatus::Handled;
                     }
                 }
@@ -249,7 +249,6 @@ impl Widget for DockArea {
                     splitter,
                 });
                 context.capture_pointer(pointer.pointer_id);
-                context.request_redraw();
                 EventStatus::Handled
             }
             InputEvent::PointerMove(pointer) => {
@@ -270,7 +269,7 @@ impl Widget for DockArea {
                         .layout
                         .borrow_mut()
                         .resize_split_for_panel(panel, ratio);
-                    context.request_redraw();
+                    context.request_layout();
                     EventStatus::Handled
                 } else {
                     EventStatus::Ignored
@@ -285,7 +284,17 @@ impl Widget for DockArea {
                 }
                 self.dragging = None;
                 context.release_pointer(pointer.pointer_id);
-                context.request_redraw();
+                EventStatus::Handled
+            }
+            InputEvent::PointerCancel(pointer) => {
+                let Some(dragging) = &self.dragging else {
+                    return EventStatus::Ignored;
+                };
+                if dragging.pointer_id != pointer.pointer_id {
+                    return EventStatus::Ignored;
+                }
+                self.dragging = None;
+                context.release_pointer(pointer.pointer_id);
                 EventStatus::Handled
             }
             _ => EventStatus::Ignored,
@@ -817,10 +826,10 @@ mod tests {
         dock_area.register_panel(right).expect("unique binding");
         let mut runtime = UiRuntime::new(dock_area);
         let root = runtime.root();
-        runtime
+        let left_widget = runtime
             .append_child(root, Fill(Color::BLACK))
             .expect("root exists");
-        runtime
+        let right_widget = runtime
             .append_child(root, Fill(Color::WHITE))
             .expect("root exists");
         runtime
@@ -847,5 +856,19 @@ mod tests {
             layout.borrow().root(),
             LayoutNode::Split { ratio, .. } if (*ratio - (86.0 / 96.0)).abs() < f32::EPSILON
         ));
+        assert!(runtime.last_layout().is_none());
+
+        let mut display_list = DisplayList::new();
+        runtime
+            .paint(&mut PaintContext::new(&mut display_list))
+            .expect("deferred layout and paint succeed");
+        assert_eq!(
+            runtime.bounds(left_widget),
+            Some(Rect::new(Point::ZERO, size(86.0, 80.0)))
+        );
+        assert_eq!(
+            runtime.bounds(right_widget),
+            Some(Rect::new(Point::new(90.0, 0.0), size(10.0, 80.0)))
+        );
     }
 }

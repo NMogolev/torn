@@ -98,7 +98,7 @@ impl Widget for ListView {
     }
 
     fn handle_event(&mut self, context: &mut EventContext<'_>, event: &InputEvent) -> EventStatus {
-        if context.phase() != EventPhase::Bubble {
+        if context.phase() == EventPhase::Capture {
             return EventStatus::Ignored;
         }
         let InputEvent::Wheel(wheel) = event else {

@@ -17,5 +17,5 @@ pub use geometry::{Affine, Insets, Point, Rect, Size, SizeError};
 pub use id::WidgetId;
 pub use input::{
     FocusChanged, InputEvent, Key, KeyCode, KeyEvent, Modifiers, NamedKey, PointerButton,
-    PointerButtons, PointerEvent, PointerId, WheelDelta, WheelEvent,
+    PointerButtons, PointerEvent, PointerId, TextPreedit, WheelDelta, WheelEvent,
 };

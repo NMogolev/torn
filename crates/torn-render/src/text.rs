@@ -470,7 +470,7 @@ fn as_logical_coordinate(value: i32) -> f32 {
 mod tests {
     use torn_core::Color;
 
-    use super::{FontdueTextShaper, TextStyle};
+    use super::{FontdueTextShaper, GlyphRun, TextStyle};
 
     #[test]
     fn shapes_text_into_glyphs_and_line_metrics() {
@@ -515,7 +515,7 @@ mod tests {
             layout
                 .glyph_runs()
                 .iter()
-                .flat_map(|run| run.glyphs())
+                .flat_map(GlyphRun::glyphs)
                 .all(|glyph| glyph.glyph_id() != 0)
         );
     }
@@ -543,7 +543,7 @@ mod tests {
             layout
                 .glyph_runs()
                 .iter()
-                .flat_map(|run| run.glyphs())
+                .flat_map(GlyphRun::glyphs)
                 .all(|glyph| glyph.glyph_id() != 0)
         );
     }

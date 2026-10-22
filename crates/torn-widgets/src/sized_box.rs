@@ -42,6 +42,10 @@ impl Widget for SizedBox {
         ));
         LayoutResult::with_children(target, children)
     }
+
+    fn participates_in_hit_test(&self) -> bool {
+        false
+    }
 }
 
 fn size(width: f32, height: f32) -> Size {

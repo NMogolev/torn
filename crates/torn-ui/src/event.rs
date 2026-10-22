@@ -142,12 +142,15 @@ pub(crate) fn pointer_position(event: &InputEvent) -> Option<Point> {
         | InputEvent::PointerMove(event)
         | InputEvent::PointerEnter(event)
         | InputEvent::PointerLeave(event)
-        | InputEvent::PointerUp(event) => Some(event.position),
+        | InputEvent::PointerUp(event)
+        | InputEvent::PointerCancel(event) => Some(event.position),
         InputEvent::Wheel(event) => Some(event.position),
         InputEvent::KeyDown(_)
         | InputEvent::KeyUp(_)
         | InputEvent::TextInput(_)
-        | InputEvent::FocusChanged(_) => None,
+        | InputEvent::TextPreedit(_)
+        | InputEvent::FocusChanged(_)
+        | InputEvent::WindowFocusChanged(_) => None,
     }
 }
 
@@ -158,7 +161,8 @@ pub(crate) fn with_local_position(event: &InputEvent, origin: Point) -> InputEve
         | InputEvent::PointerMove(pointer)
         | InputEvent::PointerEnter(pointer)
         | InputEvent::PointerLeave(pointer)
-        | InputEvent::PointerUp(pointer) => {
+        | InputEvent::PointerUp(pointer)
+        | InputEvent::PointerCancel(pointer) => {
             pointer.position.x -= origin.x;
             pointer.position.y -= origin.y;
         }
@@ -169,7 +173,9 @@ pub(crate) fn with_local_position(event: &InputEvent, origin: Point) -> InputEve
         InputEvent::KeyDown(_)
         | InputEvent::KeyUp(_)
         | InputEvent::TextInput(_)
-        | InputEvent::FocusChanged(_) => {}
+        | InputEvent::TextPreedit(_)
+        | InputEvent::FocusChanged(_)
+        | InputEvent::WindowFocusChanged(_) => {}
     }
     event
 }

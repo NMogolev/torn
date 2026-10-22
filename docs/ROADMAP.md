@@ -77,8 +77,8 @@ assign concrete `Rect` bounds with `layout`.
 Platform input is framework-defined and is not a user-extensible enum:
 
 ```text
-PointerDown, PointerMove, PointerUp, Wheel,
-KeyDown, KeyUp, TextInput, FocusChanged
+PointerDown, PointerMove, PointerEnter, PointerLeave, PointerUp, PointerCancel, Wheel,
+KeyDown, KeyUp, TextInput, TextPreedit, FocusChanged, WindowFocusChanged
 ```
 
 Dispatch follows hit-testing plus capture, target, and bubble phases:
