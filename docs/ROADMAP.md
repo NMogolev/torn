@@ -131,10 +131,14 @@ spacing, font size, and corner radius. `DarkTheme` and `LightTheme` are built
 in. `SystemTheme` is updated by the future platform adapter from the OS
 appearance; the dependency-free UI crate must not query the OS itself.
 
-A future `.tss` parser is deliberately deferred. It will resolve selectors and
-cascade into these same typed visual values rather than exposing CSS concepts to
-widgets. More state-specific values are added to `Theme` only when a widget
-needs them and the semantic distinction is proven.
+The initial `.tss` foundation parses a deliberately small CSS-compatible
+syntax, matches type/id/class/state selectors, and resolves CSS specificity and
+source order into typed visual values. `:root` and `button` rules currently
+adapt into the existing `Theme` contract, so stylesheets can customize all
+standard theme values and button normal/hover/pressed backgrounds without
+changing widget APIs. Per-node style metadata and additional widget-specific
+properties remain follow-up work; see [`TSS.md`](TSS.md) for the supported
+subset and its boundary.
 
 Dirty state is represented separately for `LAYOUT`, `PAINT`, and `STYLE`.
 Changing text or padding invalidates layout and paint; a hover color normally
@@ -251,7 +255,8 @@ in that order of demonstrated need.
 
 ## Explicit non-goals before M5
 
-- Full CSS/TSS parsing, selectors, and cascade.
+- Full web-CSS compatibility (variables, descendant selectors, media queries,
+  animations, and a browser-compatible value grammar).
 - General linear constraint solving.
 - Multiple renderer and windowing backends.
 - Cross-thread widget access.

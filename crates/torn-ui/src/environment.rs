@@ -1,6 +1,6 @@
 use torn_render::{FontdueTextShaper, TextShaper};
 
-use crate::{LightTheme, Theme};
+use crate::{LightTheme, StyleSheet, Theme, TssError};
 
 /// Runtime-wide services and semantic settings available to widgets.
 ///
@@ -26,6 +26,19 @@ impl UiEnvironment {
             text_shaper: Box::new(FontdueTextShaper::ubuntu_light()),
             locale: "und".to_owned(),
         }
+    }
+
+    /// Creates an environment by resolving TSS source over `theme`.
+    ///
+    /// TSS values override the supplied semantic theme; properties absent from
+    /// the sheet preserve the fallback theme's behavior.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TssError`] if `source` is invalid.
+    pub fn from_tss(theme: impl Theme + 'static, source: &str) -> Result<Self, TssError> {
+        let stylesheet = StyleSheet::parse(source)?;
+        Ok(Self::new(stylesheet.theme(theme)))
     }
 
     /// Returns the theme used by standard widgets.
@@ -89,5 +102,31 @@ impl UiEnvironment {
 impl Default for UiEnvironment {
     fn default() -> Self {
         Self::new(LightTheme)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use torn_core::Color;
+
+    use super::UiEnvironment;
+    use crate::LightTheme;
+
+    #[test]
+    fn constructs_a_theme_from_tss_source() {
+        let environment = UiEnvironment::from_tss(
+            LightTheme,
+            ":root { color: #112233; } button { background: #445566; }",
+        )
+        .expect("valid TSS");
+
+        assert_eq!(
+            environment.theme().foreground(),
+            Color::rgba8(17, 34, 51, 255)
+        );
+        assert_eq!(
+            environment.theme().button_background(),
+            Color::rgba8(68, 85, 102, 255)
+        );
     }
 }

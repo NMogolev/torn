@@ -10,6 +10,7 @@ mod runtime;
 mod signal;
 mod style;
 mod theme;
+mod tss;
 mod widget;
 
 pub use column::Column;
@@ -22,4 +23,7 @@ pub use runtime::{DirtyFlags, LayoutContext, UiRuntime, UiRuntimeError};
 pub use signal::Signal;
 pub use style::{Border, SurfaceStyle};
 pub use theme::{DarkTheme, LightTheme, SystemAppearance, SystemTheme, Theme};
+pub use tss::{
+    PseudoClass, Selector, StyleRule, StyleSheet, StyleTarget, TssError, TssStyle, TssTheme,
+};
 pub use widget::Widget;
