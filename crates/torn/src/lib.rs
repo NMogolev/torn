@@ -38,7 +38,7 @@ pub mod render {
     pub use torn_render::{
         DisplayCommand, DisplayList, FontError, FontFace, FontdueTextShaper, GlyphBitmap, GlyphRun,
         LineMetrics, PaintContext, PositionedGlyph, RasterImage, RasterImageError, TextLayout,
-        TextShaper, TextStyle,
+        TextShaper, TextStyle, TextureId,
     };
 }
 
@@ -54,6 +54,14 @@ pub mod software {
 /// GPU display-list rendering powered by `wgpu`.
 pub mod gpu {
     pub use torn_wgpu::{GpuError, GpuRenderer, GpuRendererError, RenderStatus};
+}
+
+/// Servo browser surfaces and their Torn widget.
+#[cfg(any(windows, target_os = "linux", target_os = "macos"))]
+pub mod browser {
+    pub use torn_browser::{
+        BrowserError, BrowserSurface, BrowserView, Context, InteropError, SharedTexture,
+    };
 }
 
 #[cfg(test)]

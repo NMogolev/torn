@@ -5,7 +5,7 @@ mod image;
 mod paint;
 mod text;
 
-pub use display_list::{DisplayCommand, DisplayList};
+pub use display_list::{DisplayCommand, DisplayList, TextureId};
 pub use image::{RasterImage, RasterImageError};
 pub use paint::PaintContext;
 pub use text::{

@@ -1051,6 +1051,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "objc2-io-surface"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "180788110936d59bab6bd83b6060ffdfffb3b922ba1396b312ae795e1de9d81d"
+dependencies = [
+ "bitflags 2.13.1",
+ "libc",
+ "objc2 0.6.4",
+ "objc2-core-foundation",
+ "objc2-foundation 0.3.2",
+]
+
+[[package]]
 name = "objc2-link-presentation"
 version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1084,6 +1097,7 @@ dependencies = [
  "block2 0.6.2",
  "objc2 0.6.4",
  "objc2-foundation 0.3.2",
+ "objc2-io-surface",
 ]
 
 [[package]]
@@ -1778,6 +1792,7 @@ dependencies = [
 name = "torn"
 version = "0.1.0"
 dependencies = [
+ "torn-browser",
  "torn-core",
  "torn-platform",
  "torn-platform-winit",
@@ -1787,6 +1802,18 @@ dependencies = [
  "torn-wgpu",
  "torn-widgets",
  "torn-workspace",
+]
+
+[[package]]
+name = "torn-browser"
+version = "0.1.0"
+dependencies = [
+ "torn-core",
+ "torn-render",
+ "torn-servo",
+ "torn-ui",
+ "torn-wgpu",
+ "wgpu",
 ]
 
 [[package]]
@@ -1817,6 +1844,48 @@ version = "0.1.0"
 dependencies = [
  "fontdue",
  "torn-core",
+]
+
+[[package]]
+name = "torn-servo"
+version = "0.1.0"
+dependencies = [
+ "torn-servo-linux",
+ "torn-servo-macos",
+ "torn-servo-windows",
+]
+
+[[package]]
+name = "torn-servo-linux"
+version = "0.1.0"
+dependencies = [
+ "ash",
+ "khronos-egl",
+ "libc",
+ "libloading",
+ "pollster",
+ "wgpu",
+]
+
+[[package]]
+name = "torn-servo-macos"
+version = "0.1.0"
+dependencies = [
+ "objc2 0.6.4",
+ "objc2-core-foundation",
+ "objc2-io-surface",
+ "objc2-metal 0.3.2",
+ "pollster",
+ "wgpu",
+]
+
+[[package]]
+name = "torn-servo-windows"
+version = "0.1.0"
+dependencies = [
+ "pollster",
+ "wgpu",
+ "windows",
 ]
 
 [[package]]

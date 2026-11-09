@@ -9,6 +9,11 @@ members = [
     "crates/torn-platform",
     "crates/torn-platform-winit",
     "crates/torn-workspace",
+    "crates/torn-servo-windows",
+    "crates/torn-servo-linux",
+    "crates/torn-servo-macos",
+    "crates/torn-servo",
+    "crates/torn-browser",
     "crates/torn",
 ]
 resolver = "3"
@@ -16,7 +21,7 @@ resolver = "3"
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.88"
 license = "AGPL-3.0-only"
 repository = "https://github.com/NMogolev/torn"
 

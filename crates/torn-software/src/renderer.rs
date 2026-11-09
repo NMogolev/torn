@@ -123,6 +123,9 @@ impl SoftwareRenderer {
                 DisplayCommand::DrawImage { image, destination } => {
                     Self::draw_image(target, image, *destination, &state, scale_factor)?;
                 }
+                DisplayCommand::DrawTexture { .. } => {
+                    return Err(RenderError::UnsupportedExternalTexture);
+                }
             }
         }
 
@@ -378,6 +381,9 @@ pub enum RenderError {
     UnmatchedClipPop,
     /// Rendering ended with a state that was never restored.
     UnmatchedSave,
+    /// The display list referenced a GPU texture that the software renderer
+    /// cannot sample.
+    UnsupportedExternalTexture,
 }
 
 impl fmt::Display for RenderError {
@@ -389,6 +395,9 @@ impl fmt::Display for RenderError {
             Self::UnmatchedRestore => "display list restored an empty state stack",
             Self::UnmatchedClipPop => "display list popped an empty clip stack",
             Self::UnmatchedSave => "display list ended with an unbalanced save",
+            Self::UnsupportedExternalTexture => {
+                "software renderer cannot sample GPU external textures"
+            }
         })
     }
 }
@@ -617,7 +626,9 @@ fn image_coordinate(position: f32, length: u32) -> usize {
 #[cfg(test)]
 mod tests {
     use torn_core::{Affine, Color, DiagnosticSeverity, Point, Rect, Size};
-    use torn_render::{DisplayList, FontdueTextShaper, PaintContext, RasterImage, TextStyle};
+    use torn_render::{
+        DisplayList, FontdueTextShaper, PaintContext, RasterImage, TextStyle, TextureId,
+    };
 
     use super::{Pixel, PixelBuffer, RenderError, SoftwareRenderer};
 
@@ -645,6 +656,18 @@ mod tests {
         assert_eq!(pixels.get(0, 0), Some(Pixel::rgba(255, 0, 0, 255)));
         assert_eq!(pixels.get(1, 1), Some(Pixel::rgba(0, 0, 255, 255)));
         assert_eq!(pixels.get(3, 3), Some(Pixel::rgba(255, 0, 0, 255)));
+    }
+
+    #[test]
+    fn rejects_external_gpu_textures() {
+        let mut list = DisplayList::new();
+        PaintContext::new(&mut list).draw_texture(TextureId::new(1), rect(0.0, 0.0, 1.0, 1.0));
+        let mut pixels = PixelBuffer::new(1, 1).expect("small test buffer");
+
+        assert_eq!(
+            SoftwareRenderer.render(&list, &mut pixels),
+            Err(RenderError::UnsupportedExternalTexture)
+        );
     }
 
     #[test]

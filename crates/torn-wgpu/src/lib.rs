@@ -7,10 +7,11 @@
 //! prioritizes semantic parity and clarity over batching and glyph-atlas reuse.
 
 use core::{fmt, ops::Range};
+use std::collections::HashMap;
 
 use bytemuck::{Pod, Zeroable};
 use torn_core::{Affine, Color, Point, Rect};
-use torn_render::{DisplayCommand, DisplayList, RasterImage, TextLayout};
+use torn_render::{DisplayCommand, DisplayList, RasterImage, TextLayout, TextureId};
 
 const SHAPE_SHADER: &str = r"
 struct VertexInput {
@@ -109,6 +110,50 @@ fn fragment(input: VertexOutput) -> @location(0) vec4<f32> {
 }
 ";
 
+const TEXTURE_SHADER: &str = r"
+struct VertexInput {
+    @location(0) position: vec2<f32>,
+    @location(1) uv: vec2<f32>,
+};
+
+struct VertexOutput {
+    @builtin(position) position: vec4<f32>,
+    @location(0) uv: vec2<f32>,
+};
+
+@vertex
+fn vertex(input: VertexInput) -> VertexOutput {
+    var output: VertexOutput;
+    output.position = vec4(input.position, 0.0, 1.0);
+    output.uv = input.uv;
+    return output;
+}
+
+@group(0) @binding(0) var source_texture: texture_2d<f32>;
+@group(0) @binding(1) var source_sampler: sampler;
+
+fn srgb_to_linear(color: vec3<f32>) -> vec3<f32> {
+    return select(
+        color / 12.92,
+        pow((color + vec3(0.055)) / 1.055, vec3(2.4)),
+        color > vec3(0.04045),
+    );
+}
+
+@fragment
+fn fragment(input: VertexOutput) -> @location(0) vec4<f32> {
+    let sample = textureSample(source_texture, source_sampler, input.uv);
+    let alpha = clamp(sample.a, 0.0, 1.0);
+    if (alpha <= 0.0) {
+        return vec4(0.0);
+    }
+    // Browser compositors produce premultiplied sRGB values. Torn's blend
+    // state expects premultiplied linear values.
+    let straight = sample.rgb / alpha;
+    return vec4(srgb_to_linear(straight) * alpha, alpha);
+}
+";
+
 /// GPU presentation or initialization failure.
 #[derive(Debug)]
 pub enum GpuError {
@@ -169,6 +214,9 @@ pub enum GpuRendererError {
     UnmatchedClipPop,
     /// Rendering ended with a state that was never restored.
     UnmatchedSave,
+    /// A display list referenced a texture that was not registered with this
+    /// renderer.
+    UnknownTexture,
 }
 
 impl fmt::Display for GpuRendererError {
@@ -179,6 +227,7 @@ impl fmt::Display for GpuRendererError {
             Self::UnmatchedRestore => "display list restored an empty state stack",
             Self::UnmatchedClipPop => "display list popped an empty clip stack",
             Self::UnmatchedSave => "display list ended with an unbalanced save",
+            Self::UnknownTexture => "display list referenced an unregistered GPU texture",
         })
     }
 }
@@ -193,7 +242,9 @@ pub struct GpuRenderer {
     config: wgpu::SurfaceConfiguration,
     shape_pipeline: wgpu::RenderPipeline,
     text_pipeline: wgpu::RenderPipeline,
-    text_bind_group_layout: wgpu::BindGroupLayout,
+    texture_pipeline: wgpu::RenderPipeline,
+    texture_bind_group_layout: wgpu::BindGroupLayout,
+    external_textures: HashMap<TextureId, ExternalTexture>,
 }
 
 impl GpuRenderer {
@@ -241,9 +292,24 @@ impl GpuRenderer {
             label: Some("Torn text shader"),
             source: wgpu::ShaderSource::Wgsl(TEXT_SHADER.into()),
         });
+        let texture_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("Torn external texture shader"),
+            source: wgpu::ShaderSource::Wgsl(TEXTURE_SHADER.into()),
+        });
+        let texture_bind_group_layout = create_texture_bind_group_layout(&device);
         let shape_pipeline = create_shape_pipeline(&device, &shape_shader, config.format);
-        let (text_pipeline, text_bind_group_layout) =
-            create_text_pipeline(&device, &text_shader, config.format);
+        let text_pipeline = create_text_pipeline(
+            &device,
+            &text_shader,
+            config.format,
+            &texture_bind_group_layout,
+        );
+        let texture_pipeline = create_texture_pipeline(
+            &device,
+            &texture_shader,
+            config.format,
+            &texture_bind_group_layout,
+        );
 
         Ok(Self {
             surface,
@@ -252,8 +318,72 @@ impl GpuRenderer {
             config,
             shape_pipeline,
             text_pipeline,
-            text_bind_group_layout,
+            texture_pipeline,
+            texture_bind_group_layout,
+            external_textures: HashMap::new(),
         })
+    }
+
+    /// Returns the `wgpu` device used by this renderer.
+    ///
+    /// Browser surfaces allocate their shared textures on this device.
+    #[must_use]
+    pub const fn device(&self) -> &wgpu::Device {
+        &self.device
+    }
+
+    /// Returns the `wgpu` queue used by this renderer.
+    ///
+    /// Browser surfaces submit layout transitions and synchronization to this
+    /// queue.
+    #[must_use]
+    pub const fn queue(&self) -> &wgpu::Queue {
+        &self.queue
+    }
+
+    /// Registers `texture` for display-list drawing under `id`.
+    ///
+    /// Re-registering an identifier replaces the previous texture, which is how
+    /// a browser surface publishes a texture that was recreated after a resize.
+    /// The renderer keeps its own handle, so the caller may drop its reference.
+    pub fn register_texture(&mut self, id: TextureId, texture: &wgpu::Texture) {
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let sampler = self.device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("Torn external texture sampler"),
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            ..Default::default()
+        });
+        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Torn external texture bind group"),
+            layout: &self.texture_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&sampler),
+                },
+            ],
+        });
+        self.external_textures.insert(
+            id,
+            ExternalTexture {
+                _texture: texture.clone(),
+                _view: view,
+                _sampler: sampler,
+                bind_group,
+            },
+        );
+    }
+
+    /// Removes a previously registered texture.
+    ///
+    /// Returns whether the identifier was registered.
+    pub fn unregister_texture(&mut self, id: TextureId) -> bool {
+        self.external_textures.remove(&id).is_some()
     }
 
     /// Reconfigures the surface to `width` by `height` physical pixels.
@@ -329,6 +459,13 @@ impl GpuRenderer {
             .iter()
             .map(|draw| self.create_text_draw(draw))
             .collect::<Vec<_>>();
+        let texture_buffer = (!prepared.texture_vertices.is_empty()).then(|| {
+            create_buffer(
+                &self.device,
+                "Torn external texture vertices",
+                &prepared.texture_vertices,
+            )
+        });
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -362,6 +499,19 @@ impl GpuRenderer {
                 pass.set_bind_group(0, &draw.bind_group, &[]);
                 pass.set_vertex_buffer(0, draw.vertices.slice(..));
                 pass.draw(0..6, 0..1);
+            }
+            if let Some(buffer) = &texture_buffer {
+                pass.set_pipeline(&self.texture_pipeline);
+                pass.set_vertex_buffer(0, buffer.slice(..));
+                for draw in &prepared.textures {
+                    set_scissor(&mut pass, draw.scissor);
+                    let texture = self
+                        .external_textures
+                        .get(&draw.texture)
+                        .ok_or(GpuRendererError::UnknownTexture)?;
+                    pass.set_bind_group(0, &texture.bind_group, &[]);
+                    pass.draw(draw.vertices.clone(), 0..1);
+                }
             }
         }
         self.queue.submit([encoder.finish()]);
@@ -412,7 +562,7 @@ impl GpuRenderer {
         });
         let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Torn glyph bind group"),
-            layout: &self.text_bind_group_layout,
+            layout: &self.texture_bind_group_layout,
             entries: &[
                 wgpu::BindGroupEntry {
                     binding: 0,
@@ -500,6 +650,12 @@ struct PreparedText {
     scissor: Scissor,
 }
 
+struct PreparedTexture {
+    vertices: Range<u32>,
+    texture: TextureId,
+    scissor: Scissor,
+}
+
 struct TextDraw {
     vertices: wgpu::Buffer,
     bind_group: wgpu::BindGroup,
@@ -509,6 +665,13 @@ struct TextDraw {
     _sampler: wgpu::Sampler,
 }
 
+struct ExternalTexture {
+    _texture: wgpu::Texture,
+    _view: wgpu::TextureView,
+    _sampler: wgpu::Sampler,
+    bind_group: wgpu::BindGroup,
+}
+
 struct PreparedFrame {
     width: u32,
     height: u32,
@@ -516,6 +679,8 @@ struct PreparedFrame {
     shape_vertices: Vec<ShapeVertex>,
     shapes: Vec<ShapeDraw>,
     texts: Vec<PreparedText>,
+    texture_vertices: Vec<TextVertex>,
+    textures: Vec<PreparedTexture>,
     state: RenderState,
     saved_states: Vec<RenderState>,
 }
@@ -529,6 +694,8 @@ impl PreparedFrame {
             shape_vertices: Vec::new(),
             shapes: Vec::new(),
             texts: Vec::new(),
+            texture_vertices: Vec::new(),
+            textures: Vec::new(),
             state: RenderState::default(),
             saved_states: Vec::new(),
         }
@@ -589,6 +756,12 @@ impl PreparedFrame {
                 }
                 DisplayCommand::DrawImage { image, destination } => {
                     self.add_image(image, *destination)?;
+                }
+                DisplayCommand::DrawTexture {
+                    texture,
+                    destination,
+                } => {
+                    self.add_texture(*texture, *destination)?;
                 }
             }
         }
@@ -805,6 +978,52 @@ impl PreparedFrame {
         Ok(())
     }
 
+    fn add_texture(
+        &mut self,
+        texture: TextureId,
+        destination: Rect,
+    ) -> Result<(), GpuRendererError> {
+        validate_rect(destination)?;
+        if destination.size.width() == 0.0 || destination.size.height() == 0.0 {
+            return Ok(());
+        }
+        let positions = [
+            destination.origin,
+            Point::new(destination.right(), destination.origin.y),
+            Point::new(destination.origin.x, destination.bottom()),
+            Point::new(destination.origin.x, destination.bottom()),
+            Point::new(destination.right(), destination.origin.y),
+            Point::new(destination.right(), destination.bottom()),
+        ];
+        let uvs = [
+            [0.0, 0.0],
+            [1.0, 0.0],
+            [0.0, 1.0],
+            [0.0, 1.0],
+            [1.0, 0.0],
+            [1.0, 1.0],
+        ];
+        let start = u32::try_from(self.texture_vertices.len()).unwrap_or(u32::MAX);
+        if start == u32::MAX {
+            return Err(GpuRendererError::NonFiniteGeometry);
+        }
+        for (position, uv) in positions.into_iter().zip(uvs) {
+            self.texture_vertices.push(TextVertex {
+                position: self.ndc(self.state.transform.transform_point(position)),
+                uv,
+            });
+        }
+        let end = start
+            .checked_add(6)
+            .ok_or(GpuRendererError::NonFiniteGeometry)?;
+        self.textures.push(PreparedTexture {
+            vertices: start..end,
+            texture,
+            scissor: self.scissor(),
+        });
+        Ok(())
+    }
+
     fn ndc(&self, point: Point) -> [f32; 2] {
         let width = u32_to_f32(self.width);
         let height = u32_to_f32(self.height);
@@ -957,13 +1176,9 @@ fn create_shape_pipeline(
     })
 }
 
-fn create_text_pipeline(
-    device: &wgpu::Device,
-    shader: &wgpu::ShaderModule,
-    format: wgpu::TextureFormat,
-) -> (wgpu::RenderPipeline, wgpu::BindGroupLayout) {
-    let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-        label: Some("Torn glyph bind group layout"),
+fn create_texture_bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
+    device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("Torn textured quad bind group layout"),
         entries: &[
             wgpu::BindGroupLayoutEntry {
                 binding: 0,
@@ -982,14 +1197,49 @@ fn create_text_pipeline(
                 count: None,
             },
         ],
-    });
+    })
+}
+
+fn create_text_pipeline(
+    device: &wgpu::Device,
+    shader: &wgpu::ShaderModule,
+    format: wgpu::TextureFormat,
+    bind_group_layout: &wgpu::BindGroupLayout,
+) -> wgpu::RenderPipeline {
+    create_textured_pipeline(device, shader, format, bind_group_layout, "text")
+}
+
+fn create_texture_pipeline(
+    device: &wgpu::Device,
+    shader: &wgpu::ShaderModule,
+    format: wgpu::TextureFormat,
+    bind_group_layout: &wgpu::BindGroupLayout,
+) -> wgpu::RenderPipeline {
+    create_textured_pipeline(
+        device,
+        shader,
+        format,
+        bind_group_layout,
+        "external texture",
+    )
+}
+
+fn create_textured_pipeline(
+    device: &wgpu::Device,
+    shader: &wgpu::ShaderModule,
+    format: wgpu::TextureFormat,
+    bind_group_layout: &wgpu::BindGroupLayout,
+    kind: &str,
+) -> wgpu::RenderPipeline {
+    let pipeline_label = format!("Torn {kind} pipeline");
+    let layout_label = format!("Torn {kind} pipeline layout");
     let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-        label: Some("Torn text pipeline layout"),
-        bind_group_layouts: &[Some(&bind_group_layout)],
+        label: Some(&layout_label),
+        bind_group_layouts: &[Some(bind_group_layout)],
         immediate_size: 0,
     });
-    let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-        label: Some("Torn text pipeline"),
+    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some(&pipeline_label),
         layout: Some(&pipeline_layout),
         vertex: wgpu::VertexState {
             module: shader,
@@ -1016,8 +1266,7 @@ fn create_text_pipeline(
         }),
         multiview_mask: None,
         cache: None,
-    });
-    (pipeline, bind_group_layout)
+    })
 }
 
 fn create_buffer<T: Pod>(device: &wgpu::Device, label: &str, values: &[T]) -> wgpu::Buffer {
@@ -1113,5 +1362,31 @@ fn u32_to_f32(value: u32) -> f32 {
     #[allow(clippy::cast_precision_loss)]
     {
         value as f32
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use torn_core::{Point, Rect, Size};
+    use torn_render::PaintContext;
+
+    use super::{DisplayList, PreparedFrame, TextureId};
+
+    #[test]
+    fn records_external_texture_geometry() {
+        let mut list = DisplayList::new();
+        PaintContext::new(&mut list).draw_texture(
+            TextureId::new(1),
+            Rect::new(
+                Point::new(2.0, 3.0),
+                Size::new(10.0, 20.0).expect("valid test size"),
+            ),
+        );
+        let mut frame = PreparedFrame::new(100, 100, 1.0);
+
+        frame.record(&list).expect("valid display list");
+
+        assert_eq!(frame.textures.len(), 1);
+        assert_eq!(frame.texture_vertices.len(), 6);
     }
 }

@@ -109,4 +109,36 @@ pub enum DisplayCommand {
         /// Destination rectangle in logical pixels.
         destination: Rect,
     },
+    /// Draws a GPU texture registered with the backend out of band.
+    ///
+    /// The software renderer cannot resolve these textures; it reports an
+    /// unsupported-operation error instead.
+    DrawTexture {
+        /// Identifier previously registered with the GPU renderer.
+        texture: TextureId,
+        /// Destination rectangle in logical pixels.
+        destination: Rect,
+    },
+}
+
+/// Identifies a GPU texture supplied to a renderer outside the display list.
+///
+/// Torn's browser layer allocates a shared Servo texture and registers it with
+/// the GPU renderer under one of these identifiers. Display lists then refer to
+/// the texture without owning it.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct TextureId(u64);
+
+impl TextureId {
+    /// Wraps a raw identifier supplied by a renderer or browser layer.
+    #[must_use]
+    pub const fn new(value: u64) -> Self {
+        Self(value)
+    }
+
+    /// Returns the raw identifier.
+    #[must_use]
+    pub const fn get(self) -> u64 {
+        self.0
+    }
 }

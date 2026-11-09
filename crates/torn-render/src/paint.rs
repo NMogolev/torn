@@ -1,6 +1,6 @@
 use torn_core::{Affine, Color, Point, Rect};
 
-use crate::{DisplayCommand, DisplayList, RasterImage, TextLayout};
+use crate::{DisplayCommand, DisplayList, RasterImage, TextLayout, TextureId};
 
 /// A recording interface that appends paint operations to a [`DisplayList`].
 pub struct PaintContext<'a> {
@@ -118,13 +118,24 @@ impl<'a> PaintContext<'a> {
         self.display_list
             .push(DisplayCommand::DrawImage { image, destination });
     }
+
+    /// Records a GPU texture scaled into `destination`.
+    ///
+    /// `texture` must have been registered with the GPU renderer before the
+    /// display list is rendered.
+    pub fn draw_texture(&mut self, texture: TextureId, destination: Rect) {
+        self.display_list.push(DisplayCommand::DrawTexture {
+            texture,
+            destination,
+        });
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use torn_core::{Affine, Color, Point, Rect, Size};
 
-    use crate::{DisplayCommand, DisplayList, PaintContext};
+    use crate::{DisplayCommand, DisplayList, PaintContext, TextureId};
 
     fn size(width: f32, height: f32) -> Size {
         Size::new(width, height).expect("valid test size")
@@ -149,6 +160,23 @@ mod tests {
                 },
                 DisplayCommand::Restore,
             ]
+        );
+    }
+
+    #[test]
+    fn records_external_texture_draws() {
+        let rect = Rect::new(Point::new(1.0, 2.0), size(3.0, 4.0));
+        let texture = TextureId::new(9);
+        let mut display_list = DisplayList::new();
+
+        PaintContext::new(&mut display_list).draw_texture(texture, rect);
+
+        assert_eq!(
+            display_list.commands(),
+            &[DisplayCommand::DrawTexture {
+                texture,
+                destination: rect,
+            }]
         );
     }
 

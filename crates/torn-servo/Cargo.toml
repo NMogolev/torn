@@ -1,0 +1,21 @@
+[package]
+name = "torn-servo"
+description = "Platform selection facade for Torn's Servo shared-texture interop"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[target.'cfg(windows)'.dependencies]
+torn-servo-windows = { path = "../torn-servo-windows" }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+torn-servo-linux = { path = "../torn-servo-linux" }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+torn-servo-macos = { path = "../torn-servo-macos" }

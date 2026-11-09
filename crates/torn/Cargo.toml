@@ -11,6 +11,7 @@ repository.workspace = true
 workspace = true
 
 [dependencies]
+torn-browser = { path = "../torn-browser" }
 torn-core = { path = "../torn-core" }
 torn-render = { path = "../torn-render" }
 torn-software = { path = "../torn-software" }
