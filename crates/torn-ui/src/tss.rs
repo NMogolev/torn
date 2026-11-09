@@ -1,6 +1,7 @@
 use std::{fmt, str::FromStr};
 
 use torn_core::{Color, Insets};
+use torn_render::{DEFAULT_DPI, FontFamily, FontSize, FontStyle, FontWeight};
 
 use crate::{Border, Theme};
 
@@ -55,7 +56,7 @@ impl StyleSheet {
         for &index in &self.cascade {
             let rule = &self.rules[index];
             if rule.selector.matches(target) {
-                resolved.apply(rule.style);
+                resolved.apply(&rule.style);
             }
         }
         resolved
@@ -105,8 +106,8 @@ impl StyleRule {
 
     /// Returns the declarations defined by this rule.
     #[must_use]
-    pub const fn style(&self) -> TssStyle {
-        self.style
+    pub const fn style(&self) -> &TssStyle {
+        &self.style
     }
 }
 
@@ -302,7 +303,7 @@ pub enum PseudoClass {
 ///
 /// Every field is optional so a rule can override exactly one property without
 /// resetting values supplied by a less specific rule or a semantic theme.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct TssStyle {
     /// Surface fill from `background` or `background-color`.
     pub background: Option<Color>,
@@ -316,14 +317,20 @@ pub struct TssStyle {
     pub padding: Option<Insets>,
     /// Standard sibling spacing from `gap`.
     pub spacing: Option<f32>,
+    /// Ordered family preferences from `font-family`.
+    pub font_families: Option<Vec<FontFamily>>,
     /// Text size from `font-size`.
-    pub font_size: Option<f32>,
+    pub font_size: Option<FontSize>,
+    /// Text weight from `font-weight`.
+    pub font_weight: Option<FontWeight>,
+    /// Text slant from `font-style`.
+    pub font_style: Option<FontStyle>,
     /// Surface corner radius from `border-radius`.
     pub corner_radius: Option<f32>,
 }
 
 impl TssStyle {
-    fn apply(&mut self, style: Self) {
+    fn apply(&mut self, style: &Self) {
         if style.background.is_some() {
             self.background = style.background;
         }
@@ -342,8 +349,17 @@ impl TssStyle {
         if style.spacing.is_some() {
             self.spacing = style.spacing;
         }
+        if style.font_families.is_some() {
+            self.font_families.clone_from(&style.font_families);
+        }
         if style.font_size.is_some() {
             self.font_size = style.font_size;
+        }
+        if style.font_weight.is_some() {
+            self.font_weight = style.font_weight;
+        }
+        if style.font_style.is_some() {
+            self.font_style = style.font_style;
         }
         if style.corner_radius.is_some() {
             self.corner_radius = style.corner_radius;
@@ -352,73 +368,99 @@ impl TssStyle {
 
     /// Fills inheritable properties that this style does not define.
     ///
-    /// `color`, `font-size`, and `accent-color` inherit from a parent node.
-    /// Surface properties such as `background`, `border`, `padding`, `gap`,
-    /// and `border-radius` do not.
-    pub fn inherit_from(&mut self, parent: Self) {
+    /// `color`, `font-family`, `font-size`, `font-weight`, `font-style`, and
+    /// `accent-color` inherit from a parent node. Surface properties such as
+    /// `background`, `border`, `padding`, `gap`, and `border-radius` do not.
+    pub fn inherit_from(&mut self, parent: &Self) {
         self.foreground = self.foreground.or(parent.foreground);
+        if self.font_families.is_none() {
+            self.font_families.clone_from(&parent.font_families);
+        }
         self.font_size = self.font_size.or(parent.font_size);
+        self.font_weight = self.font_weight.or(parent.font_weight);
+        self.font_style = self.font_style.or(parent.font_style);
         self.accent = self.accent.or(parent.accent);
     }
 
     /// Returns whether no declaration produced a value.
     #[must_use]
-    pub const fn is_empty(&self) -> bool {
+    pub fn is_empty(&self) -> bool {
         self.background.is_none()
             && self.foreground.is_none()
             && self.accent.is_none()
             && self.border.is_none()
             && self.padding.is_none()
             && self.spacing.is_none()
+            && self.font_families.is_none()
             && self.font_size.is_none()
+            && self.font_weight.is_none()
+            && self.font_style.is_none()
             && self.corner_radius.is_none()
     }
 
     /// Returns `background`, or `fallback` when TSS did not supply it.
     #[must_use]
-    pub fn background_or(self, fallback: Color) -> Color {
+    pub fn background_or(&self, fallback: Color) -> Color {
         self.background.unwrap_or(fallback)
     }
 
     /// Returns `color`, or `fallback` when TSS did not supply it.
     #[must_use]
-    pub fn foreground_or(self, fallback: Color) -> Color {
+    pub fn foreground_or(&self, fallback: Color) -> Color {
         self.foreground.unwrap_or(fallback)
     }
 
     /// Returns `accent-color`, or `fallback` when TSS did not supply it.
     #[must_use]
-    pub fn accent_or(self, fallback: Color) -> Color {
+    pub fn accent_or(&self, fallback: Color) -> Color {
         self.accent.unwrap_or(fallback)
     }
 
     /// Returns `border`, or `fallback` when TSS did not supply it.
     #[must_use]
-    pub fn border_or(self, fallback: Option<Border>) -> Option<Border> {
+    pub fn border_or(&self, fallback: Option<Border>) -> Option<Border> {
         self.border.or(fallback)
     }
 
     /// Returns `padding`, or `fallback` when TSS did not supply it.
     #[must_use]
-    pub fn padding_or(self, fallback: Insets) -> Insets {
+    pub fn padding_or(&self, fallback: Insets) -> Insets {
         self.padding.unwrap_or(fallback)
     }
 
     /// Returns `gap`, or `fallback` when TSS did not supply it.
     #[must_use]
-    pub fn spacing_or(self, fallback: f32) -> f32 {
+    pub fn spacing_or(&self, fallback: f32) -> f32 {
         self.spacing.unwrap_or(fallback)
     }
 
-    /// Returns `font-size`, or `fallback` when TSS did not supply it.
+    /// Resolves `font-size` to logical pixels at `dpi`.
     #[must_use]
-    pub fn font_size_or(self, fallback: f32) -> f32 {
-        self.font_size.unwrap_or(fallback)
+    pub fn font_size_pixels(&self, dpi: f32) -> Option<f32> {
+        self.font_size.map(|size| size.pixels_at(dpi))
+    }
+
+    /// Returns `font-size` in logical pixels at [`DEFAULT_DPI`], or `fallback`.
+    #[must_use]
+    pub fn font_size_or(&self, fallback: f32) -> f32 {
+        self.font_size_pixels(DEFAULT_DPI).unwrap_or(fallback)
+    }
+
+    /// Returns `font-weight`, or `fallback` when TSS did not supply it.
+    #[must_use]
+    pub fn font_weight_or(&self, fallback: FontWeight) -> FontWeight {
+        self.font_weight.unwrap_or(fallback)
+    }
+
+    /// Returns `font-style`, or `fallback` when TSS did not supply it.
+    #[must_use]
+    pub fn font_style_or(&self, fallback: FontStyle) -> FontStyle {
+        self.font_style.unwrap_or(fallback)
     }
 
     /// Returns `border-radius`, or `fallback` when TSS did not supply it.
     #[must_use]
-    pub fn corner_radius_or(self, fallback: f32) -> f32 {
+    pub fn corner_radius_or(&self, fallback: f32) -> f32 {
         self.corner_radius.unwrap_or(fallback)
     }
 }
@@ -492,8 +534,29 @@ impl<T: Theme> Theme for TssTheme<T> {
 
     fn font_size(&self) -> f32 {
         self.root
-            .font_size
+            .font_size_pixels(DEFAULT_DPI)
             .unwrap_or_else(|| self.fallback.font_size())
+    }
+
+    fn font_family(&self) -> Option<&str> {
+        self.root
+            .font_families
+            .as_ref()
+            .and_then(|families| families.first())
+            .map(FontFamily::as_str)
+            .or_else(|| self.fallback.font_family())
+    }
+
+    fn font_weight(&self) -> FontWeight {
+        self.root
+            .font_weight
+            .unwrap_or_else(|| self.fallback.font_weight())
+    }
+
+    fn font_style(&self) -> FontStyle {
+        self.root
+            .font_style
+            .unwrap_or_else(|| self.fallback.font_style())
     }
 
     fn corner_radius(&self) -> f32 {
@@ -555,11 +618,10 @@ impl<'a> Parser<'a> {
             let selectors = parse_selectors(selector_source, selector_position)?;
             self.advance_char();
             let style = self.parse_declarations()?;
-            rules.extend(
-                selectors
-                    .into_iter()
-                    .map(|selector| StyleRule { selector, style }),
-            );
+            rules.extend(selectors.into_iter().map(|selector| StyleRule {
+                selector,
+                style: style.clone(),
+            }));
             self.skip_ignored()?;
         }
         Ok(StyleSheet {
@@ -857,7 +919,10 @@ fn set_property(
         "border" => style.border = Some(parse_border(value, position)?),
         "padding" => style.padding = Some(parse_padding(value, position)?),
         "gap" => style.spacing = Some(parse_length(value, position)?),
-        "font-size" => style.font_size = Some(parse_length(value, position)?),
+        "font-family" => style.font_families = Some(parse_font_families(value, position)?),
+        "font-size" => style.font_size = Some(parse_font_size(value, position)?),
+        "font-weight" => style.font_weight = Some(parse_font_weight(value, position)?),
+        "font-style" => style.font_style = Some(parse_font_style(value, position)?),
         "border-radius" => style.corner_radius = Some(parse_length(value, position)?),
         _ => {
             return Err(TssError {
@@ -1091,6 +1156,121 @@ fn parse_padding(value: &str, position: usize) -> Result<Insets, TssError> {
     }
 }
 
+fn parse_font_families(value: &str, position: usize) -> Result<Vec<FontFamily>, TssError> {
+    let mut families = Vec::new();
+    for part in value.split(',') {
+        let part = part.trim();
+        if part.is_empty() {
+            return Err(TssError {
+                position,
+                message: "font-family requires non-empty family names".to_owned(),
+            });
+        }
+        let name = unquote_font_family(part);
+        if name.is_empty() {
+            return Err(TssError {
+                position,
+                message: "font-family requires non-empty family names".to_owned(),
+            });
+        }
+        families.push(FontFamily::new(name));
+    }
+    if families.is_empty() {
+        return Err(TssError {
+            position,
+            message: "font-family requires at least one family name".to_owned(),
+        });
+    }
+    Ok(families)
+}
+
+fn unquote_font_family(value: &str) -> &str {
+    if value.len() >= 2 {
+        let bytes = value.as_bytes();
+        let first = bytes[0];
+        let last = bytes[value.len() - 1];
+        if (first == b'"' && last == b'"') || (first == b'\'' && last == b'\'') {
+            return &value[1..value.len() - 1];
+        }
+    }
+    value
+}
+
+fn parse_font_size(value: &str, position: usize) -> Result<FontSize, TssError> {
+    let value = value.trim();
+    if let Some(number) = value.strip_suffix("px") {
+        return Ok(FontSize::pixels(parse_font_number(
+            number.trim(),
+            value,
+            position,
+        )?));
+    }
+    if let Some(number) = value.strip_suffix("pt") {
+        return Ok(FontSize::points(parse_font_number(
+            number.trim(),
+            value,
+            position,
+        )?));
+    }
+    if value == "0" {
+        return Ok(FontSize::pixels(0.0));
+    }
+    Err(TssError {
+        position,
+        message: "font-size must be a non-negative `px` or `pt` length".to_owned(),
+    })
+}
+
+fn parse_font_number(number: &str, value: &str, position: usize) -> Result<f32, TssError> {
+    let number = number.parse::<f32>().map_err(|_| TssError {
+        position,
+        message: format!("invalid font length `{value}`"),
+    })?;
+    if !number.is_finite() || number < 0.0 {
+        return Err(TssError {
+            position,
+            message: "font length must be finite and non-negative".to_owned(),
+        });
+    }
+    Ok(number)
+}
+
+fn parse_font_weight(value: &str, position: usize) -> Result<FontWeight, TssError> {
+    let normalized = value.trim().to_ascii_lowercase();
+    match normalized.as_str() {
+        "normal" => Ok(FontWeight::NORMAL),
+        "bold" => Ok(FontWeight::BOLD),
+        _ => {
+            let weight = normalized.parse::<u16>().map_err(|_| TssError {
+                position,
+                message: format!("invalid font-weight `{value}`"),
+            })?;
+            if !(100..=900).contains(&weight) {
+                return Err(TssError {
+                    position,
+                    message: "font-weight must be `normal`, `bold`, or 100 through 900".to_owned(),
+                });
+            }
+            FontWeight::new(weight).ok_or(TssError {
+                position,
+                message: "font-weight is outside the supported range".to_owned(),
+            })
+        }
+    }
+}
+
+fn parse_font_style(value: &str, position: usize) -> Result<FontStyle, TssError> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "normal" => Ok(FontStyle::Normal),
+        "italic" => Ok(FontStyle::Italic),
+        "oblique" => Ok(FontStyle::Oblique),
+        _ => Err(TssError {
+            position,
+            message: format!("invalid font-style `{value}`"),
+        }),
+    }
+}
+
 fn parse_length(value: &str, position: usize) -> Result<f32, TssError> {
     let value = value.trim();
     let (number, unitless) = match value.strip_suffix("px") {
@@ -1122,7 +1302,7 @@ mod tests {
 
     use crate::{Border, LightTheme, Theme};
 
-    use super::{Color, PseudoClass, StyleSheet, StyleTarget};
+    use super::{Color, FontSize, PseudoClass, StyleSheet, StyleTarget};
 
     fn resolve(source: &str, target: &StyleTarget) -> super::TssStyle {
         StyleSheet::parse(source)
@@ -1150,7 +1330,7 @@ mod tests {
         assert_eq!(style.foreground, Some(Color::rgba8(17, 17, 17, 255)));
         assert_eq!(style.background, Some(Color::rgba8(12, 34, 56, 128)));
         assert_eq!(style.padding, Some(Insets::new(4.0, 8.0, 4.0, 8.0)));
-        assert_eq!(style.font_size, Some(13.0));
+        assert_eq!(style.font_size, Some(FontSize::pixels(13.0)));
     }
 
     #[test]
@@ -1272,6 +1452,87 @@ mod tests {
                 &StyleTarget::new("button"),
             );
             assert_eq!(style.padding, Some(expected), "padding `{source}`");
+        }
+    }
+
+    #[test]
+    fn parses_font_family_size_weight_and_style() {
+        let style = resolve(
+            r#"button {
+                font-family: "Ubuntu", 'Noto Sans', sans-serif;
+                font-size: 18px;
+                font-weight: 700;
+                font-style: oblique;
+            }"#,
+            &StyleTarget::new("button"),
+        );
+
+        assert_eq!(
+            style.font_families.as_deref(),
+            Some(
+                [
+                    super::FontFamily::new("Ubuntu"),
+                    super::FontFamily::new("Noto Sans"),
+                    super::FontFamily::new("sans-serif"),
+                ]
+                .as_slice()
+            )
+        );
+        assert_eq!(style.font_size, Some(FontSize::pixels(18.0)));
+        assert_eq!(style.font_weight, Some(super::FontWeight::BOLD));
+        assert_eq!(style.font_style, Some(super::FontStyle::Oblique));
+    }
+
+    #[test]
+    fn resolves_point_sizes_and_font_weight_keywords() {
+        let style = resolve(
+            "text { font-size: 12pt; font-weight: normal; font-style: normal; }",
+            &StyleTarget::new("text"),
+        );
+        assert_eq!(style.font_size, Some(FontSize::points(12.0)));
+        assert!((style.font_size_pixels(96.0).expect("size") - 16.0).abs() < f32::EPSILON);
+        assert_eq!(style.font_weight, Some(super::FontWeight::NORMAL));
+        assert_eq!(style.font_style, Some(super::FontStyle::Normal));
+
+        let bold = resolve("text { font-weight: bold; }", &StyleTarget::new("text"));
+        assert_eq!(bold.font_weight, Some(super::FontWeight::BOLD));
+    }
+
+    #[test]
+    fn font_properties_inherit_from_parent_styles() {
+        let root = resolve(
+            ":root { font-family: Root; font-size: 10px; font-weight: 300; font-style: italic; }",
+            &StyleTarget::root(),
+        );
+        let mut child = super::TssStyle::default();
+        child.inherit_from(&root);
+
+        assert_eq!(child.font_families, root.font_families);
+        assert_eq!(child.font_size, root.font_size);
+        assert_eq!(child.font_weight, root.font_weight);
+        assert_eq!(child.font_style, root.font_style);
+    }
+
+    #[test]
+    fn rejects_invalid_font_values() {
+        for (property, value) in [
+            ("font-size", "12"),
+            ("font-size", "-1px"),
+            ("font-size", "large"),
+            ("font-weight", "950"),
+            ("font-weight", "heavy"),
+            ("font-style", "slanted"),
+            ("font-family", "\"\""),
+            ("font-family", "Ubuntu,,Sans"),
+        ] {
+            let source = format!("button {{ {property}: {value}; }}");
+            let error = StyleSheet::parse(&source)
+                .expect_err(&format!("`{property}: {value}` must be rejected"));
+            assert!(
+                error.message().contains("font"),
+                "unexpected error for `{property}: {value}`: {}",
+                error.message()
+            );
         }
     }
 

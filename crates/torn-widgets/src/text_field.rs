@@ -168,14 +168,16 @@ impl Widget for TextField {
         context: &mut LayoutContext<'_>,
         constraints: Constraints,
     ) -> LayoutResult {
-        let theme = context.environment().theme();
         let style = context.style();
-        let font_size = style.font_size_or(theme.font_size());
-        self.text_layout = context.environment().text_shaper().layout(
-            &self.display_text(),
-            &TextStyle::new(font_size, style.foreground_or(theme.foreground())),
-            None,
-        );
+        let environment = context.environment();
+        let font = environment.font_for(&style);
+        let font_size = font.pixel_size(environment.logical_dpi());
+        let text_style =
+            TextStyle::new_with_font(font, style.foreground_or(environment.theme().foreground()));
+        self.text_layout =
+            environment
+                .text_shaper()
+                .layout(&self.display_text(), &text_style, None);
         let padding = style.padding_or(default_padding());
         let width = (self.text_layout.size().width() + padding.horizontal()).max(DEFAULT_WIDTH);
         let height = (self.text_layout.size().height() + padding.vertical())
@@ -217,7 +219,9 @@ impl Widget for TextField {
         context.stroke_rounded_rect(bounds, radius, border_width, border);
 
         let padding = style.padding_or(default_padding());
-        let font_size = style.font_size_or(theme.font_size());
+        let font = environment.font_for(style);
+        let font_size = font.pixel_size(environment.logical_dpi());
+        let text_style = TextStyle::new_with_font(font, foreground);
         let text_bounds = bounds.inset(padding);
         context.with_clip(text_bounds, |context| {
             let text_color = self.text_layout.color();
@@ -230,11 +234,7 @@ impl Widget for TextField {
             if self.focused {
                 let display_text = self.display_text();
                 let prefix = &display_text[..byte_index(&display_text, self.display_cursor())];
-                let prefix_layout = environment.text_shaper().layout(
-                    prefix,
-                    &TextStyle::new(font_size, foreground),
-                    None,
-                );
+                let prefix_layout = environment.text_shaper().layout(prefix, &text_style, None);
                 let caret_height = text_bounds.size.height().max(font_size);
                 context.fill_rect(
                     Rect::new(

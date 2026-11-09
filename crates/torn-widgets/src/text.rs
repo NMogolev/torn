@@ -1,11 +1,12 @@
 use torn_core::{Constraints, Rect};
-use torn_render::{FontdueTextShaper, PaintContext, TextLayout, TextStyle};
+use torn_render::{FontdueTextShaper, PaintContext, TextLayout, TextShaper, TextStyle};
 use torn_ui::{LayoutContext, LayoutResult, StyleTarget, TssStyle, UiEnvironment, Widget};
 
 /// A widget that paints text.
 ///
 /// [`Self::new`] accepts a pre-shaped layout for fixed-size text. Use
-/// [`Self::wrapping`] for text that must reflow to its available width.
+/// [`Self::wrapping`] for text that must reflow to its available width with a
+/// specific shaper, or [`Self::styled`] to use the runtime's font database.
 pub struct Text {
     layout: TextLayout,
     source: Option<TextSource>,
@@ -13,7 +14,7 @@ pub struct Text {
 
 struct TextSource {
     text: String,
-    shaper: FontdueTextShaper,
+    shaper: Option<FontdueTextShaper>,
     style: TextStyle,
 }
 
@@ -28,6 +29,9 @@ impl Text {
     }
 
     /// Creates text that reshapes and wraps to its available width during layout.
+    ///
+    /// The supplied shaper is used for this widget. Use [`Self::styled`] when
+    /// the runtime environment's font database should be used instead.
     #[must_use]
     pub fn wrapping(text: impl Into<String>, shaper: FontdueTextShaper, style: TextStyle) -> Self {
         let text = text.into();
@@ -36,7 +40,26 @@ impl Text {
             layout,
             source: Some(TextSource {
                 text,
-                shaper,
+                shaper: Some(shaper),
+                style,
+            }),
+        }
+    }
+
+    /// Creates text that reshapes and wraps with the runtime's text shaper.
+    ///
+    /// The style supplies the base font request and color. Per-node TSS font
+    /// properties and the application default font are applied on top during
+    /// layout, matching the behavior of standard controls.
+    #[must_use]
+    pub fn styled(text: impl Into<String>, style: TextStyle) -> Self {
+        let text = text.into();
+        let layout = TextLayout::empty(&text, style.color());
+        Self {
+            layout,
+            source: Some(TextSource {
+                text,
+                shaper: None,
                 style,
             }),
         }
@@ -59,11 +82,14 @@ impl Widget for Text {
         if let Some(source) = &self.source {
             let max_width = constraints.max().width();
             let width = max_width.is_finite().then_some(max_width.max(0.0));
-            let text_style = TextStyle::new(
-                style.font_size.unwrap_or(source.style.font_size),
-                style.foreground.unwrap_or(source.style.color),
-            );
-            self.layout = source.shaper.layout(&source.text, &text_style, width);
+            let font = context.environment().font_from(source.style.font(), &style);
+            let text_style =
+                TextStyle::new_with_font(font, style.foreground.unwrap_or(source.style.color()));
+            let shaper: &dyn TextShaper = match &source.shaper {
+                Some(shaper) => shaper,
+                None => context.environment().text_shaper(),
+            };
+            self.layout = shaper.layout(&source.text, &text_style, width);
         } else if let Some(color) = style.foreground
             && self.layout.color() != color
         {

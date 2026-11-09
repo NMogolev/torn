@@ -1,144 +1,69 @@
-use std::{
-    fmt,
-    sync::{Arc, OnceLock},
-};
-
-use fontdue::{Font, FontSettings};
+use fontdue::layout::LayoutSettings;
 use torn_core::{Color, Point, Size};
 
+use crate::font::{DEFAULT_DPI, Font, FontDatabase, FontDescriptor, FontError, FontFace};
+
 /// Styling information used by a text shaper.
-#[derive(Clone, Copy, Debug, PartialEq)]
+///
+/// A text style combines a [`Font`] request with a paint color. The shaper
+/// resolves the font request through its [`FontDatabase`], so family fallback,
+/// weight, and style selection are identical during measurement and painting.
+#[derive(Clone, Debug, PartialEq)]
 pub struct TextStyle {
-    /// Requested font size in logical pixels.
-    pub font_size: f32,
-    /// Color used to paint the text.
-    pub color: Color,
+    font: Font,
+    color: Color,
 }
 
 impl TextStyle {
-    /// Creates a text style with the supplied font size and color.
+    /// Creates a text style with the supplied pixel size and color.
+    ///
+    /// The font request has no family preference, so the shaper's default face
+    /// is used. This preserves the original Torn API while the richer
+    /// [`Self::new_with_font`] constructor is available for explicit fonts.
     #[must_use]
-    pub const fn new(font_size: f32, color: Color) -> Self {
-        Self { font_size, color }
-    }
-}
-
-/// An immutable font resource used by shaped glyph runs.
-#[derive(Clone)]
-pub struct FontFace {
-    inner: Arc<Font>,
-}
-
-impl FontFace {
-    /// Parses a TrueType or OpenType font from its complete binary contents.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`FontError`] when `bytes` do not contain a supported font.
-    pub fn from_bytes(bytes: impl Into<Vec<u8>>) -> Result<Self, FontError> {
-        Font::from_bytes(bytes.into(), FontSettings::default())
-            .map(|inner| Self {
-                inner: Arc::new(inner),
-            })
-            .map_err(FontError)
-    }
-
-    /// Returns Torn's bundled Ubuntu Light font.
-    ///
-    /// The font is licensed under the Ubuntu Font Licence 1.0; its full text is
-    /// included alongside the font asset in this crate.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the bundled font asset is corrupt. This is a build-time
-    /// invariant maintained with the crate source.
-    #[must_use]
-    pub fn ubuntu_light() -> Self {
-        static UBUNTU_LIGHT: OnceLock<FontFace> = OnceLock::new();
-
-        UBUNTU_LIGHT
-            .get_or_init(|| {
-                Self::from_bytes(include_bytes!("../assets/Ubuntu-Light.ttf").as_slice())
-                    .expect("the bundled Ubuntu Light font must be valid")
-            })
-            .clone()
-    }
-
-    /// Returns whether this face contains a glyph for `character`.
-    #[must_use]
-    pub fn has_glyph(&self, character: char) -> bool {
-        self.inner.has_glyph(character)
-    }
-
-    /// Rasterizes one glyph to an 8-bit coverage bitmap.
-    #[must_use]
-    pub fn rasterize(&self, glyph_id: u16, font_size: f32) -> GlyphBitmap {
-        let (metrics, coverage) = self.inner.rasterize_indexed(glyph_id, font_size);
-        GlyphBitmap {
-            width: metrics.width,
-            height: metrics.height,
-            coverage,
+    pub fn new(font_size: f32, color: Color) -> Self {
+        Self {
+            font: Font::from_pixel_size(font_size),
+            color,
         }
     }
 
-    fn font(&self) -> &Font {
-        &self.inner
-    }
-}
-
-impl fmt::Debug for FontFace {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_struct("FontFace")
-            .field("file_hash", &self.inner.file_hash())
-            .field("name", &self.inner.name())
-            .finish()
-    }
-}
-
-impl PartialEq for FontFace {
-    fn eq(&self, other: &Self) -> bool {
-        self.inner.file_hash() == other.inner.file_hash()
-    }
-}
-
-/// A font parsing failure.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct FontError(&'static str);
-
-impl fmt::Display for FontError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(formatter, "could not parse font: {}", self.0)
-    }
-}
-
-impl std::error::Error for FontError {}
-
-/// A rasterized glyph's alpha coverage, arranged in row-major order.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct GlyphBitmap {
-    width: usize,
-    height: usize,
-    coverage: Vec<u8>,
-}
-
-impl GlyphBitmap {
-    /// Returns the bitmap width in pixels.
+    /// Creates a text style from an explicit font request and color.
     #[must_use]
-    pub const fn width(&self) -> usize {
-        self.width
+    pub fn new_with_font(font: Font, color: Color) -> Self {
+        Self { font, color }
     }
 
-    /// Returns the bitmap height in pixels.
+    /// Returns the color used to paint the text.
     #[must_use]
-    pub const fn height(&self) -> usize {
-        self.height
+    pub const fn color(&self) -> Color {
+        self.color
     }
 
-    /// Returns row-major 8-bit glyph coverage, from transparent to opaque.
+    /// Returns the font request.
     #[must_use]
-    pub fn coverage(&self) -> &[u8] {
-        &self.coverage
+    pub const fn font(&self) -> &Font {
+        &self.font
+    }
+
+    /// Returns the requested size in logical pixels at [`DEFAULT_DPI`].
+    #[must_use]
+    pub fn font_size(&self) -> f32 {
+        self.font.size().pixels_at(DEFAULT_DPI)
+    }
+
+    /// Returns this style with a different paint color.
+    #[must_use]
+    pub fn with_color(mut self, color: Color) -> Self {
+        self.color = color;
+        self
+    }
+
+    /// Returns this style with a different font request.
+    #[must_use]
+    pub fn with_font(mut self, font: Font) -> Self {
+        self.font = font;
+        self
     }
 }
 
@@ -244,7 +169,12 @@ pub struct TextLayout {
 }
 
 impl TextLayout {
-    fn empty(text: &str, color: Color) -> Self {
+    /// Creates an empty layout that remembers `text` and `color`.
+    ///
+    /// This is useful for widgets that defer shaping until they can query the
+    /// runtime environment's font database.
+    #[must_use]
+    pub fn empty(text: &str, color: Color) -> Self {
         Self {
             text: text.to_owned(),
             size: Size::ZERO,
@@ -301,51 +231,117 @@ pub trait TextShaper {
     fn layout(&self, text: &str, style: &TextStyle, width: Option<f32>) -> TextLayout;
 }
 
-/// A small deterministic shaper for a primary face and optional fallback faces.
+/// A small deterministic shaper backed by a [`FontDatabase`].
 ///
-/// It performs glyph lookup, line breaking, placement, and line metric
-/// calculation through `fontdue`. It intentionally does not implement kerning,
-/// complex OpenType shaping, or bidirectional reordering.
+/// It performs family matching, glyph lookup, line breaking, placement, and
+/// line metric calculation through `fontdue`. It intentionally does not
+/// implement kerning, complex OpenType shaping, or bidirectional reordering.
+/// All registered faces are available as per-character fallbacks.
 #[derive(Clone, Debug, PartialEq)]
 pub struct FontdueTextShaper {
-    fonts: Vec<FontFace>,
+    database: FontDatabase,
+    dpi: f32,
 }
 
 impl FontdueTextShaper {
-    /// Creates a shaper that uses `font` as its primary face.
+    /// Creates a shaper that uses `font` as its default face.
     #[must_use]
     pub fn new(font: FontFace) -> Self {
-        Self { fonts: vec![font] }
+        Self {
+            database: FontDatabase::with_default(font),
+            dpi: DEFAULT_DPI,
+        }
     }
 
-    /// Adds fallback faces used when the primary face lacks a character.
+    /// Creates a shaper from an existing font database.
     ///
-    /// Faces are consulted in insertion order. When no configured face contains
-    /// a printable character, the shaper uses `?` from the primary face rather
-    /// than rendering the font's `.notdef` square.
+    /// The first face becomes the default when the database does not already
+    /// select one.
+    #[must_use]
+    pub fn from_database(mut database: FontDatabase) -> Self {
+        if database.default_face().is_none() && !database.is_empty() {
+            database.set_default_face(0);
+        }
+        Self {
+            database,
+            dpi: DEFAULT_DPI,
+        }
+    }
+
+    /// Adds fallback faces used when the requested families lack a character.
+    ///
+    /// Faces are consulted in insertion order after the requested family.
     #[must_use]
     pub fn with_fallbacks(
         font: FontFace,
         fallback_fonts: impl IntoIterator<Item = FontFace>,
     ) -> Self {
-        let mut fonts = vec![font];
-        fonts.extend(fallback_fonts);
-        Self { fonts }
+        let mut database = FontDatabase::with_default(font);
+        for fallback in fallback_fonts {
+            database.add_face(fallback);
+        }
+        Self {
+            database,
+            dpi: DEFAULT_DPI,
+        }
     }
 
-    /// Returns the primary font face.
+    /// Returns the shaper's font database.
     #[must_use]
-    pub fn primary_font(&self) -> &FontFace {
-        &self.fonts[0]
+    pub const fn database(&self) -> &FontDatabase {
+        &self.database
+    }
+
+    /// Returns mutable access to the shaper's font database.
+    pub const fn database_mut(&mut self) -> &mut FontDatabase {
+        &mut self.database
+    }
+
+    /// Parses and registers a face in the shaper's database.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FontError`] when `bytes` do not contain a supported font.
+    pub fn add_font(
+        &mut self,
+        descriptor: FontDescriptor,
+        bytes: impl Into<Vec<u8>>,
+    ) -> Result<FontFace, FontError> {
+        self.database.add_font(descriptor, bytes)
+    }
+
+    /// Returns the default face used when no family matches.
+    #[must_use]
+    pub fn primary_font(&self) -> Option<&FontFace> {
+        self.database.default_face()
+    }
+
+    /// Returns the logical DPI used to resolve point sizes.
+    #[must_use]
+    pub const fn dpi(&self) -> f32 {
+        self.dpi
+    }
+
+    /// Updates the logical DPI used to resolve point sizes.
+    ///
+    /// # Panics
+    ///
+    /// Panics when `dpi` is not finite or is not positive.
+    pub fn set_dpi(&mut self, dpi: f32) {
+        assert!(
+            dpi.is_finite() && dpi > 0.0,
+            "font DPI must be finite and positive"
+        );
+        self.dpi = dpi;
     }
 
     /// Creates a shaper using Torn's bundled Ubuntu Light font.
     #[must_use]
     pub fn ubuntu_light() -> Self {
-        Self::new(FontFace::ubuntu_light())
+        Self::from_database(FontDatabase::bundled())
     }
 
-    /// Shapes `text` using this shaper's font.
+    /// Shapes `text` using this shaper's font database.
     #[must_use]
     pub fn layout(&self, text: &str, style: &TextStyle, width: Option<f32>) -> TextLayout {
         <Self as TextShaper>::layout(self, text, style, width)
@@ -354,24 +350,30 @@ impl FontdueTextShaper {
 
 impl TextShaper for FontdueTextShaper {
     fn layout(&self, text: &str, style: &TextStyle, width: Option<f32>) -> TextLayout {
-        if text.is_empty() || !style.font_size.is_finite() || style.font_size <= 0.0 {
+        let font_size = style.font.pixel_size(self.dpi);
+        if text.is_empty() || !font_size.is_finite() || font_size <= 0.0 {
+            return TextLayout::empty(text, style.color);
+        }
+
+        let faces = self.database.resolve(&style.font);
+        if faces.is_empty() {
             return TextLayout::empty(text, style.color);
         }
 
         let normalized_text = text.replace("\r\n", "\n").replace('\r', "\n");
-        let prepared_text = self.prepare_text(&normalized_text);
-        let font_refs = self.fonts.iter().map(FontFace::font).collect::<Vec<_>>();
+        let prepared_text = prepare_text(&faces, &normalized_text);
+        let font_refs = faces.iter().map(FontFace::font).collect::<Vec<_>>();
         let mut layout =
             fontdue::layout::Layout::new(fontdue::layout::CoordinateSystem::PositiveYDown);
         let max_width = width.filter(|value| value.is_finite() && *value >= 0.0);
-        layout.reset(&fontdue::layout::LayoutSettings {
+        layout.reset(&LayoutSettings {
             max_width,
-            ..fontdue::layout::LayoutSettings::default()
+            ..LayoutSettings::default()
         });
         for (font_index, segment) in prepared_text {
             layout.append(
                 &font_refs,
-                &fontdue::layout::TextStyle::new(&segment, style.font_size, font_index),
+                &fontdue::layout::TextStyle::new(&segment, font_size, font_index),
             );
         }
 
@@ -381,7 +383,7 @@ impl TextShaper for FontdueTextShaper {
             .iter()
             .filter(|glyph| glyph.char_data.rasterize())
         {
-            let font = self.fonts[glyph.font_index].clone();
+            let font = faces[glyph.font_index].clone();
             let positioned = PositionedGlyph {
                 glyph_id: glyph.key.glyph_index,
                 position: Point::new(glyph.x, glyph.y),
@@ -394,7 +396,7 @@ impl TextShaper for FontdueTextShaper {
             } else {
                 glyph_runs.push(GlyphRun {
                     font,
-                    font_size: style.font_size,
+                    font_size,
                     glyphs: vec![positioned],
                 });
             }
@@ -411,11 +413,8 @@ impl TextShaper for FontdueTextShaper {
                 height: line.max_new_line_size,
             })
             .collect::<Vec<_>>();
-        let size = Size::new(
-            measured_width(&layout, &self.fonts, style.font_size),
-            layout.height(),
-        )
-        .expect("fontdue produces finite non-negative layout metrics");
+        let size = Size::new(measured_width(&layout, &faces, font_size), layout.height())
+            .expect("fontdue produces finite non-negative layout metrics");
 
         TextLayout {
             text: text.to_owned(),
@@ -427,38 +426,34 @@ impl TextShaper for FontdueTextShaper {
     }
 }
 
-impl FontdueTextShaper {
-    fn prepare_text(&self, text: &str) -> Vec<(usize, String)> {
-        let mut segments = Vec::<(usize, String)>::new();
-        for character in text.chars() {
-            let (font_index, character) = if character.is_control() {
-                (0, character)
-            } else if let Some(font_index) =
-                self.fonts.iter().position(|font| font.has_glyph(character))
-            {
-                (font_index, character)
-            } else {
-                (0, '?')
-            };
-            if let Some((previous_index, segment)) = segments.last_mut()
-                && *previous_index == font_index
-            {
-                segment.push(character);
-            } else {
-                segments.push((font_index, character.to_string()));
-            }
+fn prepare_text(faces: &[FontFace], text: &str) -> Vec<(usize, String)> {
+    let mut segments = Vec::<(usize, String)>::new();
+    for character in text.chars() {
+        let (font_index, character) = if character.is_control() {
+            (0, character)
+        } else if let Some(font_index) = faces.iter().position(|font| font.has_glyph(character)) {
+            (font_index, character)
+        } else {
+            (0, '?')
+        };
+        if let Some((previous_index, segment)) = segments.last_mut()
+            && *previous_index == font_index
+        {
+            segment.push(character);
+        } else {
+            segments.push((font_index, character.to_string()));
         }
-        segments
     }
+    segments
 }
 
-fn measured_width(layout: &fontdue::layout::Layout, fonts: &[FontFace], font_size: f32) -> f32 {
+fn measured_width(layout: &fontdue::layout::Layout, faces: &[FontFace], font_size: f32) -> f32 {
     layout
         .glyphs()
         .iter()
         .filter(|glyph| glyph.char_data.rasterize())
         .map(|glyph| {
-            let metrics = fonts[glyph.font_index]
+            let metrics = faces[glyph.font_index]
                 .font()
                 .metrics_indexed(glyph.key.glyph_index, font_size);
             glyph.x - as_logical_coordinate(metrics.xmin) + metrics.advance_width
@@ -481,6 +476,7 @@ mod tests {
     use torn_core::Color;
 
     use super::{FontdueTextShaper, GlyphRun, TextStyle};
+    use crate::font::{Font, FontStyle, FontWeight};
 
     #[test]
     fn shapes_text_into_glyphs_and_line_metrics() {
@@ -556,5 +552,19 @@ mod tests {
                 .flat_map(GlyphRun::glyphs)
                 .all(|glyph| glyph.glyph_id() != 0)
         );
+    }
+
+    #[test]
+    fn uses_the_requested_font_weight_and_style_when_available() {
+        let style = TextStyle::new_with_font(
+            Font::from_family("Ubuntu")
+                .with_weight(FontWeight::BOLD)
+                .with_style(FontStyle::Italic),
+            Color::BLACK,
+        );
+        let layout = FontdueTextShaper::ubuntu_light().layout("Font", &style, None);
+
+        assert_eq!(layout.glyph_runs()[0].font().family().as_str(), "Ubuntu");
+        assert_eq!(layout.glyph_runs()[0].font().weight(), FontWeight::LIGHT);
     }
 }

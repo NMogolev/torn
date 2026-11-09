@@ -3,12 +3,31 @@
 use torn_core::{
     Color, Constraints, InputEvent, Modifiers, Point, PointerButtons, PointerEvent, PointerId, Size,
 };
-use torn_render::{DisplayCommand, DisplayList, FontdueTextShaper, PaintContext, TextStyle};
+use torn_render::{
+    DisplayCommand, DisplayList, FontDatabase, FontDescriptor, FontFace, FontStyle, FontWeight,
+    FontdueTextShaper, PaintContext, TextStyle,
+};
 use torn_ui::{LightTheme, StyleTarget, Styled, UiEnvironment, UiRuntime};
 use torn_widgets::{Button, Checkbox, Stack, Text};
 
 fn environment(source: &str) -> UiEnvironment {
     UiEnvironment::from_tss(LightTheme, source).expect("valid TSS")
+}
+
+/// An environment whose shaper has distinct normal and bold-italic faces so
+/// font matching is observable in the shaped output.
+fn font_environment(source: &str) -> UiEnvironment {
+    let mut environment = environment(source);
+    let mut database = FontDatabase::with_default(FontFace::ubuntu_light());
+    database.add_face(
+        FontFace::from_bytes_with_descriptor(
+            include_bytes!("../../torn-render/assets/Ubuntu-Light.ttf").as_slice(),
+            FontDescriptor::new("Ubuntu", FontWeight::BOLD, FontStyle::Italic),
+        )
+        .expect("bundled font is valid"),
+    );
+    environment.set_text_shaper(FontdueTextShaper::from_database(database));
+    environment
 }
 
 fn pointer_move(position: Point) -> InputEvent {
@@ -165,7 +184,7 @@ fn inherited_text_style_reaches_descendants() {
 
     let style = runtime.computed_style(text).expect("text is live");
     assert_eq!(style.foreground, Some(Color::rgba8(17, 34, 51, 255)));
-    assert_eq!(style.font_size, Some(22.0));
+    assert!((style.font_size_or(0.0) - 22.0).abs() < f32::EPSILON);
 
     let mut list = DisplayList::new();
     runtime
@@ -180,6 +199,49 @@ fn inherited_text_style_reaches_descendants() {
         })
         .expect("text is painted");
     assert_eq!(drawn.color(), Color::rgba8(17, 34, 51, 255));
+}
+
+#[test]
+fn tss_font_properties_reach_shaped_text() {
+    let mut runtime = UiRuntime::with_environment(
+        Button::new(),
+        font_environment(
+            r#"button {
+                font-family: "Ubuntu";
+                font-size: 24px;
+                font-weight: 700;
+                font-style: italic;
+            }"#,
+        ),
+    );
+    runtime
+        .append_child(
+            runtime.root(),
+            Text::styled("Font", TextStyle::new(10.0, Color::BLACK)),
+        )
+        .expect("root exists");
+    runtime
+        .layout(Constraints::UNBOUNDED)
+        .expect("layout succeeds");
+
+    let mut list = DisplayList::new();
+    runtime
+        .paint(&mut PaintContext::new(&mut list))
+        .expect("paint succeeds");
+    let layout = list
+        .commands()
+        .iter()
+        .find_map(|command| match command {
+            DisplayCommand::DrawText { layout, .. } => Some(layout),
+            _ => None,
+        })
+        .expect("text is painted");
+    let run = layout.glyph_runs().first().expect("text has glyphs");
+
+    assert_eq!(run.font().family().as_str(), "Ubuntu");
+    assert_eq!(run.font().weight(), FontWeight::BOLD);
+    assert_eq!(run.font().style(), FontStyle::Italic);
+    assert!((run.font_size() - 24.0).abs() < f32::EPSILON);
 }
 
 #[test]

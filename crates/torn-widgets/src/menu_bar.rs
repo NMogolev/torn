@@ -55,18 +55,16 @@ impl Widget for MenuBar {
         constraints: Constraints,
     ) -> LayoutResult {
         let style = context.style();
-        let theme = context.environment().theme();
-        let font_size = style.font_size.unwrap_or_else(|| theme.font_size());
-        let foreground = style.foreground.unwrap_or_else(|| theme.foreground());
+        let environment = context.environment();
+        let font = environment.font_for(&style);
+        let font_size = font.pixel_size(environment.logical_dpi());
+        let foreground = style.foreground_or(environment.theme().foreground());
+        let text_style = TextStyle::new_with_font(font, foreground);
         let height = (font_size + VERTICAL_PADDING * 2.0).max(24.0);
         self.item_bounds.clear();
         let mut cursor = 0.0;
         for menu in &self.menus {
-            let layout = context.environment().text_shaper().layout(
-                menu,
-                &TextStyle::new(font_size, foreground),
-                None,
-            );
+            let layout = environment.text_shaper().layout(menu, &text_style, None);
             let width = layout.size().width() + HORIZONTAL_PADDING * 2.0;
             self.item_bounds
                 .push(Rect::new(Point::new(cursor, 0.0), size(width, height)));
@@ -108,14 +106,15 @@ impl Widget for MenuBar {
                 context.stroke_rect(bounds, border.width, border.color);
             }
         }
-        let font_size = style.font_size.unwrap_or_else(|| theme.font_size());
-        let foreground = style.foreground.unwrap_or_else(|| theme.foreground());
+        let font = environment.font_for(style);
+        let foreground = style.foreground_or(theme.foreground());
+        let text_style = TextStyle::new_with_font(font, foreground);
         context.with_clip(bounds, |context| {
             for (menu, item) in self.menus.iter().zip(&self.item_bounds) {
                 let item = offset_rect(*item, bounds.origin);
                 let text = environment.text_shaper().layout(
                     menu,
-                    &TextStyle::new(font_size, foreground),
+                    &text_style,
                     Some((item.size.width() - HORIZONTAL_PADDING * 2.0).max(0.0)),
                 );
                 context.draw_text(

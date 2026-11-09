@@ -1,4 +1,5 @@
 use torn_core::{Color, Insets};
+use torn_render::{Font, FontStyle, FontWeight};
 
 /// A small, typed set of visual values shared by standard widgets.
 ///
@@ -54,6 +55,40 @@ pub trait Theme {
 
     /// Default text size, in logical pixels.
     fn font_size(&self) -> f32;
+
+    /// Preferred font family for application text.
+    ///
+    /// Returning `None` lets the text shaper use its default face. Custom
+    /// themes can return a registered family name to opt into a specific font.
+    fn font_family(&self) -> Option<&str> {
+        None
+    }
+
+    /// Default font weight for application text.
+    fn font_weight(&self) -> FontWeight {
+        FontWeight::NORMAL
+    }
+
+    /// Default font style for application text.
+    fn font_style(&self) -> FontStyle {
+        FontStyle::Normal
+    }
+
+    /// Returns the theme's default font request.
+    ///
+    /// The request combines [`Self::font_size`], [`Self::font_weight`],
+    /// [`Self::font_style`], and [`Self::font_family`]. Widgets normally use
+    /// [`crate::UiEnvironment::font_for`], which applies per-node TSS values on
+    /// top of this request.
+    fn font(&self) -> Font {
+        let mut font = Font::from_pixel_size(self.font_size())
+            .with_weight(self.font_weight())
+            .with_style(self.font_style());
+        if let Some(family) = self.font_family() {
+            font.set_family(family);
+        }
+        font
+    }
 
     /// Default corner radius for controls, in logical pixels.
     fn corner_radius(&self) -> f32;

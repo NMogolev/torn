@@ -117,28 +117,34 @@ trait TextShaper {
 Paint commands consume `TextLayout` rather than raw strings, so layout metrics
 and rendering cannot disagree.
 
-`FontdueTextShaper` is the initial deterministic implementation: a single
-TTF/OTF face is converted to positioned glyph runs and line metrics, and the
-software backend rasterizes the same glyphs. It covers basic horizontal text,
-newlines, and width wrapping. Kerning, complex OpenType shaping, bidirectional
-text, and fallback font selection remain deliberate follow-up work.
+`FontdueTextShaper` is the initial deterministic implementation. It wraps a
+`FontDatabase`: a font request (ordered families, pixel/point size, weight, and
+style) is resolved to concrete faces, and the shaper converts text into
+positioned glyph runs and line metrics. The software backend rasterizes the same
+glyphs. It covers basic horizontal text, newlines, width wrapping, case-
+insensitive family matching, closest weight/style selection, a default-face
+fallback, and per-character fallback across registered faces. Kerning, complex
+OpenType shaping, bidirectional text, and platform font enumeration remain
+deliberate follow-up work. See [`FONTS.md`](FONTS.md).
 
 ### Styling and invalidation
 
 v0 starts with the small typed [`Theme`](../crates/torn-ui/src/theme.rs)
 contract: semantic background, foreground, and accent colors plus the default
-spacing, font size, and corner radius. `DarkTheme` and `LightTheme` are built
-in. `SystemTheme` is updated by the future platform adapter from the OS
-appearance; the dependency-free UI crate must not query the OS itself.
+spacing, font size, font family, font weight, font style, and corner radius.
+`DarkTheme` and `LightTheme` are built in. `SystemTheme` is updated by the future
+platform adapter from the OS appearance; the dependency-free UI crate must not
+query the OS itself.
 
 The `.tss` foundation parses a deliberately small CSS-compatible syntax,
 matches type/id/class/state selectors, and resolves CSS specificity and source
 order into typed visual values. Each retained node now resolves its own style
 from the widget type, id, class, and interaction state before layout and paint;
 standard widgets consume the resulting background, foreground, accent, border,
-padding, gap, font size, and corner radius. `:root` supplies global theme
-tokens, while `Styled<W>` adds ids and classes without changing widget APIs.
-Inheritable text properties flow from parent nodes. Custom widgets can join the
+padding, gap, font family, font size, font weight, font style, and corner
+radius. `:root` supplies global theme tokens, while `Styled<W>` adds ids and
+classes without changing widget APIs. Inheritable text properties flow from
+parent nodes. Custom widgets can join the
 same contract through `Widget::style_target`, `LayoutContext::style`, and
 `UiEnvironment::style_for`; see [`TSS.md`](TSS.md) for the supported subset and
 its boundary.
@@ -252,9 +258,10 @@ See [`DOCKING.md`](DOCKING.md) for the proposed contract and persistence rules.
 
 ### M6 — Capability expansion
 
-Add scrolling, editable text, real text shaping and font fallback, themes,
-accessibility design, GPU rendering, paint caching, and selective repainting,
-in that order of demonstrated need.
+Add scrolling, editable text, advanced text shaping (kerning, complex OpenType,
+bidirectional layout), platform font enumeration, themes, accessibility design,
+GPU rendering, paint caching, and selective repainting, in that order of
+demonstrated need.
 
 ## Explicit non-goals before M5
 

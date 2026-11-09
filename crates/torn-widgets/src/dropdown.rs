@@ -140,19 +140,17 @@ impl Widget for Dropdown {
         context: &mut LayoutContext<'_>,
         constraints: Constraints,
     ) -> LayoutResult {
-        let theme = context.environment().theme();
         let style = context.style();
-        let font_size = style.font_size_or(theme.font_size());
-        let foreground = style.foreground_or(theme.foreground());
+        let environment = context.environment();
+        let font = environment.font_for(&style);
+        let font_size = font.pixel_size(environment.logical_dpi());
+        let foreground = style.foreground_or(environment.theme().foreground());
+        let text_style = TextStyle::new_with_font(font, foreground);
         let padding = style.padding_or(default_padding());
         self.header_height = (font_size + padding.vertical()).max(24.0);
         self.row_height = self.header_height;
         let intrinsic_width = self.options.iter().fold(DEFAULT_WIDTH, |width, option| {
-            let layout = context.environment().text_shaper().layout(
-                option,
-                &TextStyle::new(font_size, foreground),
-                None,
-            );
+            let layout = environment.text_shaper().layout(option, &text_style, None);
             width.max(layout.size().width() + padding.horizontal() + ARROW_WIDTH)
         });
         let width = if constraints.max().width().is_finite() {
@@ -188,7 +186,8 @@ impl Widget for Dropdown {
         let theme = environment.theme();
         let radius = style.corner_radius_or(theme.corner_radius());
         let foreground = style.foreground_or(theme.foreground());
-        let font_size = style.font_size_or(theme.font_size());
+        let font = environment.font_for(style);
+        let text_style = TextStyle::new_with_font(font, foreground);
         let padding = style.padding_or(default_padding());
         let header = Rect::new(bounds.origin, size(bounds.size.width(), self.header_height));
         context.fill_rounded_rect(
@@ -203,7 +202,7 @@ impl Widget for Dropdown {
         if let Some(option) = self.selected_option() {
             let text = environment.text_shaper().layout(
                 option,
-                &TextStyle::new(font_size, foreground),
+                &text_style,
                 Some((header.size.width() - padding.horizontal() - ARROW_WIDTH).max(0.0)),
             );
             context.draw_text(
@@ -245,7 +244,7 @@ impl Widget for Dropdown {
                 context.fill_rect(row, background);
                 let text = environment.text_shaper().layout(
                     option,
-                    &TextStyle::new(font_size, foreground),
+                    &text_style,
                     Some((row.size.width() - padding.horizontal()).max(0.0)),
                 );
                 context.draw_text(

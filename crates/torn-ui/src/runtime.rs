@@ -61,7 +61,7 @@ impl LayoutContext<'_> {
     pub fn style(&self) -> TssStyle {
         self.runtime
             .node(self.parent)
-            .map_or_else(TssStyle::default, |node| node.style)
+            .map_or_else(TssStyle::default, |node| node.style.clone())
     }
 
     /// Returns the number of direct children owned by the runtime.
@@ -303,7 +303,7 @@ impl UiRuntime {
     /// runtime-owned `:hover` and `:focus` states.
     #[must_use]
     pub fn computed_style(&self, node: WidgetId) -> Option<TssStyle> {
-        self.node(node).map(|node| node.style)
+        self.node(node).map(|node| node.style.clone())
     }
 
     /// Returns the style target most recently resolved for a live node.
@@ -538,10 +538,10 @@ impl UiRuntime {
     fn style_tree(&mut self) {
         let inherited = self.environment.root_style();
         let root = self.root;
-        self.compute_style_node(root, inherited);
+        self.compute_style_node(root, &inherited);
     }
 
-    fn compute_style_node(&mut self, id: WidgetId, inherited: TssStyle) {
+    fn compute_style_node(&mut self, id: WidgetId, inherited: &TssStyle) {
         let target = self.style_target_for(id);
         let mut style = self.environment.style_for(&target);
         style.inherit_from(inherited);
@@ -550,10 +550,10 @@ impl UiRuntime {
             .map_or_else(Vec::new, |node| node.children.clone());
         if let Some(node) = self.node_mut(id) {
             node.style_target = target;
-            node.style = style;
+            node.style = style.clone();
         }
         for child in children {
-            self.compute_style_node(child, style);
+            self.compute_style_node(child, &style);
         }
     }
 

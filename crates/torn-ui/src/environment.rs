@@ -1,6 +1,6 @@
 use std::{cell::RefCell, collections::HashMap};
 
-use torn_render::{FontdueTextShaper, TextShaper};
+use torn_render::{DEFAULT_DPI, Font, FontdueTextShaper, TextShaper};
 
 use crate::{LightTheme, StyleSheet, StyleTarget, Theme, TssError, TssStyle};
 
@@ -15,6 +15,8 @@ pub struct UiEnvironment {
     stylesheet: Option<StyleSheet>,
     style_cache: RefCell<HashMap<StyleTarget, TssStyle>>,
     scale_factor: f32,
+    logical_dpi: f32,
+    application_font: Option<Font>,
     text_shaper: Box<dyn TextShaper>,
     locale: String,
 }
@@ -29,6 +31,8 @@ impl UiEnvironment {
             stylesheet: None,
             style_cache: RefCell::new(HashMap::new()),
             scale_factor: 1.0,
+            logical_dpi: DEFAULT_DPI,
+            application_font: None,
             text_shaper: Box::new(FontdueTextShaper::ubuntu_light()),
             locale: "und".to_owned(),
         }
@@ -80,13 +84,15 @@ impl UiEnvironment {
     #[must_use]
     pub fn style_for(&self, target: &StyleTarget) -> TssStyle {
         if let Some(style) = self.style_cache.borrow().get(target) {
-            return *style;
+            return style.clone();
         }
         let style = self
             .stylesheet
             .as_ref()
             .map_or_else(TssStyle::default, |stylesheet| stylesheet.resolve(target));
-        self.style_cache.borrow_mut().insert(target.clone(), style);
+        self.style_cache
+            .borrow_mut()
+            .insert(target.clone(), style.clone());
         style
     }
 
@@ -99,6 +105,86 @@ impl UiEnvironment {
     /// Replaces the theme used by standard widgets.
     pub fn set_theme(&mut self, theme: impl Theme + 'static) {
         self.theme = Box::new(theme);
+    }
+
+    /// Returns the application-wide default font request.
+    ///
+    /// An explicit application font takes precedence; otherwise the request is
+    /// derived from the current theme. This is the application-font equivalent
+    /// of `QApplication::font()`.
+    #[must_use]
+    pub fn default_font(&self) -> Font {
+        self.application_font
+            .clone()
+            .unwrap_or_else(|| self.theme.font())
+    }
+
+    /// Sets an application-wide default font that overrides the theme font.
+    pub fn set_default_font(&mut self, font: Font) {
+        self.application_font = Some(font);
+    }
+
+    /// Restores the theme-derived default font.
+    pub fn clear_default_font(&mut self) {
+        self.application_font = None;
+    }
+
+    /// Resolves a node style into a font request.
+    ///
+    /// The result starts from [`Self::default_font`] and applies the style's
+    /// `font-family`, `font-size`, `font-weight`, and `font-style` values.
+    #[must_use]
+    pub fn font_for(&self, style: &TssStyle) -> Font {
+        self.font_from(&self.default_font(), style)
+    }
+
+    /// Applies style font values on top of an existing font request.
+    ///
+    /// This is useful for widgets that carry their own base font, such as
+    /// [`crate::UiEnvironment`]-independent previews or document text.
+    #[must_use]
+    pub fn font_from(&self, base: &Font, style: &TssStyle) -> Font {
+        let mut font = base.clone();
+        if let Some(families) = &style.font_families {
+            font.set_families(families.iter().cloned());
+        }
+        if let Some(size) = style.font_size {
+            font.set_pixel_size(size.pixels_at(self.logical_dpi));
+        }
+        if let Some(weight) = style.font_weight {
+            font.set_weight(weight);
+        }
+        if let Some(font_style) = style.font_style {
+            font.set_style(font_style);
+        }
+        font
+    }
+
+    /// Resolves a node style's font size to logical pixels.
+    #[must_use]
+    pub fn font_size_for(&self, style: &TssStyle) -> f32 {
+        style
+            .font_size_pixels(self.logical_dpi)
+            .unwrap_or_else(|| self.default_font().pixel_size(self.logical_dpi))
+    }
+
+    /// Returns the logical DPI used to resolve typographic point sizes.
+    #[must_use]
+    pub const fn logical_dpi(&self) -> f32 {
+        self.logical_dpi
+    }
+
+    /// Updates the logical DPI used to resolve typographic point sizes.
+    ///
+    /// # Panics
+    ///
+    /// Panics when `dpi` is not finite or is not positive.
+    pub fn set_logical_dpi(&mut self, dpi: f32) {
+        assert!(
+            dpi.is_finite() && dpi > 0.0,
+            "logical DPI must be finite and positive"
+        );
+        self.logical_dpi = dpi;
     }
 
     /// Returns the number of physical pixels per logical pixel.
@@ -157,9 +243,10 @@ impl Default for UiEnvironment {
 #[cfg(test)]
 mod tests {
     use torn_core::Color;
+    use torn_render::{Font, FontFamily, FontSize, FontStyle, FontWeight};
 
     use super::UiEnvironment;
-    use crate::{LightTheme, StyleTarget, Theme};
+    use crate::{LightTheme, StyleTarget, Theme, TssStyle};
 
     #[test]
     fn constructs_a_theme_from_tss_source() {
@@ -183,5 +270,54 @@ mod tests {
                 .background,
             Some(Color::rgba8(68, 85, 102, 255))
         );
+    }
+
+    #[test]
+    fn applies_style_font_values_over_the_application_default() {
+        let mut environment = UiEnvironment::new(LightTheme);
+        environment.set_default_font(Font::from_family("Ubuntu").with_pixel_size(13.0));
+
+        let style = TssStyle {
+            font_families: Some(vec![FontFamily::new("Inter")]),
+            font_size: Some(FontSize::points(12.0)),
+            font_weight: Some(FontWeight::BOLD),
+            font_style: Some(FontStyle::Italic),
+            ..TssStyle::default()
+        };
+
+        let font = environment.font_for(&style);
+        assert_eq!(font.family().map(FontFamily::as_str), Some("Inter"));
+        assert!((font.pixel_size(96.0) - 16.0).abs() < f32::EPSILON);
+        assert_eq!(font.weight(), FontWeight::BOLD);
+        assert_eq!(font.style(), FontStyle::Italic);
+        assert!((environment.font_size_for(&style) - 16.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn resolves_point_sizes_at_the_environment_dpi() {
+        let mut environment = UiEnvironment::new(LightTheme);
+        environment.set_logical_dpi(144.0);
+
+        let style = TssStyle {
+            font_size: Some(FontSize::points(12.0)),
+            ..TssStyle::default()
+        };
+
+        assert!((environment.font_size_for(&style) - 24.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn application_font_overrides_the_theme_font() {
+        let mut environment = UiEnvironment::new(LightTheme);
+        assert_eq!(environment.default_font().family(), None);
+
+        environment.set_default_font(Font::from_family("Inter"));
+        assert_eq!(
+            environment.default_font().family().map(FontFamily::as_str),
+            Some("Inter")
+        );
+
+        environment.clear_default_font();
+        assert_eq!(environment.default_font().family(), None);
     }
 }

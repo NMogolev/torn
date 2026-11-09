@@ -53,12 +53,20 @@ use torn::{
 ## 2. Текст
 
 `Text` принимает не строку, а заранее подготовленный `TextLayout`. Базовый
-детерминированный шейпер работает с одним TTF/OTF-шрифтом:
+детерминированный шейпер работает с базой шрифтов и поддерживает семейства,
+насыщенность, наклон и fallback:
 
 ```rust
+use torn::{Color, Font, FontSize, FontWeight};
+use torn::render::{FontdueTextShaper, TextStyle};
+
+let font = Font::new()
+    .with_family("Ubuntu")
+    .with_size(FontSize::pixels(16.0))
+    .with_weight(FontWeight::LIGHT);
 let label = Text::new(FontdueTextShaper::ubuntu_light().layout(
     "Нажмите кнопку",
-    &TextStyle::new(16.0, Color::BLACK),
+    &TextStyle::new_with_font(font, Color::BLACK),
     None,
 ));
 ```
@@ -68,10 +76,23 @@ let label = Text::new(FontdueTextShaper::ubuntu_light().layout(
 исходный UTF-8 текст, font face, glyph runs, baseline и метрики строк, поэтому
 измерение и отрисовка используют одни и те же данные.
 
+Если текст должен учитывать шрифт приложения и TSS-свойства узла, используйте
+`Text::styled` — виджет отложит shaping до layout и возьмёт шейпер из
+`UiEnvironment`:
+
+```rust
+let label = Text::styled("Нажмите кнопку", TextStyle::new(16.0, Color::BLACK));
+```
+
+`UiEnvironment::default_font()` играет роль `QApplication::font()`, а
+`font_for(&style)` накладывает на него `font-family`, `font-size`,
+`font-weight` и `font-style` конкретного узла. Подробности модели запроса и
+подбора face описаны в [`FONTS.md`](FONTS.md).
+
 `SoftwareRenderer` растеризует bitmap glyphs с alpha coverage и учитывает
-активный прямоугольник clip. Базовый шейпер поддерживает `\n` и wrapping по
-ширине; kerning, сложное OpenType shaping, bidi и font fallback остаются
-следующим этапом.
+активный прямоугольник clip. Базовый шейпер поддерживает `\n`, wrapping по
+ширине и посимвольный fallback между зарегистрированными шрифтами; kerning,
+сложное OpenType shaping и bidi остаются следующим этапом.
 
 ## 3. Button и Box
 

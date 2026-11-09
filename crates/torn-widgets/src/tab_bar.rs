@@ -88,19 +88,17 @@ impl Widget for TabBar {
         constraints: Constraints,
     ) -> LayoutResult {
         let style = context.style();
-        let theme = context.environment().theme();
-        let font_size = style.font_size.unwrap_or_else(|| theme.font_size());
-        let foreground = style.foreground.unwrap_or_else(|| theme.foreground());
+        let environment = context.environment();
+        let font = environment.font_for(&style);
+        let font_size = font.pixel_size(environment.logical_dpi());
+        let foreground = style.foreground_or(environment.theme().foreground());
+        let text_style = TextStyle::new_with_font(font, foreground);
         let max = constraints.max();
         let width = if max.width().is_finite() {
             max.width()
         } else {
             self.tabs.iter().fold(0.0, |total, tab| {
-                let layout = context.environment().text_shaper().layout(
-                    tab,
-                    &TextStyle::new(font_size, foreground),
-                    None,
-                );
+                let layout = environment.text_shaper().layout(tab, &text_style, None);
                 total + layout.size().width() + HORIZONTAL_PADDING * 2.0
             })
         };
@@ -164,8 +162,9 @@ impl Widget for TabBar {
         let theme = environment.theme();
         let background = style.background.unwrap_or_else(|| theme.background());
         let accent = style.accent.unwrap_or_else(|| theme.accent());
-        let font_size = style.font_size.unwrap_or_else(|| theme.font_size());
-        let foreground = style.foreground.unwrap_or_else(|| theme.foreground());
+        let foreground = style.foreground_or(theme.foreground());
+        let font = environment.font_for(style);
+        let text_style = TextStyle::new_with_font(font, foreground);
         context.fill_rect(bounds, background);
         if let Some(border) = style.border {
             context.stroke_rect(bounds, border.width, border.color);
@@ -181,7 +180,7 @@ impl Widget for TabBar {
                 context.fill_rect(tab_bounds, color);
                 let text = environment.text_shaper().layout(
                     tab,
-                    &TextStyle::new(font_size, foreground),
+                    &text_style,
                     Some((tab_bounds.size.width() - HORIZONTAL_PADDING * 2.0).max(0.0)),
                 );
                 context.draw_text(

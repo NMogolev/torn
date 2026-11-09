@@ -1,0 +1,196 @@
+# Fonts
+
+Torn models fonts the way Qt does: application code describes a **font
+request**, and a `FontDatabase` resolves that request to concrete **font faces**
+at shaping time. Measurement and painting always use the same resolved face, so
+layout and rendering cannot disagree about which font was selected.
+
+The implementation lives in [`torn-render`](../crates/torn-render/src/font.rs);
+the environment-level defaults live in
+[`torn-ui`](../crates/torn-ui/src/environment.rs).
+
+## Requests and faces
+
+A [`Font`](../crates/torn-render/src/font.rs) is a request, analogous to
+`QFont`:
+
+| Component | Type | Meaning |
+| --- | --- | --- |
+| Families | `Vec<FontFamily>` | Preferred families, highest priority first. |
+| Size | `FontSize` | `Pixels` or `Points` (resolved with a logical DPI). |
+| Weight | `FontWeight` | CSS-compatible 1–1000; common values are constants. |
+| Style | `FontStyle` | `Normal`, `Italic`, or `Oblique`. |
+
+```rust
+use torn::{Font, FontFamily, FontSize, FontStyle, FontWeight};
+
+let font = Font::new()
+    .with_families([
+        FontFamily::new("Inter"),
+        FontFamily::new("Noto Sans"),
+        FontFamily::new("sans-serif"),
+    ])
+    .with_size(FontSize::points(12.0))
+    .with_weight(FontWeight::SEMI_BOLD)
+    .with_style(FontStyle::Normal);
+```
+
+A request never guarantees that a family exists. It describes intent; the
+database decides what is actually available.
+
+A [`FontFace`](../crates/torn-render/src/font.rs) is a concrete parsed font
+resource with a `FontDescriptor` (family, weight, style). Faces expose:
+
+- `family()`, `weight()`, `style()`, and `descriptor()`;
+- `has_glyph(char)` for per-character coverage;
+- `rasterize(glyph_id, size)` for an 8-bit coverage bitmap;
+- `metrics(size)` for ascent, descent, leading, and line height.
+
+## The font database
+
+[`FontDatabase`](../crates/torn-render/src/font.rs) owns registered faces and
+performs Qt-style matching:
+
+1. For each requested family, in order, choose the face in that family with the
+   closest style and then the closest weight. Family matching is
+   case-insensitive.
+2. If no requested family matched, use the database default face.
+3. Append every other registered face as a per-character fallback, skipping
+   duplicates of the same physical font file.
+
+`resolve` therefore returns a non-empty ordered list whenever the database has
+any face. Shaping walks the text one character at a time, using the first face
+that contains a glyph for that character, and substitutes `?` only when no face
+can render it.
+
+The first face added to a database becomes its default. Torn ships with Ubuntu
+Light registered under the `"Ubuntu"` family at `FontWeight::LIGHT`:
+
+```rust
+use torn::{FontDatabase, FontFace};
+
+let database = FontDatabase::bundled();
+assert_eq!(database.default_face().unwrap().family().as_str(), "Ubuntu");
+```
+
+Register additional faces explicitly when their family, weight, or style should
+differ from the name embedded in the file:
+
+```rust
+use torn::{FontDatabase, FontDescriptor, FontFace, FontStyle, FontWeight};
+
+let mut database = FontDatabase::bundled();
+database.add_font(
+    FontDescriptor::new("Inter", FontWeight::BOLD, FontStyle::Italic),
+    std::fs::read("assets/Inter-BoldItalic.ttf")?,
+)?;
+```
+
+`FontFace::from_bytes` infers the family from the font's full name and assumes
+normal weight and style. Prefer `from_bytes_with_descriptor` (or
+`FontDatabase::add_font`) whenever the file name or metadata does not describe
+the face exactly.
+
+## Shaping
+
+`FontdueTextShaper` wraps a `FontDatabase` and a logical DPI. It resolves the
+request in a `TextStyle`, shapes the text, and records one `GlyphRun` per
+consecutive sequence of glyphs that share a face and size:
+
+```rust
+use torn::render::{FontdueTextShaper, TextStyle};
+use torn::{Color, Font, FontSize, FontWeight};
+
+let shaper = FontdueTextShaper::ubuntu_light();
+let style = TextStyle::new_with_font(
+    Font::new()
+        .with_family("Ubuntu")
+        .with_size(FontSize::pixels(18.0))
+        .with_weight(FontWeight::NORMAL),
+    Color::BLACK,
+);
+let layout = shaper.layout("Hello, Torn", &style, None);
+
+for run in layout.glyph_runs() {
+    println!("{} {}px", run.font().family(), run.font_size());
+}
+```
+
+`TextStyle::new(size, color)` remains the concise constructor for the default
+face. `TextStyle::new_with_font` carries a complete request. The selected face
+is available from `TextLayout::glyph_runs()`, so callers and tests can verify
+exactly which font produced the output.
+
+To install a custom database, build the shaper and give it to the environment:
+
+```rust
+use torn::{FontdueTextShaper, FontDatabase, UiEnvironment};
+
+let mut database = FontDatabase::bundled();
+// register faces...
+let shaper = FontdueTextShaper::from_database(database);
+
+let mut environment = UiEnvironment::new(torn::LightTheme);
+environment.set_text_shaper(shaper);
+```
+
+The shaper and the environment should agree on DPI. `UiEnvironment` exposes
+`logical_dpi()`/`set_logical_dpi()`, and `FontdueTextShaper` exposes
+`dpi()`/`set_dpi()`. Point sizes are converted with `points * dpi / 72.0`;
+pixel sizes are unaffected.
+
+## Application and per-node defaults
+
+`UiEnvironment` mirrors `QApplication::font()` and the widget-level font
+override:
+
+- `default_font()` returns the application font when set, otherwise the
+  theme-derived font.
+- `set_default_font(font)` installs an application-wide default.
+- `clear_default_font()` restores the theme-derived default.
+- `font_for(style)` applies a node's TSS font values on top of the default.
+- `font_from(base, style)` applies them on top of an arbitrary base request.
+- `font_size_for(style)` resolves just the pixel size, including points and DPI.
+
+The `Theme` trait supplies `font_size()`, `font_family()`, `font_weight()`, and
+`font_style()`; its `font()` method combines them into a request. A custom theme
+can therefore change the default family, and TSS `:root` values override the
+theme through `TssTheme`.
+
+Standard widgets shape through the environment instead of hardcoding a face.
+`Text::styled(text, style)` defers shaping until layout, so per-node TSS and the
+application default font both apply. `Text::wrapping` remains available when a
+widget must use an explicit shaper.
+
+## TSS font properties
+
+TSS supports `font-family`, `font-size`, `font-weight`, and `font-style`. All
+four inherit from the parent node:
+
+```tss
+:root {
+    font-family: "Inter", "Noto Sans", sans-serif;
+    font-size: 14px;
+    font-weight: normal;
+}
+
+hint, .caption {
+    font-size: 12px;
+    font-style: italic;
+}
+
+strong {
+    font-weight: 700;
+}
+```
+
+See [`TSS.md`](TSS.md#supported-properties) for the accepted value grammar.
+
+## Current limits
+
+The bundled shaper performs horizontal glyph placement with newlines and width
+wrapping. It does not implement kerning, complex OpenType shaping, bidirectional
+reordering, synthetic bold or oblique, or font substitution based on script.
+Per-character fallback across registered faces is implemented, but there is no
+platform font enumeration yet: applications register the faces they ship or
+find themselves. These are deliberate follow-ups rather than silent behavior.

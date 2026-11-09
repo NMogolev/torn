@@ -1,7 +1,7 @@
 use std::{cell::RefCell, rc::Rc};
 
 use torn_core::{Color, Constraints, InputEvent, Point, PointerButton, PointerId, Rect, Size};
-use torn_render::{FontdueTextShaper, PaintContext, TextStyle};
+use torn_render::{PaintContext, TextStyle};
 use torn_ui::{
     ChildLayout, EventContext, EventPhase, EventStatus, LayoutContext, LayoutResult, StyleTarget,
     TssStyle, UiEnvironment, Widget,
@@ -209,7 +209,8 @@ impl Widget for DockArea {
             context.fill_rect(offset_rect(splitter.bounds, bounds.origin), splitter_color);
         }
         let foreground = style.foreground_or(theme.foreground());
-        let font_size = style.font_size_or(12.0);
+        let font = environment.font_for(style);
+        let text_style = TextStyle::new_with_font(font, foreground);
         for tab in &self.tabs {
             let color = if tab.active {
                 style.accent_or(theme.accent())
@@ -222,9 +223,9 @@ impl Widget for DockArea {
                 DockItem::Panel(id) => id.as_str(),
                 DockItem::Document(id) => id.as_str(),
             };
-            let text = FontdueTextShaper::ubuntu_light().layout(
+            let text = environment.text_shaper().layout(
                 label,
-                &TextStyle::new(font_size, foreground),
+                &text_style,
                 Some((tab_bounds.size.width() - TAB_PADDING * 2.0).max(0.0)),
             );
             context.draw_text(

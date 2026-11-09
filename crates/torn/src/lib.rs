@@ -10,9 +10,10 @@ pub use torn_core::{
     Rect, Size, SizeError, TextPreedit, WheelDelta, WheelEvent, WidgetId,
 };
 pub use torn_ui::{
-    Border, ChildLayout, Column, DarkTheme, DirtyFlags, EventContext, EventPhase, EventStatus,
-    KeyChord, KeyboardCommand, LayoutContext, LayoutResult, LightTheme, PseudoClass, Row, Selector,
-    Signal, StyleRule, StyleSheet, StyleTarget, Styled, Subscription, SurfaceStyle,
+    Border, ChildLayout, Column, DEFAULT_DPI, DarkTheme, DirtyFlags, EventContext, EventPhase,
+    EventStatus, Font, FontDatabase, FontDescriptor, FontFamily, FontMetrics, FontSize, FontStyle,
+    FontWeight, KeyChord, KeyboardCommand, LayoutContext, LayoutResult, LightTheme, PseudoClass,
+    Row, Selector, Signal, StyleRule, StyleSheet, StyleTarget, Styled, Subscription, SurfaceStyle,
     SystemAppearance, SystemTheme, Theme, TssError, TssStyle, TssTheme, UiEnvironment, UiRuntime,
     UiRuntimeError, Widget,
 };

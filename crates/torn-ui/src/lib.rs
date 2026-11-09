@@ -14,6 +14,11 @@ mod theme;
 mod tss;
 mod widget;
 
+pub use torn_render::{
+    DEFAULT_DPI, Font, FontDatabase, FontDescriptor, FontFamily, FontMetrics, FontSize, FontStyle,
+    FontWeight,
+};
+
 pub use column::Column;
 pub use command::{KeyChord, KeyboardCommand};
 pub use environment::UiEnvironment;
