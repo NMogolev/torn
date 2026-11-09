@@ -1,5 +1,5 @@
 use torn_core::{Constraints, Point, Size};
-use torn_ui::{ChildLayout, LayoutContext, LayoutResult, Widget};
+use torn_ui::{ChildLayout, LayoutContext, LayoutResult, StyleTarget, Widget};
 
 /// Placement along a single layout axis.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -37,6 +37,10 @@ impl Default for Align {
 }
 
 impl Widget for Align {
+    fn style_target(&self) -> StyleTarget {
+        StyleTarget::new("align")
+    }
+
     fn layout(
         &mut self,
         context: &mut LayoutContext<'_>,

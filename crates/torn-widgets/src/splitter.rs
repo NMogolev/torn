@@ -2,7 +2,7 @@ use torn_core::{Constraints, InputEvent, Point, PointerButton, PointerId, Rect, 
 use torn_render::PaintContext;
 use torn_ui::{
     ChildLayout, EventContext, EventPhase, EventStatus, LayoutContext, LayoutResult, Signal,
-    UiEnvironment, Widget,
+    StyleTarget, TssStyle, UiEnvironment, Widget,
 };
 
 /// Direction in which a [`Splitter`] divides its two children.
@@ -115,7 +115,24 @@ impl Widget for Splitter {
         LayoutResult::with_children(size, children)
     }
 
+    fn style_target(&self) -> StyleTarget {
+        StyleTarget::new("splitter")
+    }
+
     fn paint(&self, context: &mut PaintContext<'_>, environment: &UiEnvironment, bounds: Rect) {
+        self.paint_styled(context, environment, bounds, &TssStyle::default());
+    }
+
+    fn paint_styled(
+        &self,
+        context: &mut PaintContext<'_>,
+        environment: &UiEnvironment,
+        bounds: Rect,
+        style: &TssStyle,
+    ) {
+        if let Some(background) = style.background {
+            context.fill_rect(bounds, background);
+        }
         let first = (self.length - self.thickness).max(0.0) * self.ratio;
         let divider = match self.axis {
             SplitAxis::Horizontal => rect(
@@ -131,7 +148,7 @@ impl Widget for Splitter {
                 self.thickness,
             ),
         };
-        context.fill_rect(divider, environment.theme().accent());
+        context.fill_rect(divider, style.accent_or(environment.theme().accent()));
     }
 
     fn handle_event(&mut self, context: &mut EventContext<'_>, event: &InputEvent) -> EventStatus {

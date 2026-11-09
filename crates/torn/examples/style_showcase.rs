@@ -468,7 +468,11 @@ impl Widget for ListRow {
     }
 
     fn paint(&self, context: &mut PaintContext<'_>, _: &UiEnvironment, bounds: Rect) {
-        let color = if self.index % 2 == 0 { SURFACE } else { CARD };
+        let color = if self.index.is_multiple_of(2) {
+            SURFACE
+        } else {
+            CARD
+        };
         context.fill_rect(bounds, color);
         let shaper = FontdueTextShaper::ubuntu_light();
         let label = format!(

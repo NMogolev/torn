@@ -131,14 +131,17 @@ spacing, font size, and corner radius. `DarkTheme` and `LightTheme` are built
 in. `SystemTheme` is updated by the future platform adapter from the OS
 appearance; the dependency-free UI crate must not query the OS itself.
 
-The initial `.tss` foundation parses a deliberately small CSS-compatible
-syntax, matches type/id/class/state selectors, and resolves CSS specificity and
-source order into typed visual values. `:root` and `button` rules currently
-adapt into the existing `Theme` contract, so stylesheets can customize all
-standard theme values and button normal/hover/pressed backgrounds without
-changing widget APIs. Per-node style metadata and additional widget-specific
-properties remain follow-up work; see [`TSS.md`](TSS.md) for the supported
-subset and its boundary.
+The `.tss` foundation parses a deliberately small CSS-compatible syntax,
+matches type/id/class/state selectors, and resolves CSS specificity and source
+order into typed visual values. Each retained node now resolves its own style
+from the widget type, id, class, and interaction state before layout and paint;
+standard widgets consume the resulting background, foreground, accent, border,
+padding, gap, font size, and corner radius. `:root` supplies global theme
+tokens, while `Styled<W>` adds ids and classes without changing widget APIs.
+Inheritable text properties flow from parent nodes. Custom widgets can join the
+same contract through `Widget::style_target`, `LayoutContext::style`, and
+`UiEnvironment::style_for`; see [`TSS.md`](TSS.md) for the supported subset and
+its boundary.
 
 Dirty state is represented separately for `LAYOUT`, `PAINT`, and `STYLE`.
 Changing text or padding invalidates layout and paint; a hover color normally

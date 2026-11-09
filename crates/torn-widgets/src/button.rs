@@ -3,8 +3,8 @@ use torn_core::{
 };
 use torn_render::PaintContext;
 use torn_ui::{
-    ChildLayout, EventContext, EventPhase, EventStatus, LayoutContext, LayoutResult, Signal,
-    SurfaceStyle, UiEnvironment, Widget,
+    ChildLayout, EventContext, EventPhase, EventStatus, LayoutContext, LayoutResult, PseudoClass,
+    Signal, StyleTarget, SurfaceStyle, TssStyle, UiEnvironment, Widget,
 };
 
 /// Locally overridable visual properties for a [`Button`].
@@ -149,11 +149,13 @@ impl Widget for Button {
         context: &mut LayoutContext<'_>,
         constraints: Constraints,
     ) -> LayoutResult {
+        let style = context.style();
         let padding = self
             .style
             .surface
             .padding
-            .unwrap_or_else(|| context.environment().theme().button_padding());
+            .or(style.padding)
+            .unwrap_or_else(|| context.environment().theme().control_padding());
         let max = constraints.max();
         let child_max = size(
             (max.width() - padding.horizontal()).max(0.0),
@@ -177,28 +179,51 @@ impl Widget for Button {
         LayoutResult::with_children(size, children)
     }
 
-    fn paint(&self, context: &mut PaintContext<'_>, environment: &UiEnvironment, bounds: Rect) {
-        let theme = environment.theme();
-        let background = if self.pressed && self.pointer_inside {
-            self.style
-                .pressed_background
-                .unwrap_or_else(|| theme.button_pressed_background())
-        } else if self.pointer_inside {
-            self.style
-                .hover_background
-                .unwrap_or_else(|| theme.button_hover_background())
+    fn style_target(&self) -> StyleTarget {
+        let target = StyleTarget::new("button");
+        if self.pressed {
+            target.with_state(PseudoClass::Pressed)
         } else {
-            self.style
-                .background
-                .unwrap_or_else(|| theme.button_background())
+            target
+        }
+    }
+
+    fn paint(&self, context: &mut PaintContext<'_>, environment: &UiEnvironment, bounds: Rect) {
+        self.paint_styled(context, environment, bounds, &TssStyle::default());
+    }
+
+    fn paint_styled(
+        &self,
+        context: &mut PaintContext<'_>,
+        environment: &UiEnvironment,
+        bounds: Rect,
+        style: &TssStyle,
+    ) {
+        let theme = environment.theme();
+        let local = if self.pressed && self.pointer_inside {
+            self.style.pressed_background
+        } else if self.pointer_inside {
+            self.style.hover_background
+        } else {
+            self.style.background
         };
+        let background = local.or(style.background).unwrap_or_else(|| {
+            if self.pressed && self.pointer_inside {
+                theme.control_pressed_background()
+            } else if self.pointer_inside {
+                theme.control_hover_background()
+            } else {
+                theme.control_background()
+            }
+        });
         let radius = self
             .style
             .surface
             .corner_radius
+            .or(style.corner_radius)
             .unwrap_or_else(|| theme.corner_radius());
         context.fill_rounded_rect(bounds, radius, background);
-        if let Some(border) = self.style.surface.border {
+        if let Some(border) = self.style.surface.border.or(style.border) {
             context.stroke_rounded_rect(bounds, radius, border.width, border.color);
         }
     }
@@ -305,15 +330,15 @@ mod tests {
             Color::rgba8(30, 40, 50, 255)
         }
 
-        fn button_background(&self) -> Color {
+        fn control_background(&self) -> Color {
             Color::rgba8(10, 20, 30, 255)
         }
 
-        fn button_pressed_background(&self) -> Color {
+        fn control_pressed_background(&self) -> Color {
             Color::rgba8(40, 50, 60, 255)
         }
 
-        fn button_hover_background(&self) -> Color {
+        fn control_hover_background(&self) -> Color {
             Color::rgba8(25, 35, 45, 255)
         }
 
@@ -345,7 +370,7 @@ mod tests {
         runtime
             .paint(&mut torn_render::PaintContext::new(&mut list))
             .expect("button paint succeeds");
-        assert_eq!(fill_color(&list), ButtonTheme.button_background());
+        assert_eq!(fill_color(&list), ButtonTheme.control_background());
 
         let event = torn_core::InputEvent::PointerDown(PointerEvent {
             pointer_id: PointerId(1),
@@ -362,7 +387,7 @@ mod tests {
 
         assert_eq!(
             fill_color(&pressed_list),
-            ButtonTheme.button_pressed_background()
+            ButtonTheme.control_pressed_background()
         );
     }
 

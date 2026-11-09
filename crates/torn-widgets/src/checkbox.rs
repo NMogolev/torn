@@ -1,8 +1,8 @@
 use torn_core::{Color, Constraints, InputEvent, Key, NamedKey, Point, PointerButton, Rect, Size};
 use torn_render::PaintContext;
 use torn_ui::{
-    ChildLayout, EventContext, EventPhase, EventStatus, LayoutContext, LayoutResult, Signal,
-    UiEnvironment, Widget,
+    Border, ChildLayout, EventContext, EventPhase, EventStatus, LayoutContext, LayoutResult,
+    Signal, StyleTarget, TssStyle, UiEnvironment, Widget,
 };
 
 const CONTROL_SIZE: f32 = 18.0;
@@ -70,7 +70,10 @@ impl Widget for Checkbox {
         context: &mut LayoutContext<'_>,
         constraints: Constraints,
     ) -> LayoutResult {
-        let gap = context.environment().theme().spacing();
+        let gap = context
+            .style()
+            .spacing
+            .unwrap_or_else(|| context.environment().theme().spacing());
         let mut children = Vec::new();
         let label_size = if context.child_count() == 1 {
             let max = constraints.max();
@@ -102,34 +105,49 @@ impl Widget for Checkbox {
         LayoutResult::with_children(size, children)
     }
 
+    fn style_target(&self) -> StyleTarget {
+        StyleTarget::new("checkbox")
+    }
+
     fn paint(&self, context: &mut PaintContext<'_>, environment: &UiEnvironment, bounds: Rect) {
+        self.paint_styled(context, environment, bounds, &TssStyle::default());
+    }
+
+    fn paint_styled(
+        &self,
+        context: &mut PaintContext<'_>,
+        environment: &UiEnvironment,
+        bounds: Rect,
+        style: &TssStyle,
+    ) {
         let indicator = indicator_bounds(bounds);
         let theme = environment.theme();
-        let background = if self.checked {
-            theme.accent()
+        let accent = style.accent.unwrap_or_else(|| theme.accent());
+        let background = style.background.unwrap_or(if self.checked {
+            accent
         } else {
             theme.background()
-        };
-        let border = if self.checked {
-            theme.accent()
-        } else {
-            theme.button_background()
-        };
-        context.fill_rounded_rect(
-            indicator,
-            theme.corner_radius().min(CONTROL_SIZE / 2.0),
-            background,
-        );
-        context.stroke_rounded_rect(
-            indicator,
-            theme.corner_radius().min(CONTROL_SIZE / 2.0),
-            1.0,
-            border,
-        );
+        });
+        let border = style.border.unwrap_or_else(|| {
+            Border::new(
+                1.0,
+                if self.checked {
+                    accent
+                } else {
+                    theme.control_background()
+                },
+            )
+        });
+        let radius = style
+            .corner_radius
+            .unwrap_or_else(|| theme.corner_radius())
+            .min(CONTROL_SIZE / 2.0);
+        context.fill_rounded_rect(indicator, radius, background);
+        context.stroke_rounded_rect(indicator, radius, border.width, border.color);
         if self.checked {
             context.fill_rect(
                 indicator.inset(torn_core::Insets::all(MARK_INSET)),
-                Color::WHITE,
+                style.foreground.unwrap_or(Color::WHITE),
             );
         }
     }

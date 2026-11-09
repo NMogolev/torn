@@ -1,6 +1,6 @@
 use torn_core::{Constraints, Rect, Size};
 use torn_render::PaintContext;
-use torn_ui::{LayoutContext, LayoutResult, UiEnvironment, Widget};
+use torn_ui::{LayoutContext, LayoutResult, StyleTarget, TssStyle, UiEnvironment, Widget};
 
 const DEFAULT_WIDTH: f32 = 120.0;
 const HEIGHT: f32 = 12.0;
@@ -62,16 +62,43 @@ impl Widget for ProgressBar {
         LayoutResult::new(constraints.constrain(size(width, HEIGHT)))
     }
 
+    fn style_target(&self) -> StyleTarget {
+        StyleTarget::new("progress-bar")
+    }
+
     fn paint(&self, context: &mut PaintContext<'_>, environment: &UiEnvironment, bounds: Rect) {
-        let radius = bounds.size.height() / 2.0;
-        context.fill_rounded_rect(bounds, radius, environment.theme().button_background());
+        self.paint_styled(context, environment, bounds, &TssStyle::default());
+    }
+
+    fn paint_styled(
+        &self,
+        context: &mut PaintContext<'_>,
+        environment: &UiEnvironment,
+        bounds: Rect,
+        style: &TssStyle,
+    ) {
+        let theme = environment.theme();
+        let radius = style
+            .corner_radius
+            .unwrap_or(bounds.size.height() / 2.0)
+            .min(bounds.size.height() / 2.0);
+        context.fill_rounded_rect(
+            bounds,
+            radius,
+            style
+                .background
+                .unwrap_or_else(|| theme.control_background()),
+        );
+        if let Some(border) = style.border {
+            context.stroke_rounded_rect(bounds, radius, border.width, border.color);
+        }
         let filled_width = bounds.size.width() * self.progress;
         if filled_width > 0.0 {
             let filled = Rect::new(bounds.origin, size(filled_width, bounds.size.height()));
             context.fill_rounded_rect(
                 filled,
                 radius.min(filled_width / 2.0),
-                environment.theme().accent(),
+                style.accent.unwrap_or_else(|| theme.accent()),
             );
         }
     }

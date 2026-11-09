@@ -1,6 +1,8 @@
+use std::{cell::RefCell, collections::HashMap};
+
 use torn_render::{FontdueTextShaper, TextShaper};
 
-use crate::{LightTheme, StyleSheet, Theme, TssError};
+use crate::{LightTheme, StyleSheet, StyleTarget, Theme, TssError, TssStyle};
 
 /// Runtime-wide services and semantic settings available to widgets.
 ///
@@ -10,6 +12,8 @@ use crate::{LightTheme, StyleSheet, Theme, TssError};
 /// [`Self::scale_factor`].
 pub struct UiEnvironment {
     theme: Box<dyn Theme>,
+    stylesheet: Option<StyleSheet>,
+    style_cache: RefCell<HashMap<StyleTarget, TssStyle>>,
     scale_factor: f32,
     text_shaper: Box<dyn TextShaper>,
     locale: String,
@@ -22,6 +26,8 @@ impl UiEnvironment {
     pub fn new(theme: impl Theme + 'static) -> Self {
         Self {
             theme: Box::new(theme),
+            stylesheet: None,
+            style_cache: RefCell::new(HashMap::new()),
             scale_factor: 1.0,
             text_shaper: Box::new(FontdueTextShaper::ubuntu_light()),
             locale: "und".to_owned(),
@@ -38,13 +44,56 @@ impl UiEnvironment {
     /// Returns [`TssError`] if `source` is invalid.
     pub fn from_tss(theme: impl Theme + 'static, source: &str) -> Result<Self, TssError> {
         let stylesheet = StyleSheet::parse(source)?;
-        Ok(Self::new(stylesheet.theme(theme)))
+        let mut environment = Self::new(stylesheet.theme(theme));
+        environment.stylesheet = Some(stylesheet);
+        Ok(environment)
     }
 
     /// Returns the theme used by standard widgets.
     #[must_use]
     pub fn theme(&self) -> &dyn Theme {
         self.theme.as_ref()
+    }
+
+    /// Returns the parsed stylesheet, when the environment was created with
+    /// TSS or a stylesheet was installed later.
+    #[must_use]
+    pub fn stylesheet(&self) -> Option<&StyleSheet> {
+        self.stylesheet.as_ref()
+    }
+
+    /// Installs or removes the runtime stylesheet.
+    ///
+    /// Widgets resolve their node styles from this sheet during the style pass.
+    /// The semantic theme remains the fallback for values the sheet omits.
+    pub fn set_stylesheet(&mut self, stylesheet: Option<StyleSheet>) {
+        self.stylesheet = stylesheet;
+        self.style_cache.get_mut().clear();
+    }
+
+    /// Resolves the cascade for `target`.
+    ///
+    /// Results are cached because the runtime asks for the same control style
+    /// repeatedly while laying out and painting. Custom widgets and tooling can
+    /// use this method to resolve styles with exactly the same contract as
+    /// standard widgets.
+    #[must_use]
+    pub fn style_for(&self, target: &StyleTarget) -> TssStyle {
+        if let Some(style) = self.style_cache.borrow().get(target) {
+            return *style;
+        }
+        let style = self
+            .stylesheet
+            .as_ref()
+            .map_or_else(TssStyle::default, |stylesheet| stylesheet.resolve(target));
+        self.style_cache.borrow_mut().insert(target.clone(), style);
+        style
+    }
+
+    /// Resolves the `:root` style used as the inheritance root.
+    #[must_use]
+    pub fn root_style(&self) -> TssStyle {
+        self.style_for(&StyleTarget::root())
     }
 
     /// Replaces the theme used by standard widgets.
@@ -110,7 +159,7 @@ mod tests {
     use torn_core::Color;
 
     use super::UiEnvironment;
-    use crate::LightTheme;
+    use crate::{LightTheme, StyleTarget, Theme};
 
     #[test]
     fn constructs_a_theme_from_tss_source() {
@@ -125,8 +174,14 @@ mod tests {
             Color::rgba8(17, 34, 51, 255)
         );
         assert_eq!(
-            environment.theme().button_background(),
-            Color::rgba8(68, 85, 102, 255)
+            environment.theme().control_background(),
+            LightTheme.control_background()
+        );
+        assert_eq!(
+            environment
+                .style_for(&StyleTarget::new("button"))
+                .background,
+            Some(Color::rgba8(68, 85, 102, 255))
         );
     }
 }

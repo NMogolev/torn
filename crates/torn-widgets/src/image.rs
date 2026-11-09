@@ -1,6 +1,6 @@
 use torn_core::{Constraints, Rect, Size};
 use torn_render::{PaintContext, RasterImage};
-use torn_ui::{LayoutContext, LayoutResult, UiEnvironment, Widget};
+use torn_ui::{LayoutContext, LayoutResult, StyleTarget, UiEnvironment, Widget};
 
 /// A passive widget that paints an RGBA raster image.
 ///
@@ -49,6 +49,10 @@ impl Image {
 }
 
 impl Widget for Image {
+    fn style_target(&self) -> StyleTarget {
+        StyleTarget::new("image")
+    }
+
     fn layout(&mut self, _: &mut LayoutContext<'_>, constraints: Constraints) -> LayoutResult {
         let intrinsic = size(
             u32_to_f32(self.image.width()),

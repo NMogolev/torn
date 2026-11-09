@@ -3,8 +3,8 @@ use std::{cell::RefCell, rc::Rc};
 use torn_core::{Constraints, InputEvent, Key, NamedKey, Point, PointerButton, Rect, Size};
 use torn_render::PaintContext;
 use torn_ui::{
-    ChildLayout, EventContext, EventPhase, EventStatus, LayoutContext, LayoutResult, Signal,
-    UiEnvironment, Widget,
+    Border, ChildLayout, EventContext, EventPhase, EventStatus, LayoutContext, LayoutResult,
+    Signal, StyleTarget, TssStyle, UiEnvironment, Widget,
 };
 
 const CONTROL_SIZE: f32 = 18.0;
@@ -129,7 +129,10 @@ where
         context: &mut LayoutContext<'_>,
         constraints: Constraints,
     ) -> LayoutResult {
-        let gap = context.environment().theme().spacing();
+        let gap = context
+            .style()
+            .spacing
+            .unwrap_or_else(|| context.environment().theme().spacing());
         let mut children = Vec::new();
         let label_size = if context.child_count() == 1 {
             let max = constraints.max();
@@ -161,19 +164,43 @@ where
         LayoutResult::with_children(size, children)
     }
 
+    fn style_target(&self) -> StyleTarget {
+        StyleTarget::new("radio")
+    }
+
     fn paint(&self, context: &mut PaintContext<'_>, environment: &UiEnvironment, bounds: Rect) {
+        self.paint_styled(context, environment, bounds, &TssStyle::default());
+    }
+
+    fn paint_styled(
+        &self,
+        context: &mut PaintContext<'_>,
+        environment: &UiEnvironment,
+        bounds: Rect,
+        style: &TssStyle,
+    ) {
         let indicator = indicator_bounds(bounds);
         let theme = environment.theme();
-        context.fill_rounded_rect(indicator, CONTROL_SIZE / 2.0, theme.background());
-        context.stroke_rounded_rect(
+        let radius = style
+            .corner_radius
+            .unwrap_or(CONTROL_SIZE / 2.0)
+            .min(CONTROL_SIZE / 2.0);
+        context.fill_rounded_rect(
             indicator,
-            CONTROL_SIZE / 2.0,
-            1.0,
-            theme.button_background(),
+            radius,
+            style.background.unwrap_or_else(|| theme.background()),
         );
+        let border = style
+            .border
+            .unwrap_or_else(|| Border::new(1.0, theme.control_background()));
+        context.stroke_rounded_rect(indicator, radius, border.width, border.color);
         if self.is_selected() {
             let dot = indicator.inset(torn_core::Insets::all(DOT_INSET));
-            context.fill_rounded_rect(dot, dot.size.width() / 2.0, theme.accent());
+            context.fill_rounded_rect(
+                dot,
+                dot.size.width() / 2.0,
+                style.accent.unwrap_or_else(|| theme.accent()),
+            );
         }
     }
 

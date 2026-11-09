@@ -12,8 +12,8 @@ use torn_core::{
 use torn_render::PaintContext;
 
 use crate::{
-    EventContext, EventPhase, EventStatus, KeyboardCommand, LayoutResult, UiEnvironment, Widget,
-    event,
+    EventContext, EventPhase, EventStatus, KeyboardCommand, LayoutResult, PseudoClass, StyleTarget,
+    TssStyle, UiEnvironment, Widget, event,
 };
 use event::{EventEffects, FocusRequest};
 
@@ -50,6 +50,18 @@ impl LayoutContext<'_> {
     #[must_use]
     pub fn environment(&self) -> &UiEnvironment {
         &self.runtime.environment
+    }
+
+    /// Returns the style resolved for the node currently being laid out.
+    ///
+    /// The value includes inherited `color`, `font-size`, and `accent-color`.
+    /// It is sparse; widgets should use their semantic theme for missing
+    /// values.
+    #[must_use]
+    pub fn style(&self) -> TssStyle {
+        self.runtime
+            .node(self.parent)
+            .map_or_else(TssStyle::default, |node| node.style)
     }
 
     /// Returns the number of direct children owned by the runtime.
@@ -119,6 +131,8 @@ struct Node {
     visible: bool,
     dirty: DirtyFlags,
     accepts_focus: bool,
+    style_target: StyleTarget,
+    style: TssStyle,
 }
 
 /// Why a [`UiRuntime`] operation could not be completed.
@@ -282,6 +296,22 @@ impl UiRuntime {
         self.node(node).map(|node| node.dirty)
     }
 
+    /// Returns the style most recently resolved for a live node.
+    ///
+    /// The style is refreshed before each layout pass and before each paint
+    /// pass, so it reflects the node's current type/id/class metadata and the
+    /// runtime-owned `:hover` and `:focus` states.
+    #[must_use]
+    pub fn computed_style(&self, node: WidgetId) -> Option<TssStyle> {
+        self.node(node).map(|node| node.style)
+    }
+
+    /// Returns the style target most recently resolved for a live node.
+    #[must_use]
+    pub fn style_target(&self, node: WidgetId) -> Option<&StyleTarget> {
+        self.node(node).map(|node| &node.style_target)
+    }
+
     /// Returns mutable access to a widget and invalidates the retained layout.
     pub fn widget_mut(&mut self, node: WidgetId) -> Option<&mut (dyn Widget + 'static)> {
         self.invalidate_layout();
@@ -333,6 +363,7 @@ impl UiRuntime {
     /// duplicate, or out-of-order child.
     pub fn layout(&mut self, constraints: Constraints) -> Result<&LayoutResult, UiRuntimeError> {
         match catch_unwind(AssertUnwindSafe(|| {
+            self.style_tree();
             self.layout_node(self.root, constraints, Point::ZERO)
         })) {
             Ok(Ok(layout)) => {
@@ -395,7 +426,10 @@ impl UiRuntime {
         if self.layout.is_none() {
             return Ok(());
         }
-        match catch_unwind(AssertUnwindSafe(|| self.paint_node(self.root, context))) {
+        match catch_unwind(AssertUnwindSafe(|| {
+            self.style_tree();
+            self.paint_node(self.root, context);
+        })) {
             Ok(()) => Ok(()),
             Err(payload) => {
                 self.report_panic("paint", payload);
@@ -413,10 +447,10 @@ impl UiRuntime {
         if let InputEvent::PointerLeave(pointer) = event {
             return self.clear_hover(pointer);
         }
-        if let InputEvent::KeyDown(key) = event {
-            if self.dispatch_tab_navigation(key) || self.dispatch_command(key) {
-                return EventStatus::Handled;
-            }
+        if let InputEvent::KeyDown(key) = event
+            && (self.dispatch_tab_navigation(key) || self.dispatch_command(key))
+        {
+            return EventStatus::Handled;
         }
         self.update_hover(event);
         let Some(target) = self.select_target(event) else {
@@ -499,6 +533,45 @@ impl UiRuntime {
             return EventStatus::Ignored;
         };
         self.dispatch_synthetic_pointer(target, &InputEvent::PointerLeave(pointer.clone()))
+    }
+
+    fn style_tree(&mut self) {
+        let inherited = self.environment.root_style();
+        let root = self.root;
+        self.compute_style_node(root, inherited);
+    }
+
+    fn compute_style_node(&mut self, id: WidgetId, inherited: TssStyle) {
+        let target = self.style_target_for(id);
+        let mut style = self.environment.style_for(&target);
+        style.inherit_from(inherited);
+        let children = self
+            .node(id)
+            .map_or_else(Vec::new, |node| node.children.clone());
+        if let Some(node) = self.node_mut(id) {
+            node.style_target = target;
+            node.style = style;
+        }
+        for child in children {
+            self.compute_style_node(child, style);
+        }
+    }
+
+    fn style_target_for(&self, id: WidgetId) -> StyleTarget {
+        let Some(node) = self.node(id) else {
+            return StyleTarget::empty();
+        };
+        let Some(widget) = node.widget.as_ref() else {
+            return StyleTarget::empty();
+        };
+        let mut target = widget.style_target();
+        if self.hovered.values().any(|hovered| *hovered == id) {
+            target = target.with_state(PseudoClass::Hover);
+        }
+        if self.focused == Some(id) {
+            target = target.with_state(PseudoClass::Focus);
+        }
+        target
     }
 
     fn layout_node(
@@ -603,7 +676,7 @@ impl UiRuntime {
         node.widget
             .as_ref()
             .expect("widget is present outside layout call")
-            .paint(context, &self.environment, node.bounds);
+            .paint_styled(context, &self.environment, node.bounds, &node.style);
         let clips_children = node
             .widget
             .as_ref()
@@ -648,6 +721,9 @@ impl UiRuntime {
         if previous == next {
             return;
         }
+        // Hover is a style state even for widgets that do not request a redraw
+        // themselves, so the runtime always schedules the next frame.
+        self.redraw_requested = true;
         if let Some(previous) = previous.filter(|id| self.is_visible(*id)) {
             self.dispatch_synthetic_pointer(previous, &InputEvent::PointerLeave(pointer.clone()));
         }
@@ -839,13 +915,13 @@ impl UiRuntime {
     }
 
     fn finish_event(&mut self, event: &InputEvent, mut effects: EventEffects) {
-        if let Some(pointer_id) = pointer_id(event) {
-            if matches!(
+        if let Some(pointer_id) = pointer_id(event)
+            && matches!(
                 event,
                 InputEvent::PointerUp(_) | InputEvent::PointerCancel(_)
-            ) {
-                effects.pointer_capture.remove(&pointer_id);
-            }
+            )
+        {
+            effects.pointer_capture.remove(&pointer_id);
         }
         self.pointer_capture = effects.pointer_capture;
         self.redraw_requested |= effects.redraw_requested;
@@ -902,6 +978,8 @@ impl UiRuntime {
             visible: true,
             dirty: DirtyFlags::ALL,
             accepts_focus: false,
+            style_target: StyleTarget::empty(),
+            style: TssStyle::default(),
         };
         if let Some(index) = self.free_slots.pop() {
             let slot = &mut self.nodes[usize::try_from(index).expect("u32 fits usize")];
@@ -1111,12 +1189,10 @@ mod tests {
                     .push((self.name, context.phase(), position));
             }
             if self.capture_on_down
-                && matches!(event, InputEvent::PointerDown(_))
                 && context.phase() == EventPhase::Target
+                && let InputEvent::PointerDown(pointer) = event
             {
-                if let InputEvent::PointerDown(pointer) = event {
-                    context.capture_pointer(pointer.pointer_id);
-                }
+                context.capture_pointer(pointer.pointer_id);
             }
             if self.focus_on_down
                 && matches!(event, InputEvent::PointerDown(_))

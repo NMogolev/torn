@@ -1,6 +1,8 @@
 use torn_core::{Constraints, Insets, Point, Rect, Size};
 use torn_render::PaintContext;
-use torn_ui::{ChildLayout, LayoutContext, LayoutResult, UiEnvironment, Widget};
+use torn_ui::{
+    ChildLayout, LayoutContext, LayoutResult, StyleTarget, TssStyle, UiEnvironment, Widget,
+};
 
 const DEFAULT_PADDING: f32 = 4.0;
 
@@ -47,13 +49,17 @@ impl Widget for Toolbar {
         context: &mut LayoutContext<'_>,
         constraints: Constraints,
     ) -> LayoutResult {
+        let style = context.style();
+        let padding = style.padding.unwrap_or(self.padding);
         let max = constraints.max();
         let child_max = size(
-            (max.width() - self.padding.horizontal()).max(0.0),
-            (max.height() - self.padding.vertical()).max(0.0),
+            (max.width() - padding.horizontal()).max(0.0),
+            (max.height() - padding.vertical()).max(0.0),
         );
-        let gap = context.environment().theme().spacing();
-        let mut cursor = self.padding.left;
+        let gap = style
+            .spacing
+            .unwrap_or_else(|| context.environment().theme().spacing());
+        let mut cursor = padding.left;
         let mut content_height = 0.0_f32;
         let mut children = Vec::with_capacity(context.child_count());
         for index in 0..context.child_count() {
@@ -61,24 +67,53 @@ impl Widget for Toolbar {
                 .layout_child(index, Constraints::loose(child_max))
                 .expect("runtime child index is valid");
             let child_size = layout.size();
-            children.push(ChildLayout::new(id, Point::new(cursor, self.padding.top)));
+            children.push(ChildLayout::new(id, Point::new(cursor, padding.top)));
             cursor += child_size.width() + gap;
             content_height = content_height.max(child_size.height());
         }
         let content_width = if context.child_count() == 0 {
             0.0
         } else {
-            cursor - self.padding.left - gap
+            cursor - padding.left - gap
         };
         let measured = size(
-            content_width + self.padding.horizontal(),
-            content_height + self.padding.vertical(),
+            content_width + padding.horizontal(),
+            content_height + padding.vertical(),
         );
         LayoutResult::with_children(constraints.constrain(measured), children)
     }
 
+    fn style_target(&self) -> StyleTarget {
+        StyleTarget::new("toolbar")
+    }
+
     fn paint(&self, context: &mut PaintContext<'_>, environment: &UiEnvironment, bounds: Rect) {
-        context.fill_rect(bounds, environment.theme().button_background());
+        self.paint_styled(context, environment, bounds, &TssStyle::default());
+    }
+
+    fn paint_styled(
+        &self,
+        context: &mut PaintContext<'_>,
+        environment: &UiEnvironment,
+        bounds: Rect,
+        style: &TssStyle,
+    ) {
+        let radius = style.corner_radius.unwrap_or(0.0);
+        let background = style
+            .background
+            .unwrap_or_else(|| environment.theme().control_background());
+        if radius > 0.0 {
+            context.fill_rounded_rect(bounds, radius, background);
+        } else {
+            context.fill_rect(bounds, background);
+        }
+        if let Some(border) = style.border {
+            if radius > 0.0 {
+                context.stroke_rounded_rect(bounds, radius, border.width, border.color);
+            } else {
+                context.stroke_rect(bounds, border.width, border.color);
+            }
+        }
     }
 
     fn participates_in_hit_test(&self) -> bool {

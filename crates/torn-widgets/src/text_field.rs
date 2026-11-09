@@ -4,8 +4,8 @@ use torn_core::{
 };
 use torn_render::{PaintContext, TextLayout, TextStyle};
 use torn_ui::{
-    EventContext, EventPhase, EventStatus, LayoutContext, LayoutResult, Signal, UiEnvironment,
-    Widget,
+    EventContext, EventPhase, EventStatus, LayoutContext, LayoutResult, Signal, StyleTarget,
+    TssStyle, UiEnvironment, Widget,
 };
 
 const DEFAULT_WIDTH: f32 = 120.0;
@@ -169,41 +169,73 @@ impl Widget for TextField {
         constraints: Constraints,
     ) -> LayoutResult {
         let theme = context.environment().theme();
+        let style = context.style();
+        let font_size = style.font_size_or(theme.font_size());
         self.text_layout = context.environment().text_shaper().layout(
             &self.display_text(),
-            &TextStyle::new(theme.font_size(), theme.foreground()),
+            &TextStyle::new(font_size, style.foreground_or(theme.foreground())),
             None,
         );
-        let padding = padding();
+        let padding = style.padding_or(default_padding());
         let width = (self.text_layout.size().width() + padding.horizontal()).max(DEFAULT_WIDTH);
         let height = (self.text_layout.size().height() + padding.vertical())
-            .max(theme.font_size() + padding.vertical());
+            .max(font_size + padding.vertical());
         LayoutResult::new(constraints.constrain(size(width, height)))
     }
 
-    fn paint(&self, context: &mut PaintContext<'_>, environment: &UiEnvironment, bounds: Rect) {
-        let theme = environment.theme();
-        let radius = theme.corner_radius();
-        context.fill_rounded_rect(bounds, radius, theme.background());
-        let border = if self.focused {
-            theme.accent()
-        } else {
-            theme.button_background()
-        };
-        context.stroke_rounded_rect(bounds, radius, BORDER_WIDTH, border);
+    fn style_target(&self) -> StyleTarget {
+        StyleTarget::new("text-field")
+    }
 
-        let text_bounds = bounds.inset(padding());
+    fn paint(&self, context: &mut PaintContext<'_>, environment: &UiEnvironment, bounds: Rect) {
+        self.paint_styled(context, environment, bounds, &TssStyle::default());
+    }
+
+    fn paint_styled(
+        &self,
+        context: &mut PaintContext<'_>,
+        environment: &UiEnvironment,
+        bounds: Rect,
+        style: &TssStyle,
+    ) {
+        let theme = environment.theme();
+        let radius = style.corner_radius_or(theme.corner_radius());
+        let foreground = style.foreground_or(theme.foreground());
+        let accent = style.accent_or(theme.accent());
+        context.fill_rounded_rect(bounds, radius, style.background_or(theme.background()));
+        let border = style.border.map_or_else(
+            || {
+                if self.focused {
+                    accent
+                } else {
+                    theme.control_background()
+                }
+            },
+            |border| border.color,
+        );
+        let border_width = style.border.map_or(BORDER_WIDTH, |border| border.width);
+        context.stroke_rounded_rect(bounds, radius, border_width, border);
+
+        let padding = style.padding_or(default_padding());
+        let font_size = style.font_size_or(theme.font_size());
+        let text_bounds = bounds.inset(padding);
         context.with_clip(text_bounds, |context| {
-            context.draw_text(self.text_layout.clone(), text_bounds.origin);
+            let text_color = self.text_layout.color();
+            let layout = if text_color == foreground {
+                self.text_layout.clone()
+            } else {
+                self.text_layout.clone().with_color(foreground)
+            };
+            context.draw_text(layout, text_bounds.origin);
             if self.focused {
                 let display_text = self.display_text();
                 let prefix = &display_text[..byte_index(&display_text, self.display_cursor())];
                 let prefix_layout = environment.text_shaper().layout(
                     prefix,
-                    &TextStyle::new(theme.font_size(), theme.foreground()),
+                    &TextStyle::new(font_size, foreground),
                     None,
                 );
-                let caret_height = text_bounds.size.height().max(theme.font_size());
+                let caret_height = text_bounds.size.height().max(font_size);
                 context.fill_rect(
                     Rect::new(
                         Point::new(
@@ -212,7 +244,7 @@ impl Widget for TextField {
                         ),
                         size(1.0, caret_height),
                     ),
-                    theme.accent(),
+                    accent,
                 );
             }
         });
@@ -302,7 +334,7 @@ fn byte_index(text: &str, character_index: usize) -> usize {
         .map_or(text.len(), |(byte_index, _)| byte_index)
 }
 
-fn padding() -> Insets {
+fn default_padding() -> Insets {
     Insets::new(
         VERTICAL_PADDING,
         HORIZONTAL_PADDING,

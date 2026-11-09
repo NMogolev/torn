@@ -1,8 +1,8 @@
 use torn_core::{Constraints, InputEvent, Point, PointerButton, Rect, Size};
 use torn_render::{PaintContext, TextStyle};
 use torn_ui::{
-    EventContext, EventPhase, EventStatus, LayoutContext, LayoutResult, Signal, UiEnvironment,
-    Widget,
+    EventContext, EventPhase, EventStatus, LayoutContext, LayoutResult, Signal, StyleTarget,
+    TssStyle, UiEnvironment, Widget,
 };
 
 const HORIZONTAL_PADDING: f32 = 10.0;
@@ -54,14 +54,17 @@ impl Widget for MenuBar {
         context: &mut LayoutContext<'_>,
         constraints: Constraints,
     ) -> LayoutResult {
+        let style = context.style();
         let theme = context.environment().theme();
-        let height = (theme.font_size() + VERTICAL_PADDING * 2.0).max(24.0);
+        let font_size = style.font_size.unwrap_or_else(|| theme.font_size());
+        let foreground = style.foreground.unwrap_or_else(|| theme.foreground());
+        let height = (font_size + VERTICAL_PADDING * 2.0).max(24.0);
         self.item_bounds.clear();
         let mut cursor = 0.0;
         for menu in &self.menus {
             let layout = context.environment().text_shaper().layout(
                 menu,
-                &TextStyle::new(theme.font_size(), theme.foreground()),
+                &TextStyle::new(font_size, foreground),
                 None,
             );
             let width = layout.size().width() + HORIZONTAL_PADDING * 2.0;
@@ -73,15 +76,46 @@ impl Widget for MenuBar {
         LayoutResult::new(self.size)
     }
 
+    fn style_target(&self) -> StyleTarget {
+        StyleTarget::new("menu-bar")
+    }
+
     fn paint(&self, context: &mut PaintContext<'_>, environment: &UiEnvironment, bounds: Rect) {
+        self.paint_styled(context, environment, bounds, &TssStyle::default());
+    }
+
+    fn paint_styled(
+        &self,
+        context: &mut PaintContext<'_>,
+        environment: &UiEnvironment,
+        bounds: Rect,
+        style: &TssStyle,
+    ) {
         let theme = environment.theme();
-        context.fill_rect(bounds, theme.button_background());
+        let radius = style.corner_radius.unwrap_or(0.0);
+        let background = style
+            .background
+            .unwrap_or_else(|| theme.control_background());
+        if radius > 0.0 {
+            context.fill_rounded_rect(bounds, radius, background);
+        } else {
+            context.fill_rect(bounds, background);
+        }
+        if let Some(border) = style.border {
+            if radius > 0.0 {
+                context.stroke_rounded_rect(bounds, radius, border.width, border.color);
+            } else {
+                context.stroke_rect(bounds, border.width, border.color);
+            }
+        }
+        let font_size = style.font_size.unwrap_or_else(|| theme.font_size());
+        let foreground = style.foreground.unwrap_or_else(|| theme.foreground());
         context.with_clip(bounds, |context| {
             for (menu, item) in self.menus.iter().zip(&self.item_bounds) {
                 let item = offset_rect(*item, bounds.origin);
                 let text = environment.text_shaper().layout(
                     menu,
-                    &TextStyle::new(theme.font_size(), theme.foreground()),
+                    &TextStyle::new(font_size, foreground),
                     Some((item.size.width() - HORIZONTAL_PADDING * 2.0).max(0.0)),
                 );
                 context.draw_text(

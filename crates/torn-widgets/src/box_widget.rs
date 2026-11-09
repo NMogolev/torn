@@ -1,6 +1,9 @@
 use torn_core::{Color, Constraints, Point, Rect, Size};
 use torn_render::PaintContext;
-use torn_ui::{ChildLayout, LayoutContext, LayoutResult, SurfaceStyle, UiEnvironment, Widget};
+use torn_ui::{
+    ChildLayout, LayoutContext, LayoutResult, StyleTarget, SurfaceStyle, TssStyle, UiEnvironment,
+    Widget,
+};
 
 /// A single-child container similar to an HTML `div`.
 ///
@@ -77,7 +80,11 @@ impl Widget for Box {
         context: &mut LayoutContext<'_>,
         constraints: Constraints,
     ) -> LayoutResult {
-        let padding = self.style.padding.unwrap_or(torn_core::Insets::ZERO);
+        let padding = self
+            .style
+            .padding
+            .or(context.style().padding)
+            .unwrap_or(torn_core::Insets::ZERO);
         let max = constraints.max();
         let child_max = size(
             (max.width() - padding.horizontal()).max(0.0),
@@ -102,16 +109,34 @@ impl Widget for Box {
         )
     }
 
-    fn paint(&self, context: &mut PaintContext<'_>, _: &UiEnvironment, bounds: Rect) {
-        let radius = self.style.corner_radius.unwrap_or(0.0);
-        if let Some(background) = self.style.background {
+    fn style_target(&self) -> StyleTarget {
+        StyleTarget::new("box")
+    }
+
+    fn paint(&self, context: &mut PaintContext<'_>, environment: &UiEnvironment, bounds: Rect) {
+        self.paint_styled(context, environment, bounds, &TssStyle::default());
+    }
+
+    fn paint_styled(
+        &self,
+        context: &mut PaintContext<'_>,
+        _: &UiEnvironment,
+        bounds: Rect,
+        style: &TssStyle,
+    ) {
+        let radius = self
+            .style
+            .corner_radius
+            .or(style.corner_radius)
+            .unwrap_or(0.0);
+        if let Some(background) = self.style.background.or(style.background) {
             if radius == 0.0 {
                 context.fill_rect(bounds, background);
             } else {
                 context.fill_rounded_rect(bounds, radius, background);
             }
         }
-        if let Some(border) = self.style.border {
+        if let Some(border) = self.style.border.or(style.border) {
             if radius == 0.0 {
                 context.stroke_rect(bounds, border.width, border.color);
             } else {

@@ -1,6 +1,7 @@
 use torn_core::{Constraints, InputEvent, Point, Size, WheelDelta};
 use torn_ui::{
-    ChildLayout, EventContext, EventPhase, EventStatus, LayoutContext, LayoutResult, Widget,
+    ChildLayout, EventContext, EventPhase, EventStatus, LayoutContext, LayoutResult, StyleTarget,
+    Widget,
 };
 
 /// Scroll direction supported by [`ScrollView`].
@@ -58,6 +59,10 @@ impl ScrollView {
 }
 
 impl Widget for ScrollView {
+    fn style_target(&self) -> StyleTarget {
+        StyleTarget::new("scroll-view")
+    }
+
     fn layout(
         &mut self,
         context: &mut LayoutContext<'_>,

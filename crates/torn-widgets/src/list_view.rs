@@ -1,6 +1,7 @@
 use torn_core::{Constraints, InputEvent, Point, Size, WheelDelta};
 use torn_ui::{
-    ChildLayout, EventContext, EventPhase, EventStatus, LayoutContext, LayoutResult, Widget,
+    ChildLayout, EventContext, EventPhase, EventStatus, LayoutContext, LayoutResult, StyleTarget,
+    Widget,
 };
 
 /// A clipped, vertically scrolling list that lays out only the visible rows.
@@ -56,6 +57,10 @@ impl ListView {
 }
 
 impl Widget for ListView {
+    fn style_target(&self) -> StyleTarget {
+        StyleTarget::new("list-view")
+    }
+
     fn layout(
         &mut self,
         context: &mut LayoutContext<'_>,

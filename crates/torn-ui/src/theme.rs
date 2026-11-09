@@ -15,35 +15,37 @@ pub trait Theme {
     /// Highlight color for focused and selected controls.
     fn accent(&self) -> Color;
 
-    /// Default background color for a button or similarly raised control.
+    /// Default background color for an interactive control surface.
     ///
-    /// The default keeps existing custom themes source-compatible. New themes
-    /// should override it instead of relying on an application surface color.
-    fn button_background(&self) -> Color {
+    /// This is a neutral control surface, not "the button color": menu bars,
+    /// toolbars, text fields, tracks, and checkboxes may all use it. TSS
+    /// selectors such as `button { ... }` target individual nodes and do not
+    /// rewrite this theme value.
+    fn control_background(&self) -> Color {
         self.background()
     }
 
-    /// Background color for a pressed button or similarly active control.
+    /// Background color for a pressed control.
     ///
     /// The default keeps existing custom themes source-compatible. New themes
     /// should override it with an interaction-state color.
-    fn button_pressed_background(&self) -> Color {
+    fn control_pressed_background(&self) -> Color {
         self.accent()
     }
 
-    /// Background color for a button whose pointer is hovering over it.
+    /// Background color for a control whose pointer is hovering over it.
     ///
     /// The default preserves the appearance of themes written before hover
     /// styling was introduced.
-    fn button_hover_background(&self) -> Color {
-        self.button_background()
+    fn control_hover_background(&self) -> Color {
+        self.control_background()
     }
 
-    /// Default inset between a button edge and its child, in logical pixels.
+    /// Default inset between a control edge and its content, in logical pixels.
     ///
-    /// The default preserves the historic button padding for existing custom
+    /// The default preserves the historic control padding for existing custom
     /// themes.
-    fn button_padding(&self) -> Insets {
+    fn control_padding(&self) -> Insets {
         Insets::all(8.0)
     }
 
@@ -74,15 +76,15 @@ impl Theme for DarkTheme {
         Color::rgba8(0, 122, 204, 255)
     }
 
-    fn button_background(&self) -> Color {
+    fn control_background(&self) -> Color {
         Color::rgba8(60, 60, 60, 255)
     }
 
-    fn button_pressed_background(&self) -> Color {
+    fn control_pressed_background(&self) -> Color {
         Color::rgba8(80, 80, 80, 255)
     }
 
-    fn button_hover_background(&self) -> Color {
+    fn control_hover_background(&self) -> Color {
         Color::rgba8(70, 70, 70, 255)
     }
 
@@ -116,15 +118,15 @@ impl Theme for LightTheme {
         Color::rgba8(0, 103, 192, 255)
     }
 
-    fn button_background(&self) -> Color {
+    fn control_background(&self) -> Color {
         Color::rgba8(235, 235, 235, 255)
     }
 
-    fn button_pressed_background(&self) -> Color {
+    fn control_pressed_background(&self) -> Color {
         Color::rgba8(210, 210, 210, 255)
     }
 
-    fn button_hover_background(&self) -> Color {
+    fn control_hover_background(&self) -> Color {
         Color::rgba8(225, 225, 225, 255)
     }
 
@@ -203,31 +205,31 @@ impl Theme for SystemTheme {
         }
     }
 
-    fn button_background(&self) -> Color {
+    fn control_background(&self) -> Color {
         match self.appearance {
-            SystemAppearance::Light => LightTheme.button_background(),
-            SystemAppearance::Dark => DarkTheme.button_background(),
+            SystemAppearance::Light => LightTheme.control_background(),
+            SystemAppearance::Dark => DarkTheme.control_background(),
         }
     }
 
-    fn button_pressed_background(&self) -> Color {
+    fn control_pressed_background(&self) -> Color {
         match self.appearance {
-            SystemAppearance::Light => LightTheme.button_pressed_background(),
-            SystemAppearance::Dark => DarkTheme.button_pressed_background(),
+            SystemAppearance::Light => LightTheme.control_pressed_background(),
+            SystemAppearance::Dark => DarkTheme.control_pressed_background(),
         }
     }
 
-    fn button_hover_background(&self) -> Color {
+    fn control_hover_background(&self) -> Color {
         match self.appearance {
-            SystemAppearance::Light => LightTheme.button_hover_background(),
-            SystemAppearance::Dark => DarkTheme.button_hover_background(),
+            SystemAppearance::Light => LightTheme.control_hover_background(),
+            SystemAppearance::Dark => DarkTheme.control_hover_background(),
         }
     }
 
-    fn button_padding(&self) -> Insets {
+    fn control_padding(&self) -> Insets {
         match self.appearance {
-            SystemAppearance::Light => LightTheme.button_padding(),
-            SystemAppearance::Dark => DarkTheme.button_padding(),
+            SystemAppearance::Light => LightTheme.control_padding(),
+            SystemAppearance::Dark => DarkTheme.control_padding(),
         }
     }
 
@@ -277,7 +279,7 @@ mod tests {
 
     #[test]
     fn default_button_values_preserve_the_legacy_geometry() {
-        assert_eq!(LightTheme.button_padding(), Insets::all(8.0));
-        assert_eq!(DarkTheme.button_padding(), Insets::all(8.0));
+        assert_eq!(LightTheme.control_padding(), Insets::all(8.0));
+        assert_eq!(DarkTheme.control_padding(), Insets::all(8.0));
     }
 }

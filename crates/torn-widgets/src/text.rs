@@ -1,6 +1,6 @@
 use torn_core::{Constraints, Rect};
 use torn_render::{FontdueTextShaper, PaintContext, TextLayout, TextStyle};
-use torn_ui::{LayoutContext, LayoutResult, UiEnvironment, Widget};
+use torn_ui::{LayoutContext, LayoutResult, StyleTarget, TssStyle, UiEnvironment, Widget};
 
 /// A widget that paints text.
 ///
@@ -50,17 +50,48 @@ impl Text {
 }
 
 impl Widget for Text {
-    fn layout(&mut self, _: &mut LayoutContext<'_>, constraints: Constraints) -> LayoutResult {
+    fn layout(
+        &mut self,
+        context: &mut LayoutContext<'_>,
+        constraints: Constraints,
+    ) -> LayoutResult {
+        let style = context.style();
         if let Some(source) = &self.source {
             let max_width = constraints.max().width();
             let width = max_width.is_finite().then_some(max_width.max(0.0));
-            self.layout = source.shaper.layout(&source.text, &source.style, width);
+            let text_style = TextStyle::new(
+                style.font_size.unwrap_or(source.style.font_size),
+                style.foreground.unwrap_or(source.style.color),
+            );
+            self.layout = source.shaper.layout(&source.text, &text_style, width);
+        } else if let Some(color) = style.foreground
+            && self.layout.color() != color
+        {
+            self.layout = self.layout.clone().with_color(color);
         }
         LayoutResult::new(constraints.constrain(self.layout.size()))
     }
 
-    fn paint(&self, context: &mut PaintContext<'_>, _: &UiEnvironment, bounds: Rect) {
-        context.draw_text(self.layout.clone(), bounds.origin);
+    fn style_target(&self) -> StyleTarget {
+        StyleTarget::new("text")
+    }
+
+    fn paint(&self, context: &mut PaintContext<'_>, environment: &UiEnvironment, bounds: Rect) {
+        self.paint_styled(context, environment, bounds, &TssStyle::default());
+    }
+
+    fn paint_styled(
+        &self,
+        context: &mut PaintContext<'_>,
+        _: &UiEnvironment,
+        bounds: Rect,
+        style: &TssStyle,
+    ) {
+        let layout = match style.foreground {
+            Some(color) if color != self.layout.color() => self.layout.clone().with_color(color),
+            _ => self.layout.clone(),
+        };
+        context.draw_text(layout, bounds.origin);
     }
 
     fn participates_in_hit_test(&self) -> bool {

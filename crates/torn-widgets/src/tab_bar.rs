@@ -2,7 +2,7 @@ use torn_core::{Constraints, InputEvent, Point, PointerButton, Rect, Size};
 use torn_render::{PaintContext, TextStyle};
 use torn_ui::{
     ChildLayout, EventContext, EventPhase, EventStatus, LayoutContext, LayoutResult, Signal,
-    UiEnvironment, Widget,
+    StyleTarget, TssStyle, UiEnvironment, Widget,
 };
 
 const DEFAULT_TAB_HEIGHT: f32 = 30.0;
@@ -87,6 +87,10 @@ impl Widget for TabBar {
         context: &mut LayoutContext<'_>,
         constraints: Constraints,
     ) -> LayoutResult {
+        let style = context.style();
+        let theme = context.environment().theme();
+        let font_size = style.font_size.unwrap_or_else(|| theme.font_size());
+        let foreground = style.foreground.unwrap_or_else(|| theme.foreground());
         let max = constraints.max();
         let width = if max.width().is_finite() {
             max.width()
@@ -94,17 +98,13 @@ impl Widget for TabBar {
             self.tabs.iter().fold(0.0, |total, tab| {
                 let layout = context.environment().text_shaper().layout(
                     tab,
-                    &TextStyle::new(
-                        context.environment().theme().font_size(),
-                        context.environment().theme().foreground(),
-                    ),
+                    &TextStyle::new(font_size, foreground),
                     None,
                 );
                 total + layout.size().width() + HORIZONTAL_PADDING * 2.0
             })
         };
-        self.tab_height =
-            (context.environment().theme().font_size() + 16.0).max(DEFAULT_TAB_HEIGHT);
+        self.tab_height = (font_size + 16.0).max(DEFAULT_TAB_HEIGHT);
         let max_height = if max.height().is_finite() {
             max.height()
         } else {
@@ -146,21 +146,42 @@ impl Widget for TabBar {
         LayoutResult::with_children(self.size, children)
     }
 
+    fn style_target(&self) -> StyleTarget {
+        StyleTarget::new("tab-bar")
+    }
+
     fn paint(&self, context: &mut PaintContext<'_>, environment: &UiEnvironment, bounds: Rect) {
+        self.paint_styled(context, environment, bounds, &TssStyle::default());
+    }
+
+    fn paint_styled(
+        &self,
+        context: &mut PaintContext<'_>,
+        environment: &UiEnvironment,
+        bounds: Rect,
+        style: &TssStyle,
+    ) {
         let theme = environment.theme();
-        context.fill_rect(bounds, theme.background());
+        let background = style.background.unwrap_or_else(|| theme.background());
+        let accent = style.accent.unwrap_or_else(|| theme.accent());
+        let font_size = style.font_size.unwrap_or_else(|| theme.font_size());
+        let foreground = style.foreground.unwrap_or_else(|| theme.foreground());
+        context.fill_rect(bounds, background);
+        if let Some(border) = style.border {
+            context.stroke_rect(bounds, border.width, border.color);
+        }
         context.with_clip(bounds, |context| {
             for (index, (tab, tab_bounds)) in self.tabs.iter().zip(&self.tab_bounds).enumerate() {
                 let tab_bounds = offset_rect(*tab_bounds, bounds.origin);
                 let color = if self.selected == Some(index) {
-                    theme.accent()
+                    accent
                 } else {
-                    theme.button_background()
+                    theme.control_background()
                 };
                 context.fill_rect(tab_bounds, color);
                 let text = environment.text_shaper().layout(
                     tab,
-                    &TextStyle::new(theme.font_size(), theme.foreground()),
+                    &TextStyle::new(font_size, foreground),
                     Some((tab_bounds.size.width() - HORIZONTAL_PADDING * 2.0).max(0.0)),
                 );
                 context.draw_text(

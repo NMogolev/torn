@@ -3,8 +3,8 @@ use std::{cell::RefCell, rc::Rc};
 use torn_core::{Color, Constraints, InputEvent, Point, PointerButton, PointerId, Rect, Size};
 use torn_render::{FontdueTextShaper, PaintContext, TextStyle};
 use torn_ui::{
-    ChildLayout, EventContext, EventPhase, EventStatus, LayoutContext, LayoutResult, UiEnvironment,
-    Widget,
+    ChildLayout, EventContext, EventPhase, EventStatus, LayoutContext, LayoutResult, StyleTarget,
+    TssStyle, UiEnvironment, Widget,
 };
 use torn_workspace::{DockAxis, DocumentId, LayoutNode, PanelId, WorkspaceLayout};
 
@@ -174,17 +174,47 @@ impl Widget for DockArea {
         LayoutResult::with_children(size, children)
     }
 
+    fn style_target(&self) -> StyleTarget {
+        StyleTarget::new("dock-area")
+    }
+
     fn paint(&self, context: &mut PaintContext<'_>, environment: &UiEnvironment, bounds: Rect) {
-        context.fill_rect(bounds, environment.theme().background());
-        let splitter_color = environment.theme().button_background();
+        self.paint_styled(context, environment, bounds, &TssStyle::default());
+    }
+
+    fn paint_styled(
+        &self,
+        context: &mut PaintContext<'_>,
+        environment: &UiEnvironment,
+        bounds: Rect,
+        style: &TssStyle,
+    ) {
+        let theme = environment.theme();
+        let radius = style.corner_radius.unwrap_or(0.0);
+        let background = style.background_or(theme.background());
+        if radius == 0.0 {
+            context.fill_rect(bounds, background);
+        } else {
+            context.fill_rounded_rect(bounds, radius, background);
+        }
+        if let Some(border) = style.border {
+            if radius == 0.0 {
+                context.stroke_rect(bounds, border.width, border.color);
+            } else {
+                context.stroke_rounded_rect(bounds, radius, border.width, border.color);
+            }
+        }
+        let splitter_color = theme.control_background();
         for splitter in &self.splitters {
             context.fill_rect(offset_rect(splitter.bounds, bounds.origin), splitter_color);
         }
+        let foreground = style.foreground_or(theme.foreground());
+        let font_size = style.font_size_or(12.0);
         for tab in &self.tabs {
             let color = if tab.active {
-                environment.theme().accent()
+                style.accent_or(theme.accent())
             } else {
-                environment.theme().button_background()
+                theme.control_background()
             };
             let tab_bounds = offset_rect(tab.bounds, bounds.origin);
             context.fill_rect(tab_bounds, color);
@@ -194,7 +224,7 @@ impl Widget for DockArea {
             };
             let text = FontdueTextShaper::ubuntu_light().layout(
                 label,
-                &TextStyle::new(12.0, environment.theme().foreground()),
+                &TextStyle::new(font_size, foreground),
                 Some((tab_bounds.size.width() - TAB_PADDING * 2.0).max(0.0)),
             );
             context.draw_text(
@@ -669,8 +699,8 @@ mod tests {
                 DisplayCommand::FillRect { color: left, .. },
                 DisplayCommand::FillRect { color: active, .. },
             ] if *color == LightTheme.background()
-                && *splitter == LightTheme.button_background()
-                && *first_tab == LightTheme.button_background()
+                && *splitter == LightTheme.control_background()
+                && *first_tab == LightTheme.control_background()
                 && *active_tab == LightTheme.accent()
                 && *left == Color::rgba8(10, 20, 30, 255)
                 && *active == Color::rgba8(70, 80, 90, 255)

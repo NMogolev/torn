@@ -272,6 +272,16 @@ impl TextLayout {
         self.color
     }
 
+    /// Returns the same layout painted with `color`.
+    ///
+    /// Glyph positions and metrics are unchanged, so this is cheap compared to
+    /// shaping the text again.
+    #[must_use]
+    pub fn with_color(mut self, color: Color) -> Self {
+        self.color = color;
+        self
+    }
+
     /// Returns positioned glyph runs in drawing order.
     #[must_use]
     pub fn glyph_runs(&self) -> &[GlyphRun] {

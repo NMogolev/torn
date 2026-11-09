@@ -3,8 +3,8 @@ use torn_core::{
 };
 use torn_render::PaintContext;
 use torn_ui::{
-    EventContext, EventPhase, EventStatus, LayoutContext, LayoutResult, Signal, UiEnvironment,
-    Widget,
+    EventContext, EventPhase, EventStatus, LayoutContext, LayoutResult, Signal, StyleTarget,
+    TssStyle, UiEnvironment, Widget,
 };
 
 const DEFAULT_WIDTH: f32 = 160.0;
@@ -127,8 +127,23 @@ impl Widget for Slider {
         LayoutResult::new(self.size)
     }
 
+    fn style_target(&self) -> StyleTarget {
+        StyleTarget::new("slider")
+    }
+
     fn paint(&self, context: &mut PaintContext<'_>, environment: &UiEnvironment, bounds: Rect) {
+        self.paint_styled(context, environment, bounds, &TssStyle::default());
+    }
+
+    fn paint_styled(
+        &self,
+        context: &mut PaintContext<'_>,
+        environment: &UiEnvironment,
+        bounds: Rect,
+        style: &TssStyle,
+    ) {
         let theme = environment.theme();
+        let accent = style.accent.unwrap_or_else(|| theme.accent());
         let track = track_bounds(bounds.size);
         let track = offset_rect(track, bounds.origin);
         let thumb_center = track.origin.x + track.size.width() * self.value_ratio();
@@ -139,18 +154,35 @@ impl Widget for Slider {
                 track.size.height(),
             ),
         );
+        let thumb_radius = style
+            .corner_radius
+            .unwrap_or(THUMB_RADIUS)
+            .min(THUMB_RADIUS);
         let thumb = Rect::new(
             Point::new(
-                thumb_center - THUMB_RADIUS,
-                bounds.origin.y + (bounds.size.height() - THUMB_RADIUS * 2.0) / 2.0,
+                thumb_center - thumb_radius,
+                bounds.origin.y + (bounds.size.height() - thumb_radius * 2.0) / 2.0,
             ),
-            size(THUMB_RADIUS * 2.0, THUMB_RADIUS * 2.0),
+            size(thumb_radius * 2.0, thumb_radius * 2.0),
         );
-        context.fill_rounded_rect(track, TRACK_HEIGHT / 2.0, theme.button_background());
-        if filled.size.width() > 0.0 {
-            context.fill_rounded_rect(filled, TRACK_HEIGHT / 2.0, theme.accent());
+        let track_radius = style
+            .corner_radius
+            .unwrap_or(TRACK_HEIGHT / 2.0)
+            .min(track.size.height() / 2.0);
+        context.fill_rounded_rect(
+            track,
+            track_radius,
+            style
+                .background
+                .unwrap_or_else(|| theme.control_background()),
+        );
+        if let Some(border) = style.border {
+            context.stroke_rounded_rect(track, track_radius, border.width, border.color);
         }
-        context.fill_rounded_rect(thumb, THUMB_RADIUS, theme.accent());
+        if filled.size.width() > 0.0 {
+            context.fill_rounded_rect(filled, track_radius, accent);
+        }
+        context.fill_rounded_rect(thumb, thumb_radius, accent);
     }
 
     fn handle_event(&mut self, context: &mut EventContext<'_>, event: &InputEvent) -> EventStatus {

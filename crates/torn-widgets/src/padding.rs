@@ -1,5 +1,5 @@
 use torn_core::{Constraints, Insets, Point, Size};
-use torn_ui::{ChildLayout, LayoutContext, LayoutResult, Widget};
+use torn_ui::{ChildLayout, LayoutContext, LayoutResult, StyleTarget, Widget};
 
 /// A single-child container that inserts empty space around its child.
 pub struct Padding {
@@ -31,31 +31,33 @@ impl Widget for Padding {
         context: &mut LayoutContext<'_>,
         constraints: Constraints,
     ) -> LayoutResult {
+        let insets = context.style().padding.unwrap_or(self.insets);
         let max = constraints.max();
         let child_max = size(
-            (max.width() - self.insets.horizontal()).max(0.0),
-            (max.height() - self.insets.vertical()).max(0.0),
+            (max.width() - insets.horizontal()).max(0.0),
+            (max.height() - insets.vertical()).max(0.0),
         );
         let mut children = Vec::new();
         let child_size = if context.child_count() == 1 {
             let (id, layout) = context
                 .layout_child(0, Constraints::loose(child_max))
                 .expect("runtime child index is valid");
-            children.push(ChildLayout::new(
-                id,
-                Point::new(self.insets.left, self.insets.top),
-            ));
+            children.push(ChildLayout::new(id, Point::new(insets.left, insets.top)));
             layout.size()
         } else {
             Size::ZERO
         };
         LayoutResult::with_children(
             constraints.constrain(size(
-                child_size.width() + self.insets.horizontal(),
-                child_size.height() + self.insets.vertical(),
+                child_size.width() + insets.horizontal(),
+                child_size.height() + insets.vertical(),
             )),
             children,
         )
+    }
+
+    fn style_target(&self) -> StyleTarget {
+        StyleTarget::new("padding")
     }
 
     fn participates_in_hit_test(&self) -> bool {

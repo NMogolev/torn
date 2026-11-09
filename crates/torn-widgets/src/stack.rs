@@ -1,5 +1,5 @@
 use torn_core::{Constraints, Point, Size};
-use torn_ui::{ChildLayout, LayoutContext, LayoutResult, Widget};
+use torn_ui::{ChildLayout, LayoutContext, LayoutResult, StyleTarget, Widget};
 
 /// A container that overlays all of its children at the top-left corner.
 #[derive(Default)]
@@ -14,6 +14,10 @@ impl Stack {
 }
 
 impl Widget for Stack {
+    fn style_target(&self) -> StyleTarget {
+        StyleTarget::new("stack")
+    }
+
     fn layout(
         &mut self,
         context: &mut LayoutContext<'_>,

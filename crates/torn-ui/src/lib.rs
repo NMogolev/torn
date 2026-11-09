@@ -9,6 +9,7 @@ mod row;
 mod runtime;
 mod signal;
 mod style;
+mod styled;
 mod theme;
 mod tss;
 mod widget;
@@ -22,6 +23,7 @@ pub use row::Row;
 pub use runtime::{DirtyFlags, LayoutContext, UiRuntime, UiRuntimeError};
 pub use signal::{Signal, Subscription};
 pub use style::{Border, SurfaceStyle};
+pub use styled::Styled;
 pub use theme::{DarkTheme, LightTheme, SystemAppearance, SystemTheme, Theme};
 pub use tss::{
     PseudoClass, Selector, StyleRule, StyleSheet, StyleTarget, TssError, TssStyle, TssTheme,

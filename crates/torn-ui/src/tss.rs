@@ -14,6 +14,11 @@ use crate::{Border, Theme};
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct StyleSheet {
     rules: Vec<StyleRule>,
+    /// Rule indices sorted by `(specificity, source order)` once at parse time.
+    ///
+    /// Keeping this index avoids sorting and allocating on every node style
+    /// resolution. The public rule list remains in source order.
+    cascade: Vec<usize>,
 }
 
 impl StyleSheet {
@@ -27,7 +32,9 @@ impl StyleSheet {
     ///
     /// Returns [`TssError`] when `source` is not valid TSS.
     pub fn parse(source: &str) -> Result<Self, TssError> {
-        Parser::new(source).parse_stylesheet()
+        let mut stylesheet = Parser::new(source).parse_stylesheet()?;
+        stylesheet.rebuild_cascade();
+        Ok(stylesheet)
     }
 
     /// Returns the stylesheet rules in source order.
@@ -44,27 +51,30 @@ impl StyleSheet {
     /// TSS value, or their semantic theme default in that order.
     #[must_use]
     pub fn resolve(&self, target: &StyleTarget) -> TssStyle {
-        let mut rules: Vec<(usize, &StyleRule)> = self
-            .rules
-            .iter()
-            .enumerate()
-            .filter(|(_, rule)| rule.selector.matches(target))
-            .collect();
-        rules.sort_by_key(|(source_order, rule)| (rule.selector.specificity(), *source_order));
-
         let mut resolved = TssStyle::default();
-        for (_, rule) in rules {
-            resolved.apply(rule.style);
+        for &index in &self.cascade {
+            let rule = &self.rules[index];
+            if rule.selector.matches(target) {
+                resolved.apply(rule.style);
+            }
         }
         resolved
+    }
+
+    fn rebuild_cascade(&mut self) {
+        self.cascade = (0..self.rules.len()).collect();
+        self.cascade.sort_by_key(|index| {
+            let rule = &self.rules[*index];
+            (rule.selector.specificity(), *index)
+        });
     }
 
     /// Resolves the sheet into a [`Theme`] while preserving missing values from
     /// `fallback`.
     ///
-    /// `:root` supplies global semantic values. `button`, `button:hover`, and
-    /// `button:pressed` supply the existing button theme values, so all current
-    /// standard widgets can use TSS without changing their APIs.
+    /// `:root` supplies global semantic values. Control-specific selectors are
+    /// resolved per node by the runtime and are intentionally not mapped onto
+    /// the semantic theme.
     #[must_use]
     pub fn theme<T: Theme>(&self, fallback: T) -> TssTheme<T> {
         TssTheme::new(fallback, self)
@@ -164,7 +174,7 @@ impl Selector {
 /// Applications will eventually assign this metadata to retained runtime
 /// nodes. It is public now so custom widgets and tools can resolve a
 /// [`StyleSheet`] using the exact same matching contract.
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Eq, Hash, PartialEq)]
 pub struct StyleTarget {
     is_root: bool,
     type_name: Option<String>,
@@ -175,12 +185,65 @@ pub struct StyleTarget {
 
 impl StyleTarget {
     /// Creates a target with the given application-defined type name.
+    ///
+    /// Type names are matched case-insensitively. Use [`Self::empty`] for a
+    /// widget that deliberately has no type name and should match only
+    /// universal and metadata selectors.
     #[must_use]
     pub fn new(type_name: impl Into<String>) -> Self {
         Self {
             type_name: Some(type_name.into().to_ascii_lowercase()),
             ..Self::default()
         }
+    }
+
+    /// Creates a target with no type name, id, classes, or states.
+    #[must_use]
+    pub const fn empty() -> Self {
+        Self {
+            is_root: false,
+            type_name: None,
+            id: None,
+            classes: Vec::new(),
+            states: Vec::new(),
+        }
+    }
+
+    /// Returns whether this is the `:root` target.
+    #[must_use]
+    pub const fn is_root(&self) -> bool {
+        self.is_root
+    }
+
+    /// Returns the target's type name, if any.
+    #[must_use]
+    pub fn type_name(&self) -> Option<&str> {
+        self.type_name.as_deref()
+    }
+
+    /// Returns the target's id, if any.
+    #[must_use]
+    pub fn id(&self) -> Option<&str> {
+        self.id.as_deref()
+    }
+
+    /// Returns the target's classes in insertion order.
+    #[must_use]
+    pub fn classes(&self) -> &[String] {
+        &self.classes
+    }
+
+    /// Returns the target's active pseudo-classes in insertion order.
+    #[must_use]
+    pub fn states(&self) -> &[PseudoClass] {
+        &self.states
+    }
+
+    /// Replaces the target's type name.
+    #[must_use]
+    pub fn with_type_name(mut self, type_name: impl Into<String>) -> Self {
+        self.type_name = Some(type_name.into().to_ascii_lowercase());
+        self
     }
 
     /// Creates the document root target matched by the `:root` selector.
@@ -223,7 +286,7 @@ impl StyleTarget {
 }
 
 /// Interaction state supported by TSS pseudo-class selectors.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum PseudoClass {
     /// The pointer is over the target.
     Hover,
@@ -286,6 +349,78 @@ impl TssStyle {
             self.corner_radius = style.corner_radius;
         }
     }
+
+    /// Fills inheritable properties that this style does not define.
+    ///
+    /// `color`, `font-size`, and `accent-color` inherit from a parent node.
+    /// Surface properties such as `background`, `border`, `padding`, `gap`,
+    /// and `border-radius` do not.
+    pub fn inherit_from(&mut self, parent: Self) {
+        self.foreground = self.foreground.or(parent.foreground);
+        self.font_size = self.font_size.or(parent.font_size);
+        self.accent = self.accent.or(parent.accent);
+    }
+
+    /// Returns whether no declaration produced a value.
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        self.background.is_none()
+            && self.foreground.is_none()
+            && self.accent.is_none()
+            && self.border.is_none()
+            && self.padding.is_none()
+            && self.spacing.is_none()
+            && self.font_size.is_none()
+            && self.corner_radius.is_none()
+    }
+
+    /// Returns `background`, or `fallback` when TSS did not supply it.
+    #[must_use]
+    pub fn background_or(self, fallback: Color) -> Color {
+        self.background.unwrap_or(fallback)
+    }
+
+    /// Returns `color`, or `fallback` when TSS did not supply it.
+    #[must_use]
+    pub fn foreground_or(self, fallback: Color) -> Color {
+        self.foreground.unwrap_or(fallback)
+    }
+
+    /// Returns `accent-color`, or `fallback` when TSS did not supply it.
+    #[must_use]
+    pub fn accent_or(self, fallback: Color) -> Color {
+        self.accent.unwrap_or(fallback)
+    }
+
+    /// Returns `border`, or `fallback` when TSS did not supply it.
+    #[must_use]
+    pub fn border_or(self, fallback: Option<Border>) -> Option<Border> {
+        self.border.or(fallback)
+    }
+
+    /// Returns `padding`, or `fallback` when TSS did not supply it.
+    #[must_use]
+    pub fn padding_or(self, fallback: Insets) -> Insets {
+        self.padding.unwrap_or(fallback)
+    }
+
+    /// Returns `gap`, or `fallback` when TSS did not supply it.
+    #[must_use]
+    pub fn spacing_or(self, fallback: f32) -> f32 {
+        self.spacing.unwrap_or(fallback)
+    }
+
+    /// Returns `font-size`, or `fallback` when TSS did not supply it.
+    #[must_use]
+    pub fn font_size_or(self, fallback: f32) -> f32 {
+        self.font_size.unwrap_or(fallback)
+    }
+
+    /// Returns `border-radius`, or `fallback` when TSS did not supply it.
+    #[must_use]
+    pub fn corner_radius_or(self, fallback: f32) -> f32 {
+        self.corner_radius.unwrap_or(fallback)
+    }
 }
 
 /// A [`Theme`] whose values are resolved from a [`StyleSheet`].
@@ -297,9 +432,6 @@ impl TssStyle {
 pub struct TssTheme<T> {
     fallback: T,
     root: TssStyle,
-    button: TssStyle,
-    hovered_button: TssStyle,
-    pressed_button: TssStyle,
 }
 
 impl<T> TssTheme<T> {
@@ -317,11 +449,6 @@ impl<T: Theme> TssTheme<T> {
         Self {
             fallback,
             root: stylesheet.resolve(&StyleTarget::root()),
-            button: stylesheet.resolve(&StyleTarget::new("button")),
-            hovered_button: stylesheet
-                .resolve(&StyleTarget::new("button").with_state(PseudoClass::Hover)),
-            pressed_button: stylesheet
-                .resolve(&StyleTarget::new("button").with_state(PseudoClass::Pressed)),
         }
     }
 }
@@ -343,32 +470,20 @@ impl<T: Theme> Theme for TssTheme<T> {
         self.root.accent.unwrap_or_else(|| self.fallback.accent())
     }
 
-    fn button_background(&self) -> Color {
-        self.button
-            .background
-            .unwrap_or_else(|| self.fallback.button_background())
+    fn control_background(&self) -> Color {
+        self.fallback.control_background()
     }
 
-    fn button_pressed_background(&self) -> Color {
-        self.pressed_button.background.unwrap_or_else(|| {
-            self.button
-                .background
-                .unwrap_or_else(|| self.fallback.button_pressed_background())
-        })
+    fn control_pressed_background(&self) -> Color {
+        self.fallback.control_pressed_background()
     }
 
-    fn button_hover_background(&self) -> Color {
-        self.hovered_button.background.unwrap_or_else(|| {
-            self.button
-                .background
-                .unwrap_or_else(|| self.fallback.button_hover_background())
-        })
+    fn control_hover_background(&self) -> Color {
+        self.fallback.control_hover_background()
     }
 
-    fn button_padding(&self) -> Insets {
-        self.button
-            .padding
-            .unwrap_or_else(|| self.fallback.button_padding())
+    fn control_padding(&self) -> Insets {
+        self.fallback.control_padding()
     }
 
     fn spacing(&self) -> f32 {
@@ -382,9 +497,8 @@ impl<T: Theme> Theme for TssTheme<T> {
     }
 
     fn corner_radius(&self) -> f32 {
-        self.button
+        self.root
             .corner_radius
-            .or(self.root.corner_radius)
             .unwrap_or_else(|| self.fallback.corner_radius())
     }
 }
@@ -448,7 +562,10 @@ impl<'a> Parser<'a> {
             );
             self.skip_ignored()?;
         }
-        Ok(StyleSheet { rules })
+        Ok(StyleSheet {
+            rules,
+            cascade: Vec::new(),
+        })
     }
 
     fn parse_declarations(&mut self) -> Result<TssStyle, TssError> {
@@ -625,13 +742,17 @@ fn parse_selector(source: &str, position: usize) -> Result<Selector, TssError> {
 
     let mut selector = Selector::default();
     let mut cursor = 0;
+    let mut saw_universal = false;
     while cursor < source.len() {
         let character = source[cursor..]
             .chars()
             .next()
             .expect("cursor is within selector source");
         match character {
-            '*' if cursor == 0 => cursor += 1,
+            '*' if cursor == 0 => {
+                saw_universal = true;
+                cursor += 1;
+            }
             '.' => {
                 cursor += 1;
                 let (class, next) = read_selector_identifier(source, cursor, position)?;
@@ -672,7 +793,10 @@ fn parse_selector(source: &str, position: usize) -> Result<Selector, TssError> {
                 }
                 cursor = next;
             }
-            _ if is_identifier_character(character) && selector.type_name.is_none() => {
+            _ if is_identifier_character(character)
+                && selector.type_name.is_none()
+                && !saw_universal =>
+            {
                 let (type_name, next) = read_selector_identifier(source, cursor, position)?;
                 selector.type_name = Some(type_name.to_ascii_lowercase());
                 cursor = next;
@@ -913,17 +1037,34 @@ fn round_alpha_channel(alpha: f32) -> u8 {
 }
 
 fn parse_border(value: &str, position: usize) -> Result<Border, TssError> {
-    let parts: Vec<&str> = value.split_ascii_whitespace().collect();
-    let [width, line_style, color] = parts.as_slice() else {
+    // Split only the first two whitespace-delimited tokens. The remainder is
+    // the color and may itself contain spaces, as in
+    // `2px solid rgba(12, 34, 56, 0.5)`.
+    let value = value.trim();
+    let Some((width, rest)) = value.split_once(char::is_whitespace) else {
         return Err(TssError {
             position,
             message: "border must be `<width> solid <color>`".to_owned(),
         });
     };
-    if *line_style != "solid" {
+    let rest = rest.trim_start();
+    let Some((line_style, color)) = rest.split_once(char::is_whitespace) else {
+        return Err(TssError {
+            position,
+            message: "border must be `<width> solid <color>`".to_owned(),
+        });
+    };
+    if !line_style.eq_ignore_ascii_case("solid") {
         return Err(TssError {
             position,
             message: "only `solid` borders are supported".to_owned(),
+        });
+    }
+    let color = color.trim();
+    if color.is_empty() {
+        return Err(TssError {
+            position,
+            message: "border must be `<width> solid <color>`".to_owned(),
         });
     }
     Ok(Border::new(
@@ -977,9 +1118,17 @@ fn parse_length(value: &str, position: usize) -> Result<f32, TssError> {
 
 #[cfg(test)]
 mod tests {
-    use crate::{LightTheme, Theme};
+    use torn_core::Insets;
+
+    use crate::{Border, LightTheme, Theme};
 
     use super::{Color, PseudoClass, StyleSheet, StyleTarget};
+
+    fn resolve(source: &str, target: &StyleTarget) -> super::TssStyle {
+        StyleSheet::parse(source)
+            .expect("test stylesheet is valid")
+            .resolve(target)
+    }
 
     #[test]
     fn resolves_the_most_specific_matching_declarations() {
@@ -1000,15 +1149,27 @@ mod tests {
         let style = stylesheet.resolve(&target);
         assert_eq!(style.foreground, Some(Color::rgba8(17, 17, 17, 255)));
         assert_eq!(style.background, Some(Color::rgba8(12, 34, 56, 128)));
-        assert_eq!(
-            style.padding,
-            Some(torn_core::Insets::new(4.0, 8.0, 4.0, 8.0))
-        );
+        assert_eq!(style.padding, Some(Insets::new(4.0, 8.0, 4.0, 8.0)));
         assert_eq!(style.font_size, Some(13.0));
     }
 
     #[test]
-    fn resolves_root_and_button_states_into_a_theme() {
+    fn source_order_breaks_specificity_ties() {
+        let target = StyleTarget::new("button")
+            .with_class("primary")
+            .with_class("wide");
+        let style = resolve(
+            r"
+                button.primary { background: #111111; }
+                button.wide { background: #222222; }
+            ",
+            &target,
+        );
+        assert_eq!(style.background, Some(Color::rgba8(34, 34, 34, 255)));
+    }
+
+    #[test]
+    fn root_supplies_theme_tokens_without_rewriting_control_values() {
         let stylesheet = StyleSheet::parse(
             r"
                 :root {
@@ -1026,6 +1187,11 @@ mod tests {
         )
         .expect("valid TSS");
         let theme = stylesheet.theme(LightTheme);
+        let button = stylesheet.resolve(&StyleTarget::new("button"));
+        let hovered =
+            stylesheet.resolve(&StyleTarget::new("button").with_state(PseudoClass::Hover));
+        let pressed =
+            stylesheet.resolve(&StyleTarget::new("button").with_state(PseudoClass::Pressed));
 
         assert_eq!(theme.background(), Color::rgba8(16, 24, 32, 255));
         assert_eq!(theme.foreground(), Color::rgba8(241, 243, 245, 255));
@@ -1033,19 +1199,12 @@ mod tests {
         assert!((theme.spacing() - 12.0).abs() < f32::EPSILON);
         assert!((theme.font_size() - 15.0).abs() < f32::EPSILON);
         assert!((theme.corner_radius() - 6.0).abs() < f32::EPSILON);
-        assert_eq!(theme.button_background(), Color::rgba8(36, 52, 71, 255));
-        assert_eq!(
-            theme.button_hover_background(),
-            Color::rgba8(52, 81, 107, 255)
-        );
-        assert_eq!(
-            theme.button_pressed_background(),
-            Color::rgba8(24, 40, 56, 255)
-        );
-        assert_eq!(
-            theme.button_padding(),
-            torn_core::Insets::new(6.0, 10.0, 6.0, 10.0)
-        );
+        // Control selectors are node styles, not global theme overrides.
+        assert_eq!(theme.control_background(), LightTheme.control_background());
+        assert_eq!(button.background, Some(Color::rgba8(36, 52, 71, 255)));
+        assert_eq!(hovered.background, Some(Color::rgba8(52, 81, 107, 255)));
+        assert_eq!(pressed.background, Some(Color::rgba8(24, 40, 56, 255)));
+        assert_eq!(button.padding, Some(Insets::new(6.0, 10.0, 6.0, 10.0)));
     }
 
     #[test]
@@ -1062,12 +1221,140 @@ mod tests {
     }
 
     #[test]
+    fn parses_border_colors_that_contain_spaces() {
+        let style = resolve(
+            "button { border: 2px solid rgba(12, 34, 56, 0.5); }",
+            &StyleTarget::new("button"),
+        );
+        assert_eq!(
+            style.border,
+            Some(Border::new(2.0, Color::rgba8(12, 34, 56, 128)))
+        );
+    }
+
+    #[test]
+    fn parses_all_documented_color_forms() {
+        let cases = [
+            ("transparent", Color::TRANSPARENT),
+            ("black", Color::BLACK),
+            ("white", Color::WHITE),
+            ("#abc", Color::rgba8(0xaa, 0xbb, 0xcc, 255)),
+            ("#abcd", Color::rgba8(0xaa, 0xbb, 0xcc, 0xdd)),
+            ("#a1b2c3", Color::rgba8(0xa1, 0xb2, 0xc3, 255)),
+            ("#a1b2c3d4", Color::rgba8(0xa1, 0xb2, 0xc3, 0xd4)),
+            ("rgb(1, 2, 3)", Color::rgba8(1, 2, 3, 255)),
+            ("rgb( 1 , 2 , 3 )", Color::rgba8(1, 2, 3, 255)),
+            ("rgba(1, 2, 3, 0.5)", Color::rgba8(1, 2, 3, 128)),
+            ("rgba(1, 2, 3, 50%)", Color::rgba8(1, 2, 3, 128)),
+            ("rgba(1, 2, 3, 0)", Color::rgba8(1, 2, 3, 0)),
+        ];
+        for (source, expected) in cases {
+            let style = resolve(
+                &format!("button {{ background: {source}; }}"),
+                &StyleTarget::new("button"),
+            );
+            assert_eq!(style.background, Some(expected), "color `{source}`");
+        }
+    }
+
+    #[test]
+    fn parses_all_padding_shorthands() {
+        let cases = [
+            ("1px", Insets::all(1.0)),
+            ("1px 2px", Insets::new(1.0, 2.0, 1.0, 2.0)),
+            ("1px 2px 3px", Insets::new(1.0, 2.0, 3.0, 2.0)),
+            ("1px 2px 3px 4px", Insets::new(1.0, 2.0, 3.0, 4.0)),
+            ("0", Insets::all(0.0)),
+        ];
+        for (source, expected) in cases {
+            let style = resolve(
+                &format!("button {{ padding: {source}; }}"),
+                &StyleTarget::new("button"),
+            );
+            assert_eq!(style.padding, Some(expected), "padding `{source}`");
+        }
+    }
+
+    #[test]
+    fn accepts_crlf_and_unicode_comments() {
+        let style = resolve(
+            "/* привет 🦀 */\r\nbutton {\r\n  background: #102030;\r\n}\r\n",
+            &StyleTarget::new("button"),
+        );
+        assert_eq!(style.background, Some(Color::rgba8(16, 32, 48, 255)));
+    }
+
+    #[test]
     fn rejects_unknown_properties_and_invalid_values() {
         let error =
             StyleSheet::parse("button { width: 24px; }").expect_err("property is unsupported");
         assert!(error.message().contains("unsupported property `width`"));
+        assert_eq!(error.position(), 16);
 
         let error = StyleSheet::parse("button { padding: -1px; }").expect_err("negative padding");
         assert!(error.message().contains("non-negative"));
+
+        let error = StyleSheet::parse("button { padding: 1px 2px 3px 4px 5px; }")
+            .expect_err("five padding values are invalid");
+        assert!(error.message().contains("between one and four"));
+    }
+
+    #[test]
+    fn rejects_universal_selectors_followed_by_a_type_name() {
+        let error = StyleSheet::parse("*button { background: #000; }")
+            .expect_err("`*button` is not a type selector");
+        assert!(error.message().contains("unsupported selector syntax"));
+
+        assert!(StyleSheet::parse("*.primary { background: #000; }").is_ok());
+        assert!(StyleSheet::parse("#id.primary:hover { background: #000; }").is_ok());
+    }
+
+    #[test]
+    fn reports_the_position_of_selector_errors() {
+        let error = StyleSheet::parse("button { background: #000; }\n:unknown { color: #fff; }")
+            .expect_err("unknown pseudo-class");
+        assert!(
+            error
+                .message()
+                .contains("unsupported pseudo-class `:unknown`")
+        );
+        assert_eq!(error.position(), 30);
+    }
+
+    #[test]
+    fn empty_sheet_and_universal_selectors_are_valid() {
+        assert!(
+            StyleSheet::parse("")
+                .expect("empty sheet")
+                .rules()
+                .is_empty()
+        );
+        let style = resolve(
+            "* { color: #010203; }",
+            &StyleTarget::empty().with_class("anything"),
+        );
+        assert_eq!(style.foreground, Some(Color::rgba8(1, 2, 3, 255)));
+    }
+
+    #[test]
+    fn random_utf8_source_never_panics() {
+        const ALPHABET: &[char] = &[
+            'a', 'Z', '0', '-', '_', '.', '#', ':', '*', '{', '}', ';', ',', '(', ')', '%', '#',
+            ' ', '\t', '\r', '\n', '/', '\\', '"', '🦀', 'я', 'é',
+        ];
+        let alphabet_len = u32::try_from(ALPHABET.len()).expect("alphabet fits u32");
+        let mut state = 0x1234_5678_u32;
+        for _ in 0..2000 {
+            state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            let length = usize::try_from(state % 64).expect("modulo fits usize");
+            let mut source = String::new();
+            for _ in 0..length {
+                state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                let index = usize::try_from(state % alphabet_len).expect("modulo fits usize");
+                source.push(ALPHABET[index]);
+            }
+            let result = std::panic::catch_unwind(|| StyleSheet::parse(&source));
+            assert!(result.is_ok(), "parser panicked on source {source:?}");
+        }
     }
 }

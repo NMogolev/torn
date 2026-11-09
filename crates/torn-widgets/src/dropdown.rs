@@ -1,8 +1,8 @@
-use torn_core::{Constraints, InputEvent, Key, NamedKey, Point, PointerButton, Rect, Size};
+use torn_core::{Constraints, InputEvent, Insets, Key, NamedKey, Point, PointerButton, Rect, Size};
 use torn_render::{PaintContext, TextStyle};
 use torn_ui::{
-    EventContext, EventPhase, EventStatus, LayoutContext, LayoutResult, Signal, UiEnvironment,
-    Widget,
+    EventContext, EventPhase, EventStatus, LayoutContext, LayoutResult, Signal, StyleTarget,
+    TssStyle, UiEnvironment, Widget,
 };
 
 const DEFAULT_WIDTH: f32 = 120.0;
@@ -141,15 +141,19 @@ impl Widget for Dropdown {
         constraints: Constraints,
     ) -> LayoutResult {
         let theme = context.environment().theme();
-        self.header_height = (theme.font_size() + VERTICAL_PADDING * 2.0).max(24.0);
+        let style = context.style();
+        let font_size = style.font_size_or(theme.font_size());
+        let foreground = style.foreground_or(theme.foreground());
+        let padding = style.padding_or(default_padding());
+        self.header_height = (font_size + padding.vertical()).max(24.0);
         self.row_height = self.header_height;
         let intrinsic_width = self.options.iter().fold(DEFAULT_WIDTH, |width, option| {
             let layout = context.environment().text_shaper().layout(
                 option,
-                &TextStyle::new(theme.font_size(), theme.foreground()),
+                &TextStyle::new(font_size, foreground),
                 None,
             );
-            width.max(layout.size().width() + HORIZONTAL_PADDING * 2.0 + ARROW_WIDTH)
+            width.max(layout.size().width() + padding.horizontal() + ARROW_WIDTH)
         });
         let width = if constraints.max().width().is_finite() {
             constraints.max().width()
@@ -166,34 +170,58 @@ impl Widget for Dropdown {
         LayoutResult::new(self.size)
     }
 
+    fn style_target(&self) -> StyleTarget {
+        StyleTarget::new("dropdown")
+    }
+
     fn paint(&self, context: &mut PaintContext<'_>, environment: &UiEnvironment, bounds: Rect) {
+        self.paint_styled(context, environment, bounds, &TssStyle::default());
+    }
+
+    fn paint_styled(
+        &self,
+        context: &mut PaintContext<'_>,
+        environment: &UiEnvironment,
+        bounds: Rect,
+        style: &TssStyle,
+    ) {
         let theme = environment.theme();
-        let radius = theme.corner_radius();
+        let radius = style.corner_radius_or(theme.corner_radius());
+        let foreground = style.foreground_or(theme.foreground());
+        let font_size = style.font_size_or(theme.font_size());
+        let padding = style.padding_or(default_padding());
         let header = Rect::new(bounds.origin, size(bounds.size.width(), self.header_height));
-        context.fill_rounded_rect(header, radius, theme.button_background());
-        context.stroke_rounded_rect(header, radius, 1.0, theme.button_background());
+        context.fill_rounded_rect(
+            header,
+            radius,
+            style.background_or(theme.control_background()),
+        );
+        let border = style
+            .border
+            .unwrap_or_else(|| torn_ui::Border::new(1.0, theme.control_background()));
+        context.stroke_rounded_rect(header, radius, border.width, border.color);
         if let Some(option) = self.selected_option() {
             let text = environment.text_shaper().layout(
                 option,
-                &TextStyle::new(theme.font_size(), theme.foreground()),
-                Some((header.size.width() - HORIZONTAL_PADDING * 2.0 - ARROW_WIDTH).max(0.0)),
+                &TextStyle::new(font_size, foreground),
+                Some((header.size.width() - padding.horizontal() - ARROW_WIDTH).max(0.0)),
             );
             context.draw_text(
                 text,
                 Point::new(
-                    header.origin.x + HORIZONTAL_PADDING,
-                    header.origin.y + VERTICAL_PADDING,
+                    header.origin.x + padding.left,
+                    header.origin.y + padding.top,
                 ),
             );
         }
         let arrow = Rect::new(
             Point::new(
-                header.right() - HORIZONTAL_PADDING - 6.0,
+                header.right() - padding.right - 6.0,
                 header.origin.y + header.size.height() / 2.0 - 2.0,
             ),
             size(6.0, 4.0),
         );
-        context.fill_rect(arrow, theme.foreground());
+        context.fill_rect(arrow, foreground);
 
         if !self.open {
             return;
@@ -210,22 +238,19 @@ impl Widget for Dropdown {
                     size(bounds.size.width(), self.row_height),
                 );
                 let background = if self.selected == Some(index) {
-                    theme.button_pressed_background()
+                    style.accent_or(theme.control_pressed_background())
                 } else {
-                    theme.background()
+                    style.background_or(theme.background())
                 };
                 context.fill_rect(row, background);
                 let text = environment.text_shaper().layout(
                     option,
-                    &TextStyle::new(theme.font_size(), theme.foreground()),
-                    Some((row.size.width() - HORIZONTAL_PADDING * 2.0).max(0.0)),
+                    &TextStyle::new(font_size, foreground),
+                    Some((row.size.width() - padding.horizontal()).max(0.0)),
                 );
                 context.draw_text(
                     text,
-                    Point::new(
-                        row.origin.x + HORIZONTAL_PADDING,
-                        row.origin.y + VERTICAL_PADDING,
-                    ),
+                    Point::new(row.origin.x + padding.left, row.origin.y + padding.top),
                 );
             }
         });
@@ -279,6 +304,15 @@ impl Widget for Dropdown {
     fn accepts_focus(&self) -> bool {
         true
     }
+}
+
+fn default_padding() -> Insets {
+    Insets::new(
+        VERTICAL_PADDING,
+        HORIZONTAL_PADDING,
+        VERTICAL_PADDING,
+        HORIZONTAL_PADDING,
+    )
 }
 
 fn size(width: f32, height: f32) -> Size {

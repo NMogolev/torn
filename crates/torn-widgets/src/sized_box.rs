@@ -1,5 +1,5 @@
 use torn_core::{Constraints, Point, Size};
-use torn_ui::{ChildLayout, LayoutContext, LayoutResult, Widget};
+use torn_ui::{ChildLayout, LayoutContext, LayoutResult, StyleTarget, Widget};
 
 /// A single-child container with optional explicit dimensions.
 pub struct SizedBox {
@@ -21,6 +21,10 @@ impl SizedBox {
 }
 
 impl Widget for SizedBox {
+    fn style_target(&self) -> StyleTarget {
+        StyleTarget::new("sized-box")
+    }
+
     fn layout(
         &mut self,
         context: &mut LayoutContext<'_>,
