@@ -67,10 +67,23 @@ fn fragment(input: VertexOutput) -> @location(0) vec4<f32> {
         input.size * 0.5,
         input.radius,
     );
-    if (distance > 0.0 || (input.stroke_width > 0.0 && distance < -input.stroke_width)) {
+    // Signed-distance derivatives express the edge width in screen pixels,
+    // so rounded corners stay smooth at every scale factor.
+    let antialias_width = max(fwidth(distance), 0.001);
+    let outer_coverage = 1.0 - smoothstep(-antialias_width, antialias_width, distance);
+    var coverage = outer_coverage;
+    if (input.stroke_width > 0.0) {
+        let inner_coverage = smoothstep(
+            -antialias_width,
+            antialias_width,
+            distance + input.stroke_width,
+        );
+        coverage *= inner_coverage;
+    }
+    if (coverage <= 0.0) {
         discard;
     }
-    let alpha = clamp(input.color.a, 0.0, 1.0);
+    let alpha = clamp(input.color.a, 0.0, 1.0) * coverage;
     return vec4(srgb_to_linear(clamp(input.color.rgb, vec3(0.0), vec3(1.0))) * alpha, alpha);
 }
 ";
