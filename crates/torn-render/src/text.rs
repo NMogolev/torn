@@ -233,10 +233,10 @@ pub trait TextShaper {
 
 /// A small deterministic shaper backed by a [`FontDatabase`].
 ///
-/// It performs family matching, glyph lookup, line breaking, placement, and
-/// line metric calculation through `fontdue`. It intentionally does not
-/// implement kerning, complex OpenType shaping, or bidirectional reordering.
-/// All registered faces are available as per-character fallbacks.
+/// It performs family matching, glyph lookup, line breaking, placement, GPOS
+/// pair kerning, and line metric calculation through `fontdue`. It does not
+/// implement complex OpenType shaping or bidirectional reordering. All
+/// registered faces are available as per-character fallbacks.
 #[derive(Clone, Debug, PartialEq)]
 pub struct FontdueTextShaper {
     database: FontDatabase,
@@ -377,15 +377,40 @@ impl TextShaper for FontdueTextShaper {
             );
         }
 
-        let mut glyph_runs = Vec::new();
-        for glyph in layout
+        let parsed_faces = faces
+            .iter()
+            .map(|face| {
+                if face.has_gpos_kerning() {
+                    face.parsed()
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>();
+        let mut placed = layout
             .glyphs()
             .iter()
-            .filter(|glyph| glyph.char_data.rasterize())
-        {
+            .map(|glyph| PlacedGlyph {
+                font_index: glyph.font_index,
+                glyph_id: glyph.key.glyph_index,
+                x: glyph.x,
+                y: glyph.y,
+                rasterize: glyph.char_data.rasterize(),
+            })
+            .collect::<Vec<_>>();
+        apply_kerning(
+            &mut placed,
+            layout.lines().map(Vec::as_slice),
+            &faces,
+            &parsed_faces,
+            font_size,
+        );
+
+        let mut glyph_runs = Vec::new();
+        for glyph in placed.iter().filter(|glyph| glyph.rasterize) {
             let font = faces[glyph.font_index].clone();
             let positioned = PositionedGlyph {
-                glyph_id: glyph.key.glyph_index,
+                glyph_id: glyph.glyph_id,
                 position: Point::new(glyph.x, glyph.y),
             };
             if let Some(run) = glyph_runs
@@ -413,7 +438,7 @@ impl TextShaper for FontdueTextShaper {
                 height: line.max_new_line_size,
             })
             .collect::<Vec<_>>();
-        let size = Size::new(measured_width(&layout, &faces, font_size), layout.height())
+        let size = Size::new(measured_width(&placed, &faces, font_size), layout.height())
             .expect("fontdue produces finite non-negative layout metrics");
 
         TextLayout {
@@ -447,15 +472,69 @@ fn prepare_text(faces: &[FontFace], text: &str) -> Vec<(usize, String)> {
     segments
 }
 
-fn measured_width(layout: &fontdue::layout::Layout, faces: &[FontFace], font_size: f32) -> f32 {
-    layout
-        .glyphs()
+/// A glyph emitted by fontdue with mutable horizontal placement.
+#[derive(Clone, Copy, Debug)]
+struct PlacedGlyph {
+    font_index: usize,
+    glyph_id: u16,
+    x: f32,
+    y: f32,
+    rasterize: bool,
+}
+
+/// Shifts glyphs horizontally to apply pair kerning within each visual line.
+///
+/// Each pair's advance adjustment accumulates into a running offset for the
+/// remainder of the line, while its placement adjustment moves only the second
+/// glyph. Kerning is only applied between glyphs that share a font; fontdue's
+/// line ranges keep it from crossing a line break.
+fn apply_kerning(
+    glyphs: &mut [PlacedGlyph],
+    lines: Option<&[fontdue::layout::LinePosition]>,
+    faces: &[FontFace],
+    parsed_faces: &[Option<ttf_parser::Face<'_>>],
+    font_size: f32,
+) {
+    let Some(lines) = lines else {
+        return;
+    };
+    let Some(last) = glyphs.len().checked_sub(1) else {
+        return;
+    };
+    for line in lines {
+        let start = line.glyph_start.min(glyphs.len());
+        let end = line.glyph_end.min(last);
+        if start >= end {
+            continue;
+        }
+        let mut shift = 0.0;
+        for index in start..end {
+            let left = glyphs[index];
+            let right = glyphs[index + 1];
+            if left.font_index == right.font_index
+                && let Some(adjustment) = faces[left.font_index].horizontal_kerning(
+                    parsed_faces[left.font_index].as_ref(),
+                    left.glyph_id,
+                    right.glyph_id,
+                    font_size,
+                )
+            {
+                shift += adjustment.advance;
+                glyphs[index + 1].x += adjustment.placement;
+            }
+            glyphs[index + 1].x += shift;
+        }
+    }
+}
+
+fn measured_width(glyphs: &[PlacedGlyph], faces: &[FontFace], font_size: f32) -> f32 {
+    glyphs
         .iter()
-        .filter(|glyph| glyph.char_data.rasterize())
+        .filter(|glyph| glyph.rasterize)
         .map(|glyph| {
             let metrics = faces[glyph.font_index]
                 .font()
-                .metrics_indexed(glyph.key.glyph_index, font_size);
+                .metrics_indexed(glyph.glyph_id, font_size);
             glyph.x - as_logical_coordinate(metrics.xmin) + metrics.advance_width
         })
         .fold(0.0, f32::max)
@@ -493,6 +572,55 @@ mod tests {
         assert!(layout.size().width() > 0.0);
         assert!(layout.size().height() > 0.0);
         assert!(layout.lines()[0].baseline() > 0.0);
+    }
+
+    #[test]
+    fn applies_gpos_kerning_between_adjacent_glyphs() {
+        let layout = FontdueTextShaper::ubuntu_light().layout(
+            "AV",
+            &TextStyle::new(16.0, Color::BLACK),
+            None,
+        );
+        let glyphs = layout.glyph_runs()[0].glyphs();
+        assert_eq!(glyphs.len(), 2);
+
+        let face = layout.glyph_runs()[0].font();
+        let left = face.font().metrics_indexed(glyphs[0].glyph_id(), 16.0);
+        let right = face.font().metrics_indexed(glyphs[1].glyph_id(), 16.0);
+        let unkerned =
+            (left.advance_width.ceil() + right.bounds.xmin).floor() - left.bounds.xmin.floor();
+        let actual = glyphs[1].position().x - glyphs[0].position().x;
+
+        assert!(
+            actual < unkerned,
+            "kerning should tighten AV: {actual} < {unkerned}"
+        );
+    }
+
+    #[test]
+    fn does_not_apply_kerning_across_line_breaks() {
+        let shaper = FontdueTextShaper::ubuntu_light();
+        let style = TextStyle::new(16.0, Color::BLACK);
+        let with_a = shaper.layout("A\nV", &style, None);
+        let without_a = shaper.layout("V\nV", &style, None);
+
+        let second_line_v = |layout: &super::TextLayout| {
+            layout
+                .glyph_runs()
+                .iter()
+                .flat_map(GlyphRun::glyphs)
+                .nth(1)
+                .expect("the second line contains V")
+                .position()
+                .x
+        };
+
+        let with_a_x = second_line_v(&with_a);
+        let without_a_x = second_line_v(&without_a);
+        assert!(
+            (with_a_x - without_a_x).abs() < f32::EPSILON,
+            "the line break must reset kerning: {with_a_x} != {without_a_x}"
+        );
     }
 
     #[test]

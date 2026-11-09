@@ -431,6 +431,8 @@ impl Default for FontDescriptor {
 pub struct FontFace {
     inner: Arc<FontdueFont>,
     descriptor: FontDescriptor,
+    data: Arc<[u8]>,
+    kern_lookups: Vec<u16>,
 }
 
 impl FontFace {
@@ -444,16 +446,14 @@ impl FontFace {
     ///
     /// Returns [`FontError`] when `bytes` do not contain a supported font.
     pub fn from_bytes(bytes: impl Into<Vec<u8>>) -> Result<Self, FontError> {
+        let data: Vec<u8> = bytes.into();
         let font =
-            FontdueFont::from_bytes(bytes.into(), FontSettings::default()).map_err(FontError)?;
+            FontdueFont::from_bytes(data.clone(), FontSettings::default()).map_err(FontError)?;
         let family = font
             .name()
             .map_or_else(|| FontFamily::new("Sans"), FontFamily::new);
         let descriptor = FontDescriptor::new(family, FontWeight::NORMAL, FontStyle::Normal);
-        Ok(Self {
-            inner: Arc::new(font),
-            descriptor,
-        })
+        Ok(Self::from_parts(font, descriptor, data))
     }
 
     /// Parses a font and registers it under an explicit descriptor.
@@ -465,12 +465,20 @@ impl FontFace {
         bytes: impl Into<Vec<u8>>,
         descriptor: FontDescriptor,
     ) -> Result<Self, FontError> {
-        FontdueFont::from_bytes(bytes.into(), FontSettings::default())
-            .map(|inner| Self {
-                inner: Arc::new(inner),
-                descriptor,
-            })
-            .map_err(FontError)
+        let data: Vec<u8> = bytes.into();
+        let font =
+            FontdueFont::from_bytes(data.clone(), FontSettings::default()).map_err(FontError)?;
+        Ok(Self::from_parts(font, descriptor, data))
+    }
+
+    fn from_parts(font: FontdueFont, descriptor: FontDescriptor, data: Vec<u8>) -> Self {
+        let kern_lookups = crate::kerning::collect_kern_lookups(&data);
+        Self {
+            inner: Arc::new(font),
+            descriptor,
+            data: Arc::from(data),
+            kern_lookups,
+        }
     }
 
     /// Returns Torn's bundled Ubuntu Light font.
@@ -565,6 +573,43 @@ impl FontFace {
     pub(crate) fn font(&self) -> &FontdueFont {
         &self.inner
     }
+
+    /// Returns whether GPOS `kern` features were found in this face.
+    pub(crate) fn has_gpos_kerning(&self) -> bool {
+        !self.kern_lookups.is_empty()
+    }
+
+    /// Parses the face with `ttf-parser` for OpenType layout queries.
+    pub(crate) fn parsed(&self) -> Option<ttf_parser::Face<'_>> {
+        ttf_parser::Face::parse(&self.data, 0).ok()
+    }
+
+    /// Returns the horizontal kerning adjustment for two adjacent glyphs.
+    ///
+    /// GPOS kerning is preferred when the face provides it. Fonts that only
+    /// carry the legacy `kern` table fall back to `fontdue`'s implementation.
+    /// The returned value is in logical pixels for `font_size`.
+    pub(crate) fn horizontal_kerning(
+        &self,
+        parsed: Option<&ttf_parser::Face<'_>>,
+        left: u16,
+        right: u16,
+        font_size: f32,
+    ) -> Option<crate::kerning::KerningAdjustment> {
+        let scale = self.inner.scale_factor(font_size);
+        if let Some(parsed) = parsed
+            && let Some(adjustment) =
+                crate::kerning::gpos_kerning(parsed, &self.kern_lookups, left, right)
+        {
+            return Some(adjustment.scaled(scale));
+        }
+        self.inner
+            .horizontal_kern_indexed(left, right, font_size)
+            .map(|advance| crate::kerning::KerningAdjustment {
+                advance,
+                placement: 0.0,
+            })
+    }
 }
 
 impl fmt::Debug for FontFace {
@@ -573,7 +618,7 @@ impl fmt::Debug for FontFace {
             .debug_struct("FontFace")
             .field("descriptor", &self.descriptor)
             .field("name", &self.inner.name())
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 
@@ -926,6 +971,23 @@ mod tests {
         assert!(metrics.descent() > 0.0);
         assert!(metrics.height() > 0.0);
         assert!(face.metrics(0.0).is_none());
+    }
+
+    #[test]
+    fn extracts_gpos_kern_lookups_for_the_bundled_font() {
+        let face = FontFace::ubuntu_light();
+        assert!(face.has_gpos_kerning());
+
+        let parsed = face.parsed().expect("bundled font parses");
+        let left = face.font().lookup_glyph_index('A');
+        let right = face.font().lookup_glyph_index('V');
+        let adjustment = crate::kerning::gpos_kerning(&parsed, &face.kern_lookups, left, right)
+            .expect("Ubuntu kerns AV");
+
+        assert!(
+            adjustment.advance < 0.0,
+            "AV should tighten, got {adjustment:?}"
+        );
     }
 
     #[test]

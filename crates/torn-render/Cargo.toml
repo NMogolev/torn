@@ -13,3 +13,4 @@ workspace = true
 [dependencies]
 fontdue = "0.9.3"
 torn-core = { path = "../torn-core" }
+ttf-parser = { version = "0.25", default-features = false, features = ["opentype-layout"] }

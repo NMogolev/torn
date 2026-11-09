@@ -121,11 +121,11 @@ and rendering cannot disagree.
 `FontDatabase`: a font request (ordered families, pixel/point size, weight, and
 style) is resolved to concrete faces, and the shaper converts text into
 positioned glyph runs and line metrics. The software backend rasterizes the same
-glyphs. It covers basic horizontal text, newlines, width wrapping, case-
-insensitive family matching, closest weight/style selection, a default-face
-fallback, and per-character fallback across registered faces. Kerning, complex
-OpenType shaping, bidirectional text, and platform font enumeration remain
-deliberate follow-up work. See [`FONTS.md`](FONTS.md).
+glyphs. It covers basic horizontal text, newlines, width wrapping, GPOS pair
+kerning, case-insensitive family matching, closest weight/style selection, a
+default-face fallback, and per-character fallback across registered faces.
+Complex OpenType shaping, bidirectional text, and platform font enumeration
+remain deliberate follow-up work. See [`FONTS.md`](FONTS.md).
 
 ### Styling and invalidation
 
@@ -258,7 +258,7 @@ See [`DOCKING.md`](DOCKING.md) for the proposed contract and persistence rules.
 
 ### M6 — Capability expansion
 
-Add scrolling, editable text, advanced text shaping (kerning, complex OpenType,
+Add scrolling, editable text, advanced text shaping (complex OpenType,
 bidirectional layout), platform font enumeration, themes, accessibility design,
 GPU rendering, paint caching, and selective repainting, in that order of
 demonstrated need.

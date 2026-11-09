@@ -3,6 +3,7 @@
 mod display_list;
 mod font;
 mod image;
+mod kerning;
 mod paint;
 mod text;
 

@@ -121,6 +121,15 @@ face. `TextStyle::new_with_font` carries a complete request. The selected face
 is available from `TextLayout::glyph_runs()`, so callers and tests can verify
 exactly which font produced the output.
 
+Adjacent glyphs are pair-kerned with the font's OpenType `GPOS` data. The shaper
+reads the lookups referenced by `kern` features and applies the first matching
+subtable from each lookup, so fonts such as the bundled Ubuntu Light — which
+have no legacy `kern` table — still tighten pairs like `AV` and `To`. Fonts that
+only carry a legacy `kern` table fall back to `fontdue`'s implementation. Line
+breaking still uses unkerned advances; kerning is applied to the final glyph
+positions and to the measured width, so wrapping can differ by at most the small
+pair adjustment.
+
 To install a custom database, build the shaper and give it to the environment:
 
 ```rust
@@ -188,9 +197,10 @@ See [`TSS.md`](TSS.md#supported-properties) for the accepted value grammar.
 
 ## Current limits
 
-The bundled shaper performs horizontal glyph placement with newlines and width
-wrapping. It does not implement kerning, complex OpenType shaping, bidirectional
-reordering, synthetic bold or oblique, or font substitution based on script.
-Per-character fallback across registered faces is implemented, but there is no
-platform font enumeration yet: applications register the faces they ship or
-find themselves. These are deliberate follow-ups rather than silent behavior.
+The bundled shaper performs horizontal glyph placement with newlines, width
+wrapping, and GPOS pair kerning. It does not implement complex OpenType shaping
+(ligatures, contextual substitutions), bidirectional reordering, synthetic bold
+or oblique, or font substitution based on script. Per-character fallback across
+registered faces is implemented, but there is no platform font enumeration yet:
+applications register the faces they ship or find themselves. These are
+deliberate follow-ups rather than silent behavior.

@@ -1844,6 +1844,7 @@ version = "0.1.0"
 dependencies = [
  "fontdue",
  "torn-core",
+ "ttf-parser",
 ]
 
 [[package]]

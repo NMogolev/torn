@@ -91,8 +91,9 @@ let label = Text::styled("Нажмите кнопку", TextStyle::new(16.0, Col
 
 `SoftwareRenderer` растеризует bitmap glyphs с alpha coverage и учитывает
 активный прямоугольник clip. Базовый шейпер поддерживает `\n`, wrapping по
-ширине и посимвольный fallback между зарегистрированными шрифтами; kerning,
-сложное OpenType shaping и bidi остаются следующим этапом.
+ширине, GPOS-кернинг пар соседних глифов и посимвольный fallback между
+зарегистрированными шрифтами; сложное OpenType shaping и bidi остаются
+следующим этапом.
 
 ## 3. Button и Box
 
