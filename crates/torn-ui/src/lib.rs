@@ -25,7 +25,7 @@ pub use environment::UiEnvironment;
 pub use event::{EventContext, EventPhase, EventStatus};
 pub use layout::{ChildLayout, LayoutResult};
 pub use row::Row;
-pub use runtime::{DirtyFlags, LayoutContext, UiRuntime, UiRuntimeError};
+pub use runtime::{DirtyFlags, LayoutContext, RuntimeStats, UiRuntime, UiRuntimeError};
 pub use signal::{Signal, Subscription};
 pub use style::{Border, SurfaceStyle};
 pub use styled::Styled;

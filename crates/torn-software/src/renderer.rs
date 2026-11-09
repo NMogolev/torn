@@ -223,7 +223,7 @@ impl SoftwareRenderer {
                 if !glyph_origin.x.is_finite() || !glyph_origin.y.is_finite() {
                     return Err(RenderError::NonFiniteGeometry);
                 }
-                let bitmap = run.font().rasterize(glyph.glyph_id(), raster_size);
+                let bitmap = run.font().rasterize_cached(glyph.glyph_id(), raster_size);
                 let glyph_rect = Rect::new(
                     glyph_origin,
                     Size::new(

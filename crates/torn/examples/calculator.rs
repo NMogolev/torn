@@ -2,7 +2,7 @@
 //!
 //! Run with `cargo run -p torn --example calculator`.
 
-use std::{cell::RefCell, rc::Rc, time::Instant};
+use std::{cell::RefCell, rc::Rc};
 
 use torn::{
     Color, Constraints, DockArea, DockAxis, EventContext, EventPhase, EventStatus, InputEvent, Key,
@@ -249,14 +249,14 @@ impl WindowApplication for CalculatorApp {
 
     fn redraw(&mut self) -> DisplayList {
         let mut display_list = DisplayList::new();
-        let started = Instant::now();
         let _ = self
             .runtime
             .paint(&mut PaintContext::new(&mut display_list));
+        let stats = self.runtime.stats();
         let mut metrics = self.metrics.borrow_mut();
-        metrics.frames += 1;
-        metrics.commands = display_list.len();
-        metrics.paint_micros = started.elapsed().as_micros();
+        metrics.frames = stats.paint_passes();
+        metrics.commands = stats.last_paint_command_count();
+        metrics.paint_micros = stats.last_paint_time().as_micros();
         display_list
     }
 }
@@ -344,7 +344,7 @@ impl Widget for MetricsPanel {
             &shaper,
             bounds,
             "Runtime metrics",
-            "Measured inside this demo",
+            "Measured by UiRuntime",
             palette,
         );
         let rows = [

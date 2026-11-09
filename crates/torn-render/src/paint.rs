@@ -13,6 +13,12 @@ impl<'a> PaintContext<'a> {
         Self { display_list }
     }
 
+    /// Returns the number of commands recorded in the target display list.
+    #[must_use]
+    pub fn command_count(&self) -> usize {
+        self.display_list.len()
+    }
+
     /// Records a filled rectangle.
     pub fn fill_rect(&mut self, rect: Rect, color: Color) {
         self.display_list

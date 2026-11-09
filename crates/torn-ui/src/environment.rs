@@ -18,6 +18,7 @@ pub struct UiEnvironment {
     logical_dpi: f32,
     application_font: Option<Font>,
     text_shaper: Box<dyn TextShaper>,
+    text_shaper_generation: u64,
     locale: String,
 }
 
@@ -34,6 +35,7 @@ impl UiEnvironment {
             logical_dpi: DEFAULT_DPI,
             application_font: None,
             text_shaper: Box::new(FontdueTextShaper::ubuntu_light()),
+            text_shaper_generation: 0,
             locale: "und".to_owned(),
         }
     }
@@ -212,14 +214,25 @@ impl UiEnvironment {
         self.text_shaper.as_ref()
     }
 
+    /// Returns the generation of the installed text shaper.
+    ///
+    /// Widgets can use this to invalidate layouts produced by a previous
+    /// shaper without depending on a concrete shaper implementation.
+    #[must_use]
+    pub const fn text_shaper_generation(&self) -> u64 {
+        self.text_shaper_generation
+    }
+
     /// Supplies the text shaper used by widgets that shape text at runtime.
     pub fn set_text_shaper(&mut self, text_shaper: impl TextShaper + 'static) {
         self.text_shaper = Box::new(text_shaper);
+        self.text_shaper_generation = self.text_shaper_generation.saturating_add(1);
     }
 
     /// Restores Torn's bundled default text shaper.
     pub fn clear_text_shaper(&mut self) {
         self.text_shaper = Box::new(FontdueTextShaper::ubuntu_light());
+        self.text_shaper_generation = self.text_shaper_generation.saturating_add(1);
     }
 
     /// Returns the locale requested by the application.

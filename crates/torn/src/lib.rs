@@ -13,9 +13,9 @@ pub use torn_ui::{
     Border, ChildLayout, Column, DEFAULT_DPI, DarkTheme, DirtyFlags, EventContext, EventPhase,
     EventStatus, Font, FontDatabase, FontDescriptor, FontFamily, FontMetrics, FontSize, FontStyle,
     FontWeight, KeyChord, KeyboardCommand, LayoutContext, LayoutResult, LightTheme, PseudoClass,
-    Row, Selector, Signal, StyleRule, StyleSheet, StyleTarget, Styled, Subscription, SurfaceStyle,
-    SystemAppearance, SystemTheme, Theme, TssError, TssStyle, TssTheme, UiEnvironment, UiRuntime,
-    UiRuntimeError, Widget,
+    Row, RuntimeStats, Selector, Signal, StyleRule, StyleSheet, StyleTarget, Styled, Subscription,
+    SurfaceStyle, SystemAppearance, SystemTheme, Theme, TssError, TssStyle, TssTheme,
+    UiEnvironment, UiRuntime, UiRuntimeError, Widget,
 };
 pub use torn_widgets::{
     Align, Alignment, Box, Button, ButtonStyle, Checkbox, ComboBox, Container, DockArea,

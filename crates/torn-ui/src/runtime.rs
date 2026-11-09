@@ -3,6 +3,7 @@ use std::{
     collections::HashMap,
     fmt,
     panic::{AssertUnwindSafe, catch_unwind, resume_unwind},
+    time::{Duration, Instant},
 };
 
 use torn_core::{
@@ -36,6 +37,64 @@ impl DirtyFlags {
         paint: true,
         hit_test: true,
     };
+}
+
+/// Timings and output counters collected by [`UiRuntime`].
+///
+/// Durations describe the most recently completed layout or paint pass. The
+/// counters are lifetime totals for this runtime, while the command count is
+/// the number emitted by the most recent paint pass only. Backend execution
+/// time is intentionally excluded because presentation may be asynchronous.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct RuntimeStats {
+    layout_passes: u64,
+    paint_passes: u64,
+    last_layout_time: Duration,
+    last_paint_time: Duration,
+    last_paint_command_count: usize,
+}
+
+impl RuntimeStats {
+    /// Returns the number of completed layout passes.
+    #[must_use]
+    pub const fn layout_passes(self) -> u64 {
+        self.layout_passes
+    }
+
+    /// Returns the number of completed paint passes.
+    #[must_use]
+    pub const fn paint_passes(self) -> u64 {
+        self.paint_passes
+    }
+
+    /// Returns the duration of the most recent layout pass.
+    #[must_use]
+    pub const fn last_layout_time(self) -> Duration {
+        self.last_layout_time
+    }
+
+    /// Returns the duration of the most recent paint pass.
+    #[must_use]
+    pub const fn last_paint_time(self) -> Duration {
+        self.last_paint_time
+    }
+
+    /// Returns the display commands emitted by the most recent paint pass.
+    #[must_use]
+    pub const fn last_paint_command_count(self) -> usize {
+        self.last_paint_command_count
+    }
+
+    fn record_layout(&mut self, elapsed: Duration) {
+        self.layout_passes = self.layout_passes.saturating_add(1);
+        self.last_layout_time = elapsed;
+    }
+
+    fn record_paint(&mut self, elapsed: Duration, command_count: usize) {
+        self.paint_passes = self.paint_passes.saturating_add(1);
+        self.last_paint_time = elapsed;
+        self.last_paint_command_count = command_count;
+    }
 }
 
 /// Context through which a widget measures its direct runtime-owned children.
@@ -116,6 +175,7 @@ pub struct UiRuntime {
     commands: Vec<KeyboardCommand>,
     redraw_requested: bool,
     environment: UiEnvironment,
+    stats: RuntimeStats,
 }
 
 struct ArenaSlot {
@@ -184,6 +244,7 @@ impl UiRuntime {
             commands: Vec::new(),
             redraw_requested: true,
             environment,
+            stats: RuntimeStats::default(),
         };
         runtime.root = runtime.insert_node(Box::new(root), None);
         runtime
@@ -193,6 +254,12 @@ impl UiRuntime {
     #[must_use]
     pub const fn environment(&self) -> &UiEnvironment {
         &self.environment
+    }
+
+    /// Returns the runtime's latest performance telemetry.
+    #[must_use]
+    pub const fn stats(&self) -> RuntimeStats {
+        self.stats
     }
 
     /// Returns mutable access to the shared environment and invalidates layout.
@@ -362,6 +429,7 @@ impl UiRuntime {
     /// [`UiRuntimeError::InvalidLayout`] when a container positions an unknown,
     /// duplicate, or out-of-order child.
     pub fn layout(&mut self, constraints: Constraints) -> Result<&LayoutResult, UiRuntimeError> {
+        let started = Instant::now();
         match catch_unwind(AssertUnwindSafe(|| {
             self.style_tree();
             self.layout_node(self.root, constraints, Point::ZERO)
@@ -370,15 +438,18 @@ impl UiRuntime {
                 self.layout = Some(layout);
                 self.last_constraints = Some(constraints);
                 self.redraw_requested = true;
+                self.stats.record_layout(started.elapsed());
                 self.layout.as_ref().ok_or(UiRuntimeError::InvalidLayout)
             }
             Ok(Err(error)) => {
                 self.clear_layout_state();
+                self.stats.record_layout(started.elapsed());
                 Err(error)
             }
             Err(payload) => {
                 self.clear_layout_state();
                 self.report_panic("layout", payload);
+                self.stats.record_layout(started.elapsed());
                 Err(UiRuntimeError::WidgetPanicked)
             }
         }
@@ -426,7 +497,9 @@ impl UiRuntime {
         if self.layout.is_none() {
             return Ok(());
         }
-        match catch_unwind(AssertUnwindSafe(|| {
+        let command_count_before = context.command_count();
+        let started = Instant::now();
+        let result = match catch_unwind(AssertUnwindSafe(|| {
             self.style_tree();
             self.paint_node(self.root, context);
         })) {
@@ -435,7 +508,12 @@ impl UiRuntime {
                 self.report_panic("paint", payload);
                 Err(UiRuntimeError::WidgetPanicked)
             }
-        }
+        };
+        self.stats.record_paint(
+            started.elapsed(),
+            context.command_count().saturating_sub(command_count_before),
+        );
+        result
     }
 
     /// Delivers an input event through capture, target, and bubble phases.
@@ -1132,6 +1210,8 @@ mod tests {
         panic_count: Rc<Cell<usize>>,
     }
 
+    struct PaintRecorder;
+
     impl Widget for EnvironmentRecorder {
         fn layout(
             &mut self,
@@ -1160,6 +1240,16 @@ mod tests {
         fn layout(&mut self, _: &mut LayoutContext<'_>, _: Constraints) -> LayoutResult {
             self.panic_count.set(self.panic_count.get() + 1);
             panic!("repeated application failure")
+        }
+    }
+
+    impl Widget for PaintRecorder {
+        fn layout(&mut self, _: &mut LayoutContext<'_>, constraints: Constraints) -> LayoutResult {
+            LayoutResult::new(constraints.constrain(Size::ZERO))
+        }
+
+        fn paint(&self, context: &mut PaintContext<'_>, _: &UiEnvironment, _: Rect) {
+            context.fill_rect(Rect::ZERO, Color::BLACK);
         }
     }
 
@@ -1620,6 +1710,24 @@ mod tests {
             .expect("paint succeeds");
 
         assert_eq!(*observed.borrow(), vec![expected.clone(), expected]);
+    }
+
+    #[test]
+    fn records_runtime_stats_for_layout_and_paint() {
+        let mut runtime = UiRuntime::new(PaintRecorder);
+        let mut display_list = DisplayList::new();
+
+        runtime
+            .layout(Constraints::UNBOUNDED)
+            .expect("layout succeeds");
+        runtime
+            .paint(&mut PaintContext::new(&mut display_list))
+            .expect("paint succeeds");
+
+        let stats = runtime.stats();
+        assert_eq!(stats.layout_passes(), 1);
+        assert_eq!(stats.paint_passes(), 1);
+        assert_eq!(stats.last_paint_command_count(), 1);
     }
 
     #[test]

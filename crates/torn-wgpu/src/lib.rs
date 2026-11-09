@@ -866,7 +866,7 @@ impl PreparedFrame {
             }
             for glyph in run.glyphs() {
                 let glyph_origin = glyph.position();
-                let bitmap = run.font().rasterize(glyph.glyph_id(), raster_size);
+                let bitmap = run.font().rasterize_cached(glyph.glyph_id(), raster_size);
                 for (index, coverage) in bitmap.coverage().iter().copied().enumerate() {
                     let x =
                         glyph_origin.x * self.scale_factor + usize_to_f32(index % bitmap.width());

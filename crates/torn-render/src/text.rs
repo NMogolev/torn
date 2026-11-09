@@ -1,7 +1,14 @@
+use std::{
+    collections::VecDeque,
+    sync::{Arc, Mutex, OnceLock},
+};
+
 use fontdue::layout::LayoutSettings;
 use torn_core::{Color, Point, Size};
 
 use crate::font::{DEFAULT_DPI, Font, FontDatabase, FontDescriptor, FontError, FontFace};
+
+const TEXT_LAYOUT_CACHE_CAPACITY: usize = 256;
 
 /// Styling information used by a text shaper.
 ///
@@ -237,10 +244,32 @@ pub trait TextShaper {
 /// pair kerning, and line metric calculation through `fontdue`. It does not
 /// implement complex OpenType shaping or bidirectional reordering. All
 /// registered faces are available as per-character fallbacks.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 pub struct FontdueTextShaper {
     database: FontDatabase,
     dpi: f32,
+    layout_generation: u64,
+    layouts: Arc<Mutex<TextLayoutCache>>,
+}
+
+#[derive(Debug, PartialEq)]
+struct TextLayoutKey {
+    text: String,
+    font: Font,
+    width: Option<u32>,
+    dpi: u32,
+    generation: u64,
+}
+
+#[derive(Debug, Default)]
+struct TextLayoutCache {
+    entries: VecDeque<(TextLayoutKey, Arc<TextLayout>)>,
+}
+
+impl PartialEq for FontdueTextShaper {
+    fn eq(&self, other: &Self) -> bool {
+        self.database == other.database && self.dpi == other.dpi
+    }
 }
 
 impl FontdueTextShaper {
@@ -250,6 +279,8 @@ impl FontdueTextShaper {
         Self {
             database: FontDatabase::with_default(font),
             dpi: DEFAULT_DPI,
+            layout_generation: 0,
+            layouts: Arc::new(Mutex::new(TextLayoutCache::default())),
         }
     }
 
@@ -265,6 +296,8 @@ impl FontdueTextShaper {
         Self {
             database,
             dpi: DEFAULT_DPI,
+            layout_generation: 0,
+            layouts: Arc::new(Mutex::new(TextLayoutCache::default())),
         }
     }
 
@@ -283,6 +316,8 @@ impl FontdueTextShaper {
         Self {
             database,
             dpi: DEFAULT_DPI,
+            layout_generation: 0,
+            layouts: Arc::new(Mutex::new(TextLayoutCache::default())),
         }
     }
 
@@ -293,7 +328,8 @@ impl FontdueTextShaper {
     }
 
     /// Returns mutable access to the shaper's font database.
-    pub const fn database_mut(&mut self) -> &mut FontDatabase {
+    pub fn database_mut(&mut self) -> &mut FontDatabase {
+        self.layout_generation = self.layout_generation.saturating_add(1);
         &mut self.database
     }
 
@@ -307,7 +343,9 @@ impl FontdueTextShaper {
         descriptor: FontDescriptor,
         bytes: impl Into<Vec<u8>>,
     ) -> Result<FontFace, FontError> {
-        self.database.add_font(descriptor, bytes)
+        let face = self.database.add_font(descriptor, bytes)?;
+        self.layout_generation = self.layout_generation.saturating_add(1);
+        Ok(face)
     }
 
     /// Returns the default face used when no family matches.
@@ -338,7 +376,11 @@ impl FontdueTextShaper {
     /// Creates a shaper using Torn's bundled Ubuntu Light font.
     #[must_use]
     pub fn ubuntu_light() -> Self {
-        Self::from_database(FontDatabase::bundled())
+        static UBUNTU_LIGHT: OnceLock<FontdueTextShaper> = OnceLock::new();
+
+        UBUNTU_LIGHT
+            .get_or_init(|| Self::from_database(FontDatabase::bundled()))
+            .clone()
     }
 
     /// Shapes `text` using this shaper's font database.
@@ -348,8 +390,32 @@ impl FontdueTextShaper {
     }
 }
 
-impl TextShaper for FontdueTextShaper {
-    fn layout(&self, text: &str, style: &TextStyle, width: Option<f32>) -> TextLayout {
+impl FontdueTextShaper {
+    fn cached_layout(&self, text: &str, style: &TextStyle, width: Option<f32>) -> TextLayout {
+        let key = TextLayoutKey {
+            text: text.to_owned(),
+            font: style.font().clone(),
+            width: width.map(f32::to_bits),
+            dpi: self.dpi.to_bits(),
+            generation: self.layout_generation,
+        };
+        let mut cache = self
+            .layouts
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some((_, layout)) = cache.entries.iter().find(|(entry, _)| entry == &key) {
+            return layout.as_ref().clone().with_color(style.color());
+        }
+        let layout = self.shape(text, style, width);
+        let layout = Arc::new(layout);
+        if cache.entries.len() == TEXT_LAYOUT_CACHE_CAPACITY {
+            cache.entries.pop_front();
+        }
+        cache.entries.push_back((key, Arc::clone(&layout)));
+        layout.as_ref().clone().with_color(style.color())
+    }
+
+    fn shape(&self, text: &str, style: &TextStyle, width: Option<f32>) -> TextLayout {
         let font_size = style.font.pixel_size(self.dpi);
         if text.is_empty() || !font_size.is_finite() || font_size <= 0.0 {
             return TextLayout::empty(text, style.color);
@@ -448,6 +514,12 @@ impl TextShaper for FontdueTextShaper {
             glyph_runs,
             lines,
         }
+    }
+}
+
+impl TextShaper for FontdueTextShaper {
+    fn layout(&self, text: &str, style: &TextStyle, width: Option<f32>) -> TextLayout {
+        self.cached_layout(text, style, width)
     }
 }
 
@@ -555,7 +627,7 @@ mod tests {
     use torn_core::Color;
 
     use super::{FontdueTextShaper, GlyphRun, TextStyle};
-    use crate::font::{Font, FontStyle, FontWeight};
+    use crate::font::{Font, FontFace, FontStyle, FontWeight};
 
     #[test]
     fn shapes_text_into_glyphs_and_line_metrics() {
@@ -634,6 +706,21 @@ mod tests {
 
         assert!(layout.lines().len() > 1);
         assert!(layout.size().height() > 16.0);
+    }
+
+    #[test]
+    fn reuses_cached_geometry_when_only_the_text_color_changes() {
+        let shaper = FontdueTextShaper::new(FontFace::ubuntu_light());
+        let black = shaper.layout("Torn", &TextStyle::new(16.0, Color::BLACK), None);
+        let white = shaper.layout("Torn", &TextStyle::new(16.0, Color::WHITE), None);
+        let cache = shaper
+            .layouts
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+
+        assert_eq!(black.size(), white.size());
+        assert_eq!(white.color(), Color::WHITE);
+        assert_eq!(cache.entries.len(), 1);
     }
 
     #[test]

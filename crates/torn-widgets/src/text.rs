@@ -1,5 +1,5 @@
 use torn_core::{Constraints, Rect};
-use torn_render::{FontdueTextShaper, PaintContext, TextLayout, TextShaper, TextStyle};
+use torn_render::{Font, FontdueTextShaper, PaintContext, TextLayout, TextShaper, TextStyle};
 use torn_ui::{LayoutContext, LayoutResult, StyleTarget, TssStyle, UiEnvironment, Widget};
 
 /// A widget that paints text.
@@ -16,6 +16,14 @@ struct TextSource {
     text: String,
     shaper: Option<FontdueTextShaper>,
     style: TextStyle,
+    last_layout: Option<TextLayoutRequest>,
+}
+
+#[derive(PartialEq)]
+struct TextLayoutRequest {
+    font: Font,
+    width: Option<f32>,
+    text_shaper_generation: Option<u64>,
 }
 
 impl Text {
@@ -42,6 +50,7 @@ impl Text {
                 text,
                 shaper: Some(shaper),
                 style,
+                last_layout: None,
             }),
         }
     }
@@ -61,6 +70,7 @@ impl Text {
                 text,
                 shaper: None,
                 style,
+                last_layout: None,
             }),
         }
     }
@@ -79,17 +89,30 @@ impl Widget for Text {
         constraints: Constraints,
     ) -> LayoutResult {
         let style = context.style();
-        if let Some(source) = &self.source {
+        if let Some(source) = &mut self.source {
             let max_width = constraints.max().width();
             let width = max_width.is_finite().then_some(max_width.max(0.0));
             let font = context.environment().font_from(source.style.font(), &style);
-            let text_style =
-                TextStyle::new_with_font(font, style.foreground.unwrap_or(source.style.color()));
-            let shaper: &dyn TextShaper = match &source.shaper {
-                Some(shaper) => shaper,
-                None => context.environment().text_shaper(),
+            let color = style.foreground.unwrap_or(source.style.color());
+            let request = TextLayoutRequest {
+                font,
+                width,
+                text_shaper_generation: source
+                    .shaper
+                    .is_none()
+                    .then(|| context.environment().text_shaper_generation()),
             };
-            self.layout = shaper.layout(&source.text, &text_style, width);
+            if source.last_layout.as_ref() != Some(&request) {
+                let shaper: &dyn TextShaper = match &source.shaper {
+                    Some(shaper) => shaper,
+                    None => context.environment().text_shaper(),
+                };
+                let text_style = TextStyle::new_with_font(request.font.clone(), color);
+                self.layout = shaper.layout(&source.text, &text_style, request.width);
+                source.last_layout = Some(request);
+            } else if self.layout.color() != color {
+                self.layout = self.layout.clone().with_color(color);
+            }
         } else if let Some(color) = style.foreground
             && self.layout.color() != color
         {
@@ -127,11 +150,28 @@ impl Widget for Text {
 
 #[cfg(test)]
 mod tests {
-    use torn_core::{Color, Constraints, Point};
-    use torn_render::{DisplayCommand, DisplayList, FontdueTextShaper, PaintContext, TextStyle};
-    use torn_ui::UiRuntime;
+    use std::{cell::Cell, rc::Rc};
+
+    use torn_core::{Color, Constraints, Point, Size};
+    use torn_render::{
+        DisplayCommand, DisplayList, FontdueTextShaper, PaintContext, TextLayout, TextShaper,
+        TextStyle,
+    };
+    use torn_ui::{UiEnvironment, UiRuntime};
 
     use super::Text;
+
+    struct CountingTextShaper {
+        calls: Rc<Cell<usize>>,
+        inner: FontdueTextShaper,
+    }
+
+    impl TextShaper for CountingTextShaper {
+        fn layout(&self, text: &str, style: &TextStyle, width: Option<f32>) -> TextLayout {
+            self.calls.set(self.calls.get() + 1);
+            self.inner.layout(text, style, width)
+        }
+    }
 
     #[test]
     fn uses_its_text_layout_for_layout_and_paint() {
@@ -179,5 +219,34 @@ mod tests {
 
         assert!(result.size().height() > 16.0);
         assert!(result.size().width() <= 30.0);
+    }
+
+    #[test]
+    fn avoids_reshaping_when_the_text_request_is_unchanged() {
+        let calls = Rc::new(Cell::new(0));
+        let mut environment = UiEnvironment::default();
+        environment.set_text_shaper(CountingTextShaper {
+            calls: Rc::clone(&calls),
+            inner: FontdueTextShaper::ubuntu_light(),
+        });
+        let mut runtime = UiRuntime::with_environment(
+            Text::styled("cached", TextStyle::new(16.0, Color::BLACK)),
+            environment,
+        );
+
+        runtime
+            .layout(Constraints::UNBOUNDED)
+            .expect("first layout succeeds");
+        runtime
+            .layout(Constraints::UNBOUNDED)
+            .expect("unchanged layout succeeds");
+        assert_eq!(calls.get(), 1);
+
+        runtime
+            .layout(Constraints::loose(
+                Size::new(40.0, 40.0).expect("valid constraints"),
+            ))
+            .expect("resized layout succeeds");
+        assert_eq!(calls.get(), 2);
     }
 }

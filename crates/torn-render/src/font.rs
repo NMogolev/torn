@@ -7,8 +7,9 @@
 //! on which font was selected.
 
 use std::{
+    collections::{HashMap, VecDeque},
     fmt,
-    sync::{Arc, OnceLock},
+    sync::{Arc, Mutex, OnceLock},
 };
 
 use fontdue::{Font as FontdueFont, FontSettings};
@@ -16,6 +17,8 @@ use fontdue::{Font as FontdueFont, FontSettings};
 /// The logical dots per inch used when a point size is resolved without an
 /// explicit DPI value.
 pub const DEFAULT_DPI: f32 = 96.0;
+
+const GLYPH_RASTER_CACHE_CAPACITY: usize = 512;
 
 /// A font family name.
 ///
@@ -433,6 +436,19 @@ pub struct FontFace {
     descriptor: FontDescriptor,
     data: Arc<[u8]>,
     kern_lookups: Vec<u16>,
+    glyph_rasters: Arc<Mutex<GlyphRasterCache>>,
+}
+
+#[derive(Clone, Copy, Eq, Hash, PartialEq)]
+struct GlyphRasterKey {
+    glyph_id: u16,
+    font_size: u32,
+}
+
+#[derive(Default)]
+struct GlyphRasterCache {
+    entries: HashMap<GlyphRasterKey, Arc<GlyphBitmap>>,
+    insertion_order: VecDeque<GlyphRasterKey>,
 }
 
 impl FontFace {
@@ -478,6 +494,7 @@ impl FontFace {
             descriptor,
             data: Arc::from(data),
             kern_lookups,
+            glyph_rasters: Arc::new(Mutex::new(GlyphRasterCache::default())),
         }
     }
 
@@ -538,12 +555,42 @@ impl FontFace {
     /// Rasterizes one glyph to an 8-bit coverage bitmap.
     #[must_use]
     pub fn rasterize(&self, glyph_id: u16, font_size: f32) -> GlyphBitmap {
+        self.rasterize_cached(glyph_id, font_size).as_ref().clone()
+    }
+
+    /// Rasterizes one glyph and shares the cached coverage bitmap between
+    /// repeated draws at the same physical pixel size.
+    ///
+    /// The cache is shared by cloned handles for this font face and retains up
+    /// to 512 glyph-size pairs. Its bounded FIFO eviction prevents arbitrary
+    /// text or scale changes from growing renderer memory without limit.
+    #[must_use]
+    pub fn rasterize_cached(&self, glyph_id: u16, font_size: f32) -> Arc<GlyphBitmap> {
+        let key = GlyphRasterKey {
+            glyph_id,
+            font_size: font_size.to_bits(),
+        };
+        let mut cache = self
+            .glyph_rasters
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(bitmap) = cache.entries.get(&key) {
+            return Arc::clone(bitmap);
+        }
         let (metrics, coverage) = self.inner.rasterize_indexed(glyph_id, font_size);
-        GlyphBitmap {
+        let bitmap = Arc::new(GlyphBitmap {
             width: metrics.width,
             height: metrics.height,
             coverage,
+        });
+        if cache.entries.len() == GLYPH_RASTER_CACHE_CAPACITY
+            && let Some(oldest) = cache.insertion_order.pop_front()
+        {
+            cache.entries.remove(&oldest);
         }
+        cache.insertion_order.push_back(key);
+        cache.entries.insert(key, Arc::clone(&bitmap));
+        bitmap
     }
 
     /// Returns the horizontal line metrics for `font_size` logical pixels.
@@ -893,6 +940,8 @@ const fn weight_distance(face: FontWeight, requested: FontWeight) -> u16 {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use super::{
         Font, FontDatabase, FontDescriptor, FontFace, FontFamily, FontSize, FontStyle, FontWeight,
     };
@@ -971,6 +1020,18 @@ mod tests {
         assert!(metrics.descent() > 0.0);
         assert!(metrics.height() > 0.0);
         assert!(face.metrics(0.0).is_none());
+    }
+
+    #[test]
+    fn caches_rasterized_glyphs_across_font_face_clones() {
+        let face = FontFace::ubuntu_light();
+        let clone = face.clone();
+        let glyph_id = face.font().lookup_glyph_index('T');
+
+        let first = face.rasterize_cached(glyph_id, 16.0);
+        let second = clone.rasterize_cached(glyph_id, 16.0);
+
+        assert!(Arc::ptr_eq(&first, &second));
     }
 
     #[test]
