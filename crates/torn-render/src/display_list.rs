@@ -35,6 +35,14 @@ impl DisplayList {
         self.commands.is_empty()
     }
 
+    /// Appends a copy of all commands from `other` in recording order.
+    ///
+    /// This is useful for retained runtimes that reuse an unchanged display
+    /// list while preserving commands already recorded by the caller.
+    pub fn extend_from(&mut self, other: &Self) {
+        self.commands.extend_from_slice(&other.commands);
+    }
+
     pub(crate) fn push(&mut self, command: DisplayCommand) {
         self.commands.push(command);
     }

@@ -10,7 +10,7 @@ use torn_core::{
     Constraints, Diagnostic, DiagnosticReporter, FocusChanged, InputEvent, Key, Modifiers,
     NamedKey, Point, PointerId, Rect, WidgetId,
 };
-use torn_render::PaintContext;
+use torn_render::{DisplayList, PaintContext};
 
 use crate::{
     EventContext, EventPhase, EventStatus, KeyboardCommand, LayoutResult, PseudoClass, StyleTarget,
@@ -167,6 +167,7 @@ pub struct UiRuntime {
     root: WidgetId,
     layout: Option<LayoutResult>,
     last_constraints: Option<Constraints>,
+    cached_display_list: Option<DisplayList>,
     diagnostics: Vec<Diagnostic>,
     reporter: Option<Box<dyn DiagnosticReporter>>,
     pointer_capture: HashMap<PointerId, WidgetId>,
@@ -236,6 +237,7 @@ impl UiRuntime {
             root: WidgetId::new(0, 0),
             layout: None,
             last_constraints: None,
+            cached_display_list: None,
             diagnostics: Vec::new(),
             reporter: None,
             pointer_capture: HashMap::new(),
@@ -429,6 +431,10 @@ impl UiRuntime {
     /// [`UiRuntimeError::InvalidLayout`] when a container positions an unknown,
     /// duplicate, or out-of-order child.
     pub fn layout(&mut self, constraints: Constraints) -> Result<&LayoutResult, UiRuntimeError> {
+        let can_reuse_layout = self.last_constraints == Some(constraints) && self.layout.is_some();
+        if can_reuse_layout {
+            return self.layout.as_ref().ok_or(UiRuntimeError::InvalidLayout);
+        }
         let started = Instant::now();
         match catch_unwind(AssertUnwindSafe(|| {
             self.style_tree();
@@ -499,11 +505,24 @@ impl UiRuntime {
         }
         let command_count_before = context.command_count();
         let started = Instant::now();
+        if let Some(cached) = &self.cached_display_list {
+            context.append_display_list(cached);
+            self.stats.record_paint(
+                started.elapsed(),
+                context.command_count().saturating_sub(command_count_before),
+            );
+            return Ok(());
+        }
+        let mut cached = DisplayList::new();
         let result = match catch_unwind(AssertUnwindSafe(|| {
             self.style_tree();
-            self.paint_node(self.root, context);
+            self.paint_node(self.root, &mut PaintContext::new(&mut cached));
         })) {
-            Ok(()) => Ok(()),
+            Ok(()) => {
+                context.append_display_list(&cached);
+                self.cached_display_list = Some(cached);
+                Ok(())
+            }
             Err(payload) => {
                 self.report_panic("paint", payload);
                 Err(UiRuntimeError::WidgetPanicked)
@@ -518,6 +537,7 @@ impl UiRuntime {
 
     /// Delivers an input event through capture, target, and bubble phases.
     pub fn dispatch_event(&mut self, event: &InputEvent) -> EventStatus {
+        self.invalidate_paint();
         if matches!(event, InputEvent::WindowFocusChanged(false)) {
             self.cancel_interactions();
             return EventStatus::Handled;
@@ -1106,6 +1126,7 @@ impl UiRuntime {
 
     fn invalidate_layout(&mut self) {
         self.layout = None;
+        self.cached_display_list = None;
         self.redraw_requested = true;
         for slot in &mut self.nodes {
             if let Some(node) = &mut slot.node {
@@ -1116,9 +1137,19 @@ impl UiRuntime {
 
     fn clear_layout_state(&mut self) {
         self.layout = None;
+        self.cached_display_list = None;
         self.pointer_capture.clear();
         self.hovered.clear();
         self.focused = None;
+    }
+
+    fn invalidate_paint(&mut self) {
+        self.cached_display_list = None;
+        for slot in &mut self.nodes {
+            if let Some(node) = &mut slot.node {
+                node.dirty.paint = true;
+            }
+        }
     }
 
     fn report_panic(&mut self, operation: &str, payload: Box<dyn Any + Send>) {
@@ -1212,6 +1243,10 @@ mod tests {
 
     struct PaintRecorder;
 
+    struct CountingPaintRecorder {
+        paints: Rc<Cell<usize>>,
+    }
+
     impl Widget for EnvironmentRecorder {
         fn layout(
             &mut self,
@@ -1249,6 +1284,17 @@ mod tests {
         }
 
         fn paint(&self, context: &mut PaintContext<'_>, _: &UiEnvironment, _: Rect) {
+            context.fill_rect(Rect::ZERO, Color::BLACK);
+        }
+    }
+
+    impl Widget for CountingPaintRecorder {
+        fn layout(&mut self, _: &mut LayoutContext<'_>, constraints: Constraints) -> LayoutResult {
+            LayoutResult::new(constraints.constrain(Size::ZERO))
+        }
+
+        fn paint(&self, context: &mut PaintContext<'_>, _: &UiEnvironment, _: Rect) {
+            self.paints.set(self.paints.get() + 1);
             context.fill_rect(Rect::ZERO, Color::BLACK);
         }
     }
@@ -1728,6 +1774,48 @@ mod tests {
         assert_eq!(stats.layout_passes(), 1);
         assert_eq!(stats.paint_passes(), 1);
         assert_eq!(stats.last_paint_command_count(), 1);
+    }
+
+    #[test]
+    fn reuses_layout_when_constraints_are_unchanged() {
+        let observed = Rc::new(RefCell::new(Vec::new()));
+        let mut runtime = UiRuntime::new(EnvironmentRecorder {
+            observed: Rc::clone(&observed),
+        });
+
+        runtime
+            .layout(Constraints::UNBOUNDED)
+            .expect("initial layout succeeds");
+        runtime
+            .layout(Constraints::UNBOUNDED)
+            .expect("cached layout succeeds");
+
+        assert_eq!(observed.borrow().len(), 1);
+        assert_eq!(runtime.stats().layout_passes(), 1);
+    }
+
+    #[test]
+    fn reuses_display_list_until_the_runtime_is_invalidated() {
+        let paints = Rc::new(Cell::new(0));
+        let mut runtime = UiRuntime::new(CountingPaintRecorder {
+            paints: Rc::clone(&paints),
+        });
+        let mut first = DisplayList::new();
+        let mut second = DisplayList::new();
+
+        runtime
+            .layout(Constraints::UNBOUNDED)
+            .expect("layout succeeds");
+        runtime
+            .paint(&mut PaintContext::new(&mut first))
+            .expect("initial paint succeeds");
+        runtime
+            .paint(&mut PaintContext::new(&mut second))
+            .expect("cached paint succeeds");
+
+        assert_eq!(paints.get(), 1);
+        assert_eq!(first, second);
+        assert_eq!(runtime.stats().paint_passes(), 2);
     }
 
     #[test]

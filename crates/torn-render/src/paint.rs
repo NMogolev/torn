@@ -19,6 +19,11 @@ impl<'a> PaintContext<'a> {
         self.display_list.len()
     }
 
+    /// Appends previously recorded commands to this context in their original order.
+    pub fn append_display_list(&mut self, display_list: &DisplayList) {
+        self.display_list.extend_from(display_list);
+    }
+
     /// Records a filled rectangle.
     pub fn fill_rect(&mut self, rect: Rect, color: Color) {
         self.display_list

@@ -3,8 +3,8 @@
 //! This renderer owns a presentable GPU surface and executes the same
 //! [`torn_render::DisplayList`] used by Torn's deterministic software renderer.
 //! Rectangles, rounded rectangles, borders, clipping, transforms, and rasterized
-//! text are composited by the GPU. The initial implementation intentionally
-//! prioritizes semantic parity and clarity over batching and glyph-atlas reuse.
+//! text are composited by the GPU. Geometry with identical clipping state is
+//! batched, while text shares a single atlas and bind group per renderer.
 
 use core::{fmt, ops::Range};
 use std::collections::HashMap;
@@ -12,6 +12,8 @@ use std::collections::HashMap;
 use bytemuck::{Pod, Zeroable};
 use torn_core::{Affine, Color, Point, Rect};
 use torn_render::{DisplayCommand, DisplayList, RasterImage, TextLayout, TextureId};
+
+const TEXT_ATLAS_SIZE: u32 = 2048;
 
 const SHAPE_SHADER: &str = r"
 struct VertexInput {
@@ -217,6 +219,8 @@ pub enum GpuRendererError {
     /// A display list referenced a texture that was not registered with this
     /// renderer.
     UnknownTexture,
+    /// Text for a frame does not fit in the fixed-size glyph atlas.
+    TextAtlasFull,
 }
 
 impl fmt::Display for GpuRendererError {
@@ -228,6 +232,7 @@ impl fmt::Display for GpuRendererError {
             Self::UnmatchedClipPop => "display list popped an empty clip stack",
             Self::UnmatchedSave => "display list ended with an unbalanced save",
             Self::UnknownTexture => "display list referenced an unregistered GPU texture",
+            Self::TextAtlasFull => "text for this frame exceeds the 2048 by 2048 glyph atlas",
         })
     }
 }
@@ -244,6 +249,8 @@ pub struct GpuRenderer {
     text_pipeline: wgpu::RenderPipeline,
     texture_pipeline: wgpu::RenderPipeline,
     texture_bind_group_layout: wgpu::BindGroupLayout,
+    text_atlas: wgpu::Texture,
+    text_atlas_bind_group: wgpu::BindGroup,
     external_textures: HashMap<TextureId, ExternalTexture>,
 }
 
@@ -310,6 +317,41 @@ impl GpuRenderer {
             config.format,
             &texture_bind_group_layout,
         );
+        let text_atlas = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("Torn glyph atlas"),
+            size: wgpu::Extent3d {
+                width: TEXT_ATLAS_SIZE,
+                height: TEXT_ATLAS_SIZE,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        let text_atlas_view = text_atlas.create_view(&wgpu::TextureViewDescriptor::default());
+        let text_atlas_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("Torn glyph atlas sampler"),
+            mag_filter: wgpu::FilterMode::Nearest,
+            min_filter: wgpu::FilterMode::Nearest,
+            ..Default::default()
+        });
+        let text_atlas_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Torn glyph atlas bind group"),
+            layout: &texture_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&text_atlas_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&text_atlas_sampler),
+                },
+            ],
+        });
 
         Ok(Self {
             surface,
@@ -320,6 +362,8 @@ impl GpuRenderer {
             text_pipeline,
             texture_pipeline,
             texture_bind_group_layout,
+            text_atlas,
+            text_atlas_bind_group,
             external_textures: HashMap::new(),
         })
     }
@@ -454,11 +498,9 @@ impl GpuRenderer {
                 &prepared.shape_vertices,
             )
         });
-        let text_draws = prepared
-            .texts
-            .iter()
-            .map(|draw| self.create_text_draw(draw))
-            .collect::<Vec<_>>();
+        let text_batch = self.create_text_batch(&prepared.texts)?;
+        let text_buffer = (!text_batch.vertices.is_empty())
+            .then(|| create_buffer(&self.device, "Torn text vertices", &text_batch.vertices));
         let texture_buffer = (!prepared.texture_vertices.is_empty()).then(|| {
             create_buffer(
                 &self.device,
@@ -493,12 +535,14 @@ impl GpuRenderer {
                     pass.draw(draw.vertices.clone(), 0..1);
                 }
             }
-            pass.set_pipeline(&self.text_pipeline);
-            for draw in &text_draws {
-                set_scissor(&mut pass, draw.scissor);
-                pass.set_bind_group(0, &draw.bind_group, &[]);
-                pass.set_vertex_buffer(0, draw.vertices.slice(..));
-                pass.draw(0..6, 0..1);
+            if let Some(buffer) = &text_buffer {
+                pass.set_pipeline(&self.text_pipeline);
+                pass.set_bind_group(0, &self.text_atlas_bind_group, &[]);
+                pass.set_vertex_buffer(0, buffer.slice(..));
+                for draw in &text_batch.draws {
+                    set_scissor(&mut pass, draw.scissor);
+                    pass.draw(draw.vertices.clone(), 0..1);
+                }
             }
             if let Some(buffer) = &texture_buffer {
                 pass.set_pipeline(&self.texture_pipeline);
@@ -519,69 +563,69 @@ impl GpuRenderer {
         Ok(())
     }
 
-    fn create_text_draw(&self, draw: &PreparedText) -> TextDraw {
-        let texture = self.device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("Torn glyph texture"),
-            size: wgpu::Extent3d {
-                width: draw.width,
-                height: draw.height,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba8Unorm,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-            view_formats: &[],
-        });
-        self.queue.write_texture(
-            wgpu::TexelCopyTextureInfo {
-                texture: &texture,
-                mip_level: 0,
-                origin: wgpu::Origin3d::ZERO,
-                aspect: wgpu::TextureAspect::All,
-            },
-            &draw.pixels,
-            wgpu::TexelCopyBufferLayout {
-                offset: 0,
-                bytes_per_row: Some(draw.width * 4),
-                rows_per_image: Some(draw.height),
-            },
-            wgpu::Extent3d {
-                width: draw.width,
-                height: draw.height,
-                depth_or_array_layers: 1,
-            },
-        );
-        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-        let sampler = self.device.create_sampler(&wgpu::SamplerDescriptor {
-            label: Some("Torn glyph sampler"),
-            mag_filter: wgpu::FilterMode::Nearest,
-            min_filter: wgpu::FilterMode::Nearest,
-            ..Default::default()
-        });
-        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("Torn glyph bind group"),
-            layout: &self.texture_bind_group_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(&view),
+    fn create_text_batch(&self, texts: &[PreparedText]) -> Result<TextBatch, GpuRendererError> {
+        let mut batch = TextBatch::default();
+        let (mut cursor_x, mut cursor_y, mut row_height): (u32, u32, u32) = (0, 0, 0);
+        for text in texts {
+            if text.width > TEXT_ATLAS_SIZE || text.height > TEXT_ATLAS_SIZE {
+                return Err(GpuRendererError::TextAtlasFull);
+            }
+            if cursor_x + text.width > TEXT_ATLAS_SIZE {
+                cursor_x = 0;
+                cursor_y = cursor_y.saturating_add(row_height);
+                row_height = 0;
+            }
+            if cursor_y + text.height > TEXT_ATLAS_SIZE {
+                return Err(GpuRendererError::TextAtlasFull);
+            }
+            self.queue.write_texture(
+                wgpu::TexelCopyTextureInfo {
+                    texture: &self.text_atlas,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d {
+                        x: cursor_x,
+                        y: cursor_y,
+                        z: 0,
+                    },
+                    aspect: wgpu::TextureAspect::All,
                 },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::Sampler(&sampler),
+                &text.pixels,
+                wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(text.width * 4),
+                    rows_per_image: Some(text.height),
                 },
-            ],
-        });
-        TextDraw {
-            vertices: create_buffer(&self.device, "Torn text vertices", &draw.vertices),
-            bind_group,
-            scissor: draw.scissor,
-            _texture: texture,
-            _view: view,
-            _sampler: sampler,
+                wgpu::Extent3d {
+                    width: text.width,
+                    height: text.height,
+                    depth_or_array_layers: 1,
+                },
+            );
+            let start = u32::try_from(batch.vertices.len())
+                .map_err(|_| GpuRendererError::NonFiniteGeometry)?;
+            let atlas_size = u32_to_f32(TEXT_ATLAS_SIZE);
+            let u0 = u32_to_f32(cursor_x) / atlas_size;
+            let v0 = u32_to_f32(cursor_y) / atlas_size;
+            let u1 = u32_to_f32(cursor_x + text.width) / atlas_size;
+            let v1 = u32_to_f32(cursor_y + text.height) / atlas_size;
+            for (vertex, uv) in text.vertices.iter().zip([
+                [u0, v0],
+                [u1, v0],
+                [u0, v1],
+                [u0, v1],
+                [u1, v0],
+                [u1, v1],
+            ]) {
+                batch.vertices.push(TextVertex {
+                    position: vertex.position,
+                    uv,
+                });
+            }
+            batch.push_draw(start..start + 6, text.scissor);
+            cursor_x += text.width;
+            row_height = row_height.max(text.height);
         }
+        Ok(batch)
     }
 }
 
@@ -656,13 +700,23 @@ struct PreparedTexture {
     scissor: Scissor,
 }
 
-struct TextDraw {
-    vertices: wgpu::Buffer,
-    bind_group: wgpu::BindGroup,
-    scissor: Scissor,
-    _texture: wgpu::Texture,
-    _view: wgpu::TextureView,
-    _sampler: wgpu::Sampler,
+#[derive(Default)]
+struct TextBatch {
+    vertices: Vec<TextVertex>,
+    draws: Vec<ShapeDraw>,
+}
+
+impl TextBatch {
+    fn push_draw(&mut self, vertices: Range<u32>, scissor: Scissor) {
+        if let Some(previous) = self.draws.last_mut()
+            && previous.scissor == scissor
+            && previous.vertices.end == vertices.start
+        {
+            previous.vertices.end = vertices.end;
+            return;
+        }
+        self.draws.push(ShapeDraw { vertices, scissor });
+    }
 }
 
 struct ExternalTexture {
@@ -683,6 +737,19 @@ struct PreparedFrame {
     textures: Vec<PreparedTexture>,
     state: RenderState,
     saved_states: Vec<RenderState>,
+}
+
+impl PreparedFrame {
+    fn push_shape_draw(&mut self, vertices: Range<u32>, scissor: Scissor) {
+        if let Some(previous) = self.shapes.last_mut()
+            && previous.scissor == scissor
+            && previous.vertices.end == vertices.start
+        {
+            previous.vertices.end = vertices.end;
+            return;
+        }
+        self.shapes.push(ShapeDraw { vertices, scissor });
+    }
 }
 
 impl PreparedFrame {
@@ -839,10 +906,7 @@ impl PreparedFrame {
         let end = start
             .checked_add(6)
             .ok_or(GpuRendererError::NonFiniteGeometry)?;
-        self.shapes.push(ShapeDraw {
-            vertices: start..end,
-            scissor: self.scissor(),
-        });
+        self.push_shape_draw(start..end, self.scissor());
         Ok(())
     }
 
@@ -1049,7 +1113,7 @@ impl PreparedFrame {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Eq, PartialEq)]
 struct Scissor {
     x: u32,
     y: u32,
@@ -1367,7 +1431,7 @@ fn u32_to_f32(value: u32) -> f32 {
 
 #[cfg(test)]
 mod tests {
-    use torn_core::{Point, Rect, Size};
+    use torn_core::{Color, Point, Rect, Size};
     use torn_render::PaintContext;
 
     use super::{DisplayList, PreparedFrame, TextureId};
@@ -1388,5 +1452,29 @@ mod tests {
 
         assert_eq!(frame.textures.len(), 1);
         assert_eq!(frame.texture_vertices.len(), 6);
+    }
+
+    #[test]
+    fn batches_consecutive_shapes_with_the_same_scissor() {
+        let mut list = DisplayList::new();
+        let mut paint = PaintContext::new(&mut list);
+        paint.fill_rect(
+            Rect::new(Point::ZERO, Size::new(10.0, 10.0).expect("valid size")),
+            Color::BLACK,
+        );
+        paint.fill_rect(
+            Rect::new(
+                Point::new(12.0, 0.0),
+                Size::new(10.0, 10.0).expect("valid size"),
+            ),
+            Color::WHITE,
+        );
+        let mut frame = PreparedFrame::new(100, 100, 1.0);
+
+        frame.record(&list).expect("valid display list");
+
+        assert_eq!(frame.shape_vertices.len(), 12);
+        assert_eq!(frame.shapes.len(), 1);
+        assert_eq!(frame.shapes[0].vertices, 0..12);
     }
 }
