@@ -2,7 +2,7 @@
 //!
 //! Run with `cargo run -p torn --example calculator`.
 
-use std::{cell::RefCell, rc::Rc};
+use std::{cell::RefCell, rc::Rc, time::Instant};
 
 use torn::{
     Color, Constraints, DockArea, DockAxis, EventContext, EventPhase, EventStatus, InputEvent, Key,
@@ -142,6 +142,7 @@ impl Theme for StudioTheme {
 #[derive(Default)]
 struct Metrics {
     frames: u64,
+    fps: f64,
     commands: usize,
     paint_micros: u128,
 }
@@ -155,6 +156,7 @@ struct CalculatorApp {
     size: Size,
     state: Rc<RefCell<StudioState>>,
     metrics: Rc<RefCell<Metrics>>,
+    previous_frame: Option<Instant>,
 }
 
 impl CalculatorApp {
@@ -206,6 +208,7 @@ impl CalculatorApp {
             size,
             state,
             metrics,
+            previous_frame: None,
         };
         app.layout(size);
         app
@@ -243,11 +246,21 @@ impl WindowApplication for CalculatorApp {
                     WindowAction::None
                 }
             }
-            WindowEvent::RedrawRequested => WindowAction::None,
+            WindowEvent::Maximized(_)
+            | WindowEvent::Fullscreen(_)
+            | WindowEvent::RedrawRequested => WindowAction::RequestRedraw,
         }
     }
 
     fn redraw(&mut self) -> DisplayList {
+        let now = Instant::now();
+        if let Some(previous_frame) = self.previous_frame.replace(now) {
+            let elapsed = now.saturating_duration_since(previous_frame);
+            if !elapsed.is_zero() {
+                self.metrics.borrow_mut().fps = elapsed.as_secs_f64().recip();
+            }
+        }
+        self.runtime.invalidate_paint();
         let mut display_list = DisplayList::new();
         let _ = self
             .runtime
@@ -312,7 +325,7 @@ impl Widget for StudioShell {
             Point::new(bounds.origin.x + 22.0, bounds.origin.y + 19.0),
         );
         let theme = self.state.borrow().theme.name();
-        let label = format!("{} palette  ·  drag splitters  ·  switch tabs", theme);
+        let label = format!("{theme} palette  ·  drag splitters  ·  switch tabs");
         draw_text(
             context,
             &shaper,
@@ -349,6 +362,7 @@ impl Widget for MetricsPanel {
         );
         let rows = [
             ("Frames recorded", metrics.frames.to_string()),
+            ("Frame rate", format!("{:.1} FPS", metrics.fps)),
             ("Display commands", metrics.commands.to_string()),
             ("Paint recording", format!("{} μs", metrics.paint_micros)),
             ("CPU / GPU / RAM", "not exposed by Torn yet".to_owned()),
@@ -658,8 +672,8 @@ impl Calculator {
     }
 
     fn clear(&mut self) {
-        self.display = "0".to_owned();
-        self.expression = "READY".to_owned();
+        "0".clone_into(&mut self.display);
+        "READY".clone_into(&mut self.expression);
         self.stored = None;
         self.pending = None;
         self.fresh = true;
@@ -682,7 +696,7 @@ impl Calculator {
 
     fn push_decimal(&mut self) {
         if self.fresh || self.error {
-            self.display = "0".to_owned();
+            "0".clone_into(&mut self.display);
             self.error = false;
         }
         if !self.display.contains('.') {
@@ -698,12 +712,11 @@ impl Calculator {
         if let (Some(stored), Some(pending)) = (self.stored, self.pending)
             && !self.fresh
         {
-            match calculate(stored, current, pending) {
-                Some(result) => self.display = format_number(result),
-                None => {
-                    self.show_error();
-                    return;
-                }
+            if let Some(result) = calculate(stored, current, pending) {
+                self.display = format_number(result);
+            } else {
+                self.show_error();
+                return;
             }
         }
         self.stored = self.value();
@@ -736,8 +749,8 @@ impl Calculator {
     }
 
     fn show_error(&mut self) {
-        self.display = "Error".to_owned();
-        self.expression = "DIVISION BY ZERO".to_owned();
+        "Error".clone_into(&mut self.display);
+        "DIVISION BY ZERO".clone_into(&mut self.expression);
         self.stored = None;
         self.pending = None;
         self.fresh = true;
@@ -750,7 +763,7 @@ impl Calculator {
             .flatten()
     }
 
-    fn key_at(&self, bounds: Rect, point: Point) -> Option<CalculatorKey> {
+    fn key_at(bounds: Rect, point: Point) -> Option<CalculatorKey> {
         let layout = CalculatorLayout::new(bounds);
         KEYS.iter().enumerate().find_map(|(row, keys)| {
             keys.iter().enumerate().find_map(|(column, (key, _))| {
@@ -855,7 +868,7 @@ impl Widget for Calculator {
         let key = match event {
             InputEvent::PointerDown(pointer) => {
                 context.request_focus();
-                self.key_at(Rect::new(Point::ZERO, self.size), pointer.position)
+                Self::key_at(Rect::new(Point::ZERO, self.size), pointer.position)
             }
             InputEvent::TextInput(text) => text.chars().find_map(key_from_character),
             InputEvent::KeyDown(event) => match event.key {
@@ -863,7 +876,7 @@ impl Widget for Calculator {
                     if !self.fresh && !self.error {
                         self.display.pop();
                         if self.display.is_empty() || self.display == "-" {
-                            self.display = "0".to_owned();
+                            "0".clone_into(&mut self.display);
                             self.fresh = true;
                         }
                     }
@@ -902,8 +915,8 @@ struct CalculatorLayout {
 impl CalculatorLayout {
     fn new(bounds: Rect) -> Self {
         let margin = (bounds.size.width().min(bounds.size.height()) * 0.055).clamp(16.0, 28.0);
-        let width = (bounds.size.width() - margin * 2.0).max(0.0).min(404.0);
-        let height = (bounds.size.height() - margin * 2.0).max(0.0).min(664.0);
+        let width = (bounds.size.width() - margin * 2.0).clamp(0.0, 404.0);
+        let height = (bounds.size.height() - margin * 2.0).clamp(0.0, 664.0);
         let card = Rect::new(
             Point::new(
                 bounds.origin.x + (bounds.size.width() - width) / 2.0,
@@ -978,7 +991,6 @@ fn calculate(left: f64, right: f64, operator: char) -> Option<f64> {
         '-' => left - right,
         '*' => left * right,
         '/' if right != 0.0 => left / right,
-        '/' => return None,
         _ => return None,
     };
     value.is_finite().then_some(value)

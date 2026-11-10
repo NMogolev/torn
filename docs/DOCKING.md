@@ -96,6 +96,6 @@ on a stylesheet parser. The future `.tss` layer resolves a cascade into the
 same typed values, so adopting CSS-like styles later does not alter layout or
 persistence data.
 
-The initial theme contract is intentionally compact. Dock-tab, splitter, and
-title-bar-specific colors will be introduced only once their state model and
-contrast requirements are known.
+Custom window chrome has its own semantic values: `title_bar_background`,
+`title_bar_foreground`, `title_bar_hover_background`, `muted_foreground`, and
+`danger`. See [WINDOW_CHROME.md](WINDOW_CHROME.md) for the title-bar contract.

@@ -161,6 +161,7 @@ impl WindowApplication for WorkspaceDemo {
                     WindowAction::None
                 }
             }
+            WindowEvent::Maximized(_) | WindowEvent::Fullscreen(_) => WindowAction::RequestRedraw,
             WindowEvent::RedrawRequested => WindowAction::None,
         }
     }

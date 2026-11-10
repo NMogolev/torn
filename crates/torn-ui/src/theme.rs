@@ -16,6 +16,50 @@ pub trait Theme {
     /// Highlight color for focused and selected controls.
     fn accent(&self) -> Color;
 
+    /// Foreground color for secondary labels and hints.
+    ///
+    /// The default derives a slightly transparent version of
+    /// [`Self::foreground`] so existing themes remain usable without changes.
+    fn muted_foreground(&self) -> Color {
+        let foreground = self.foreground();
+        Color::rgba(
+            foreground.red,
+            foreground.green,
+            foreground.blue,
+            foreground.alpha * 0.7,
+        )
+    }
+
+    /// Color that communicates success or a positive state.
+    fn success(&self) -> Color {
+        Color::rgba8(46, 204, 113, 255)
+    }
+
+    /// Color that communicates a warning.
+    fn warning(&self) -> Color {
+        Color::rgba8(241, 196, 15, 255)
+    }
+
+    /// Color that communicates danger or a destructive action.
+    fn danger(&self) -> Color {
+        Color::rgba8(231, 76, 60, 255)
+    }
+
+    /// Background color for a custom title bar.
+    fn title_bar_background(&self) -> Color {
+        self.control_background()
+    }
+
+    /// Foreground color for a custom title bar.
+    fn title_bar_foreground(&self) -> Color {
+        self.foreground()
+    }
+
+    /// Hover background for a title-bar window control.
+    fn title_bar_hover_background(&self) -> Color {
+        self.control_hover_background()
+    }
+
     /// Default background color for an interactive control surface.
     ///
     /// This is a neutral control surface, not "the button color": menu bars,
@@ -123,6 +167,30 @@ impl Theme for DarkTheme {
         Color::rgba8(70, 70, 70, 255)
     }
 
+    fn muted_foreground(&self) -> Color {
+        Color::rgba8(150, 150, 150, 255)
+    }
+
+    fn success(&self) -> Color {
+        Color::rgba8(46, 204, 113, 255)
+    }
+
+    fn warning(&self) -> Color {
+        Color::rgba8(241, 196, 15, 255)
+    }
+
+    fn danger(&self) -> Color {
+        Color::rgba8(232, 17, 35, 255)
+    }
+
+    fn title_bar_background(&self) -> Color {
+        Color::rgba8(24, 24, 24, 255)
+    }
+
+    fn title_bar_hover_background(&self) -> Color {
+        Color::rgba8(45, 45, 45, 255)
+    }
+
     fn spacing(&self) -> f32 {
         8.0
     }
@@ -163,6 +231,30 @@ impl Theme for LightTheme {
 
     fn control_hover_background(&self) -> Color {
         Color::rgba8(225, 225, 225, 255)
+    }
+
+    fn muted_foreground(&self) -> Color {
+        Color::rgba8(100, 100, 100, 255)
+    }
+
+    fn success(&self) -> Color {
+        Color::rgba8(39, 174, 96, 255)
+    }
+
+    fn warning(&self) -> Color {
+        Color::rgba8(230, 126, 34, 255)
+    }
+
+    fn danger(&self) -> Color {
+        Color::rgba8(196, 43, 28, 255)
+    }
+
+    fn title_bar_background(&self) -> Color {
+        Color::rgba8(240, 240, 240, 255)
+    }
+
+    fn title_bar_hover_background(&self) -> Color {
+        Color::rgba8(220, 220, 220, 255)
     }
 
     fn spacing(&self) -> f32 {
@@ -258,6 +350,55 @@ impl Theme for SystemTheme {
         match self.appearance {
             SystemAppearance::Light => LightTheme.control_hover_background(),
             SystemAppearance::Dark => DarkTheme.control_hover_background(),
+        }
+    }
+
+    fn muted_foreground(&self) -> Color {
+        match self.appearance {
+            SystemAppearance::Light => LightTheme.muted_foreground(),
+            SystemAppearance::Dark => DarkTheme.muted_foreground(),
+        }
+    }
+
+    fn success(&self) -> Color {
+        match self.appearance {
+            SystemAppearance::Light => LightTheme.success(),
+            SystemAppearance::Dark => DarkTheme.success(),
+        }
+    }
+
+    fn warning(&self) -> Color {
+        match self.appearance {
+            SystemAppearance::Light => LightTheme.warning(),
+            SystemAppearance::Dark => DarkTheme.warning(),
+        }
+    }
+
+    fn danger(&self) -> Color {
+        match self.appearance {
+            SystemAppearance::Light => LightTheme.danger(),
+            SystemAppearance::Dark => DarkTheme.danger(),
+        }
+    }
+
+    fn title_bar_background(&self) -> Color {
+        match self.appearance {
+            SystemAppearance::Light => LightTheme.title_bar_background(),
+            SystemAppearance::Dark => DarkTheme.title_bar_background(),
+        }
+    }
+
+    fn title_bar_foreground(&self) -> Color {
+        match self.appearance {
+            SystemAppearance::Light => LightTheme.title_bar_foreground(),
+            SystemAppearance::Dark => DarkTheme.title_bar_foreground(),
+        }
+    }
+
+    fn title_bar_hover_background(&self) -> Color {
+        match self.appearance {
+            SystemAppearance::Light => LightTheme.title_bar_hover_background(),
+            SystemAppearance::Dark => DarkTheme.title_bar_hover_background(),
         }
     }
 

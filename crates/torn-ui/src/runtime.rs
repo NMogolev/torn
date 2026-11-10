@@ -14,7 +14,7 @@ use torn_render::{DisplayList, PaintContext};
 
 use crate::{
     EventContext, EventPhase, EventStatus, KeyboardCommand, LayoutResult, PseudoClass, StyleTarget,
-    TssStyle, UiEnvironment, Widget, event,
+    TssStyle, UiEnvironment, Widget, WindowCommand, event,
 };
 use event::{EventEffects, FocusRequest};
 
@@ -174,6 +174,7 @@ pub struct UiRuntime {
     hovered: HashMap<PointerId, WidgetId>,
     focused: Option<WidgetId>,
     commands: Vec<KeyboardCommand>,
+    window_commands: Vec<WindowCommand>,
     redraw_requested: bool,
     environment: UiEnvironment,
     stats: RuntimeStats,
@@ -244,6 +245,7 @@ impl UiRuntime {
             hovered: HashMap::new(),
             focused: None,
             commands: Vec::new(),
+            window_commands: Vec::new(),
             redraw_requested: true,
             environment,
             stats: RuntimeStats::default(),
@@ -271,6 +273,20 @@ impl UiRuntime {
     pub fn environment_mut(&mut self) -> &mut UiEnvironment {
         self.invalidate_layout();
         &mut self.environment
+    }
+
+    /// Invalidates retained paint output without recomputing layout.
+    ///
+    /// Use this when external state read by [`Widget::paint`] changed but it
+    /// cannot affect geometry, such as a clock or performance counter.
+    pub fn invalidate_paint(&mut self) {
+        self.cached_display_list = None;
+        self.redraw_requested = true;
+        for slot in &mut self.nodes {
+            if let Some(node) = &mut slot.node {
+                node.dirty.paint = true;
+            }
+        }
     }
 
     /// Returns the stable handle of the root node.
@@ -489,6 +505,15 @@ impl UiRuntime {
         std::mem::replace(&mut self.redraw_requested, false)
     }
 
+    /// Drains native window operations requested by widgets.
+    ///
+    /// Host applications translate these intents into their platform adapter's
+    /// window actions. The vector preserves request order.
+    #[must_use]
+    pub fn take_window_commands(&mut self) -> Vec<WindowCommand> {
+        std::mem::take(&mut self.window_commands)
+    }
+
     /// Records paint operations for the retained tree.
     ///
     /// # Errors
@@ -562,6 +587,7 @@ impl UiRuntime {
             focus_request: None,
             layout_requested: false,
             redraw_requested: false,
+            window_commands: Vec::new(),
         };
         let mut handled = EventStatus::Ignored;
 
@@ -841,6 +867,7 @@ impl UiRuntime {
             focus_request: None,
             layout_requested: false,
             redraw_requested: false,
+            window_commands: Vec::new(),
         };
         let route = self.route_to(target);
         let mut handled = EventStatus::Ignored;
@@ -1023,6 +1050,7 @@ impl UiRuntime {
         }
         self.pointer_capture = effects.pointer_capture;
         self.redraw_requested |= effects.redraw_requested;
+        self.window_commands.append(&mut effects.window_commands);
         if effects.layout_requested {
             self.invalidate_layout();
         }
@@ -1054,6 +1082,7 @@ impl UiRuntime {
                 focus_request: None,
                 layout_requested: false,
                 redraw_requested: false,
+                window_commands: Vec::new(),
             };
             let _ = self.dispatch_to(
                 target,
@@ -1141,15 +1170,6 @@ impl UiRuntime {
         self.pointer_capture.clear();
         self.hovered.clear();
         self.focused = None;
-    }
-
-    fn invalidate_paint(&mut self) {
-        self.cached_display_list = None;
-        for slot in &mut self.nodes {
-            if let Some(node) = &mut slot.node {
-                node.dirty.paint = true;
-            }
-        }
     }
 
     fn report_panic(&mut self, operation: &str, payload: Box<dyn Any + Send>) {
@@ -1816,6 +1836,30 @@ mod tests {
         assert_eq!(paints.get(), 1);
         assert_eq!(first, second);
         assert_eq!(runtime.stats().paint_passes(), 2);
+    }
+
+    #[test]
+    fn paint_invalidation_rebuilds_the_cached_display_list() {
+        let paints = Rc::new(Cell::new(0));
+        let mut runtime = UiRuntime::new(CountingPaintRecorder {
+            paints: Rc::clone(&paints),
+        });
+        let mut display_list = DisplayList::new();
+
+        runtime
+            .layout(Constraints::UNBOUNDED)
+            .expect("layout succeeds");
+        runtime
+            .paint(&mut PaintContext::new(&mut display_list))
+            .expect("initial paint succeeds");
+        assert!(runtime.take_redraw_request());
+        runtime.invalidate_paint();
+        runtime
+            .paint(&mut PaintContext::new(&mut DisplayList::new()))
+            .expect("invalidated paint succeeds");
+
+        assert_eq!(paints.get(), 2);
+        assert!(runtime.take_redraw_request());
     }
 
     #[test]

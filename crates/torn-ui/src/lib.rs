@@ -22,7 +22,7 @@ pub use torn_render::{
 pub use column::Column;
 pub use command::{KeyChord, KeyboardCommand};
 pub use environment::UiEnvironment;
-pub use event::{EventContext, EventPhase, EventStatus};
+pub use event::{EventContext, EventPhase, EventStatus, ResizeEdge, WindowCommand};
 pub use layout::{ChildLayout, LayoutResult};
 pub use row::Row;
 pub use runtime::{DirtyFlags, LayoutContext, RuntimeStats, UiRuntime, UiRuntimeError};

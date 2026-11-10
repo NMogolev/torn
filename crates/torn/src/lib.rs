@@ -13,15 +13,16 @@ pub use torn_ui::{
     Border, ChildLayout, Column, DEFAULT_DPI, DarkTheme, DirtyFlags, EventContext, EventPhase,
     EventStatus, Font, FontDatabase, FontDescriptor, FontFamily, FontMetrics, FontSize, FontStyle,
     FontWeight, KeyChord, KeyboardCommand, LayoutContext, LayoutResult, LightTheme, PseudoClass,
-    Row, RuntimeStats, Selector, Signal, StyleRule, StyleSheet, StyleTarget, Styled, Subscription,
-    SurfaceStyle, SystemAppearance, SystemTheme, Theme, TssError, TssStyle, TssTheme,
-    UiEnvironment, UiRuntime, UiRuntimeError, Widget,
+    ResizeEdge, Row, RuntimeStats, Selector, Signal, StyleRule, StyleSheet, StyleTarget, Styled,
+    Subscription, SurfaceStyle, SystemAppearance, SystemTheme, Theme, TssError, TssStyle, TssTheme,
+    UiEnvironment, UiRuntime, UiRuntimeError, Widget, WindowCommand,
 };
 pub use torn_widgets::{
-    Align, Alignment, Box, Button, ButtonStyle, Checkbox, ComboBox, Container, DockArea,
-    DockAreaError, DockItem, Dropdown, Image, ListView, MenuBar, Padding, ProgressBar, RadioButton,
-    RadioGroup, ScrollAxis, ScrollView, SizedBox, Slider, SplitAxis, Splitter, Stack, TabBar, Text,
-    TextField, TextInput, Toolbar,
+    Align, Alignment, Badge, BadgeTone, Box, Button, ButtonStyle, Card, CardStyle, Checkbox,
+    ComboBox, Container, Divider, DividerAxis, DockArea, DockAreaError, DockItem, Dropdown, Image,
+    ListView, MenuBar, Padding, ProgressBar, RadioButton, RadioGroup, ScrollAxis, ScrollView,
+    SizedBox, Slider, SplitAxis, Splitter, Stack, Switch, TabBar, Text, TextField, TextInput,
+    TitleBar, TitleBarStyle, Toolbar, WindowChromeState, WindowControl, WindowFrame,
 };
 pub use torn_workspace::{
     DockAxis, DocumentId, DocumentPresentation, FloatingDocument, FloatingPanel, LayoutNode,
@@ -31,7 +32,36 @@ pub use torn_workspace::{
 
 /// Platform-independent native-window contracts.
 pub mod platform {
-    pub use torn_platform::{WindowAction, WindowApplication, WindowEvent, WindowOptions};
+    pub use torn_platform::{
+        WindowAction, WindowApplication, WindowEvent, WindowOptions, WindowResizeDirection,
+    };
+
+    use torn_ui::{ResizeEdge, WindowCommand};
+
+    /// Translates a widget window request into a native-window action.
+    ///
+    /// Host applications normally call this after draining
+    /// [`torn_ui::UiRuntime::take_window_commands`].
+    #[must_use]
+    pub fn action_for(command: WindowCommand) -> WindowAction {
+        match command {
+            WindowCommand::StartDrag => WindowAction::StartDrag,
+            WindowCommand::Minimize => WindowAction::Minimize,
+            WindowCommand::ToggleMaximize => WindowAction::ToggleMaximize,
+            WindowCommand::ToggleFullscreen => WindowAction::ToggleFullscreen,
+            WindowCommand::Close => WindowAction::Exit,
+            WindowCommand::StartResize(edge) => WindowAction::StartResize(match edge {
+                ResizeEdge::Top => WindowResizeDirection::North,
+                ResizeEdge::Bottom => WindowResizeDirection::South,
+                ResizeEdge::Left => WindowResizeDirection::West,
+                ResizeEdge::Right => WindowResizeDirection::East,
+                ResizeEdge::TopLeft => WindowResizeDirection::NorthWest,
+                ResizeEdge::TopRight => WindowResizeDirection::NorthEast,
+                ResizeEdge::BottomLeft => WindowResizeDirection::SouthWest,
+                ResizeEdge::BottomRight => WindowResizeDirection::SouthEast,
+            }),
+        }
+    }
 }
 
 /// Backend-neutral display-list and text-shaping contracts.

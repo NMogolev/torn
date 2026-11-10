@@ -88,6 +88,7 @@ impl WindowApplication for HelloTorn {
                     WindowAction::None
                 }
             }
+            WindowEvent::Maximized(_) | WindowEvent::Fullscreen(_) => WindowAction::RequestRedraw,
             WindowEvent::RedrawRequested => WindowAction::None,
         }
     }

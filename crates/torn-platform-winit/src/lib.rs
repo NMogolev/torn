@@ -10,7 +10,9 @@ use torn_core::{
     InputEvent, Key, KeyCode, KeyEvent, Modifiers, NamedKey, Point, PointerButton, PointerButtons,
     PointerEvent, PointerId, Size, TextPreedit, WheelDelta, WheelEvent,
 };
-use torn_platform::{WindowAction, WindowApplication, WindowEvent, WindowOptions};
+use torn_platform::{
+    WindowAction, WindowApplication, WindowEvent, WindowOptions, WindowResizeDirection,
+};
 use torn_wgpu::{GpuError, GpuRenderer, RenderStatus};
 use winit::{
     application::ApplicationHandler,
@@ -18,7 +20,7 @@ use winit::{
     event::{ElementState, Ime, MouseButton, MouseScrollDelta, WindowEvent as WinitWindowEvent},
     event_loop::{ActiveEventLoop, EventLoop},
     keyboard::{Key as WinitKey, NamedKey as WinitNamedKey, PhysicalKey},
-    window::{Window, WindowId},
+    window::{Fullscreen, ResizeDirection, Window, WindowId},
 };
 
 /// Why [`run`] could not start or continue a native event loop.
@@ -74,6 +76,8 @@ struct Adapter {
     renderer: Option<GpuRenderer>,
     logical_size: Option<Size>,
     needs_render: bool,
+    maximized: bool,
+    fullscreen: bool,
     cursor: Point,
     buttons: PointerButtons,
     modifiers: Modifiers,
@@ -82,6 +86,8 @@ struct Adapter {
 impl Adapter {
     fn new(application: Box<dyn WindowApplication>) -> Self {
         let options = application.window_options();
+        let maximized = options.maximized;
+        let fullscreen = options.fullscreen;
         Self {
             application,
             options,
@@ -89,6 +95,8 @@ impl Adapter {
             renderer: None,
             logical_size: None,
             needs_render: false,
+            maximized,
+            fullscreen,
             cursor: Point::ZERO,
             buttons: PointerButtons::NONE,
             modifiers: Modifiers::NONE,
@@ -111,6 +119,50 @@ impl Adapter {
             WindowAction::None => {}
             WindowAction::RequestRedraw => self.request_render(),
             WindowAction::Exit => event_loop.exit(),
+            WindowAction::Minimize => {
+                if let Some(window) = &self.window {
+                    window.set_minimized(true);
+                }
+            }
+            WindowAction::ToggleMaximize => {
+                if let Some(window) = &self.window {
+                    window.set_maximized(!window.is_maximized());
+                }
+            }
+            WindowAction::ToggleFullscreen => {
+                if let Some(window) = &self.window {
+                    self.fullscreen = window.fullscreen().is_none();
+                    window.set_fullscreen(self.fullscreen.then_some(Fullscreen::Borderless(None)));
+                }
+            }
+            WindowAction::StartDrag => {
+                if let Some(window) = &self.window {
+                    let _ = window.drag_window();
+                }
+            }
+            WindowAction::StartResize(direction) => {
+                if let Some(window) = &self.window {
+                    let _ = window.drag_resize_window(resize_direction(direction));
+                }
+            }
+        }
+    }
+
+    fn sync_window_state(&mut self, event_loop: &ActiveEventLoop) {
+        let Some(window) = &self.window else {
+            return;
+        };
+        let maximized = window.is_maximized();
+        let fullscreen = window.fullscreen().is_some();
+        let maximized_changed = maximized != self.maximized;
+        let fullscreen_changed = fullscreen != self.fullscreen;
+        self.maximized = maximized;
+        self.fullscreen = fullscreen;
+        if maximized_changed {
+            self.dispatch(event_loop, WindowEvent::Maximized(maximized));
+        }
+        if fullscreen_changed {
+            self.dispatch(event_loop, WindowEvent::Fullscreen(fullscreen));
         }
     }
 
@@ -163,6 +215,7 @@ impl Adapter {
             if let Some(size) = self.logical_size {
                 self.dispatch(event_loop, WindowEvent::Resized(size));
             }
+            self.sync_window_state(event_loop);
         } else {
             event_loop.exit();
         }
@@ -280,18 +333,40 @@ impl ApplicationHandler for Adapter {
         if self.window.is_some() {
             return;
         }
-        let attributes = Window::default_attributes()
+        let mut attributes = Window::default_attributes()
             .with_title(&self.options.title)
             .with_inner_size(LogicalSize::new(
                 f64::from(self.options.size.width()),
                 f64::from(self.options.size.height()),
+            ))
+            .with_decorations(self.options.decorations)
+            .with_resizable(self.options.resizable)
+            .with_maximized(self.options.maximized)
+            .with_fullscreen(
+                self.options
+                    .fullscreen
+                    .then_some(Fullscreen::Borderless(None)),
+            );
+        if let Some(minimum) = self.options.min_size {
+            attributes = attributes.with_min_inner_size(LogicalSize::new(
+                f64::from(minimum.width()),
+                f64::from(minimum.height()),
             ));
+        }
+        #[cfg(target_os = "windows")]
+        if !self.options.decorations {
+            use winit::platform::windows::WindowAttributesExtWindows;
+
+            attributes = attributes.with_undecorated_shadow(true);
+        }
         let Ok(window) = event_loop.create_window(attributes) else {
             event_loop.exit();
             return;
         };
         self.window = Some(Arc::new(window));
         let window = self.window.as_ref().expect("window was stored");
+        self.maximized = window.is_maximized();
+        self.fullscreen = window.fullscreen().is_some();
         let physical_size = window.inner_size();
         let scale_factor = window.scale_factor();
         if self.create_surface(physical_size, scale_factor).is_err() {
@@ -404,6 +479,19 @@ fn ime_input(ime: Ime) -> Option<InputEvent> {
         }),
         Ime::Enabled => return None,
     })
+}
+
+fn resize_direction(direction: WindowResizeDirection) -> ResizeDirection {
+    match direction {
+        WindowResizeDirection::North => ResizeDirection::North,
+        WindowResizeDirection::South => ResizeDirection::South,
+        WindowResizeDirection::West => ResizeDirection::West,
+        WindowResizeDirection::East => ResizeDirection::East,
+        WindowResizeDirection::NorthWest => ResizeDirection::NorthWest,
+        WindowResizeDirection::NorthEast => ResizeDirection::NorthEast,
+        WindowResizeDirection::SouthWest => ResizeDirection::SouthWest,
+        WindowResizeDirection::SouthEast => ResizeDirection::SouthEast,
+    }
 }
 
 fn pointer_button(button: MouseButton) -> PointerButton {

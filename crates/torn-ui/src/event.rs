@@ -2,6 +2,50 @@ use std::collections::HashMap;
 
 use torn_core::{InputEvent, Point, PointerId, WidgetId};
 
+/// A window operation requested by a widget.
+///
+/// Widgets such as a custom title bar use this intent instead of depending on a
+/// native windowing backend. The host application drains the requests from
+/// [`crate::UiRuntime::take_window_commands`] and translates them into its
+/// platform adapter's actions.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WindowCommand {
+    /// Begin moving the native window while the primary pointer is held.
+    StartDrag,
+    /// Minimize the native window.
+    Minimize,
+    /// Toggle between maximized and restored window geometry.
+    ToggleMaximize,
+    /// Toggle borderless fullscreen mode.
+    ToggleFullscreen,
+    /// Ask the application to close the window.
+    Close,
+    /// Begin resizing the native window from `edge` while the primary pointer
+    /// is held.
+    StartResize(ResizeEdge),
+}
+
+/// An edge or corner of a window that can initiate a resize operation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ResizeEdge {
+    /// Top edge.
+    Top,
+    /// Bottom edge.
+    Bottom,
+    /// Left edge.
+    Left,
+    /// Right edge.
+    Right,
+    /// Top-left corner.
+    TopLeft,
+    /// Top-right corner.
+    TopRight,
+    /// Bottom-left corner.
+    BottomLeft,
+    /// Bottom-right corner.
+    BottomRight,
+}
+
 /// The outcome of routing an input event to a widget.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum EventStatus {
@@ -120,6 +164,15 @@ impl<'a> EventContext<'a> {
         self.effects.layout_requested = true;
         self.effects.redraw_requested = true;
     }
+
+    /// Requests a native window operation from the host application.
+    ///
+    /// Requests are collected by the runtime and returned by
+    /// [`crate::UiRuntime::take_window_commands`]. A widget does not need to
+    /// know which windowing backend the application uses.
+    pub fn request_window_command(&mut self, command: WindowCommand) {
+        self.effects.window_commands.push(command);
+    }
 }
 
 pub(crate) struct EventEffects {
@@ -129,6 +182,7 @@ pub(crate) struct EventEffects {
     pub(crate) focus_request: Option<FocusRequest>,
     pub(crate) layout_requested: bool,
     pub(crate) redraw_requested: bool,
+    pub(crate) window_commands: Vec<WindowCommand>,
 }
 
 pub(crate) enum FocusRequest {

@@ -120,6 +120,7 @@ impl WindowApplication for StyleShowcase {
                     WindowAction::None
                 }
             }
+            WindowEvent::Maximized(_) | WindowEvent::Fullscreen(_) => WindowAction::RequestRedraw,
             WindowEvent::RedrawRequested => WindowAction::None,
         }
     }
