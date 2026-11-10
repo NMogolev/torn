@@ -3,8 +3,9 @@ use torn_core::{
 };
 use torn_render::PaintContext;
 use torn_ui::{
-    ChildLayout, EventContext, EventPhase, EventStatus, LayoutContext, LayoutResult, PseudoClass,
-    Signal, StyleTarget, SurfaceStyle, TssStyle, UiEnvironment, Widget,
+    Accessibility, AccessibilityAction, AccessibilityActions, AccessibilityRole,
+    AccessibilityState, ChildLayout, EventContext, EventPhase, EventStatus, LayoutContext,
+    LayoutResult, PseudoClass, Signal, StyleTarget, SurfaceStyle, TssStyle, UiEnvironment, Widget,
 };
 
 /// Locally overridable visual properties for a [`Button`].
@@ -292,6 +293,21 @@ impl Widget for Button {
 
     fn accepts_focus(&self) -> bool {
         true
+    }
+
+    fn accessibility(&self) -> Accessibility {
+        Accessibility::new(AccessibilityRole::Button)
+            .with_states(AccessibilityState::FOCUSABLE)
+            .with_actions(AccessibilityActions::FOCUS | AccessibilityActions::CLICK)
+    }
+
+    fn accessibility_action(&mut self, action: &AccessibilityAction) -> bool {
+        if matches!(action, AccessibilityAction::Click) {
+            self.activated.emit(&());
+            true
+        } else {
+            false
+        }
     }
 }
 

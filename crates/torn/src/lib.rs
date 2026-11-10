@@ -4,25 +4,28 @@
 //! headless test support remain available under [`render`] and [`software`].
 
 pub use torn_core::{
-    Affine, Color, ConstraintError, Constraints, Diagnostic, DiagnosticReporter,
-    DiagnosticSeverity, FocusChanged, InputEvent, Insets, Key, KeyCode, KeyEvent, Modifiers,
-    NamedKey, PanicOnDiagnostic, Point, PointerButton, PointerButtons, PointerEvent, PointerId,
-    Rect, Size, SizeError, TextPreedit, WheelDelta, WheelEvent, WidgetId,
+    Affine, Clipboard, Color, ConstraintError, Constraints, Diagnostic, DiagnosticReporter,
+    DiagnosticSeverity, FocusChanged, InputEvent, Insets, Key, KeyCode, KeyEvent, MemoryClipboard,
+    Modifiers, NamedKey, NoopClipboard, PanicOnDiagnostic, Point, PointerButton, PointerButtons,
+    PointerEvent, PointerId, Rect, Size, SizeError, TextPreedit, WheelDelta, WheelEvent, WidgetId,
 };
 pub use torn_ui::{
-    Border, ChildLayout, Column, DEFAULT_DPI, DarkTheme, DirtyFlags, EventContext, EventPhase,
-    EventStatus, Font, FontDatabase, FontDescriptor, FontFamily, FontMetrics, FontSize, FontStyle,
-    FontWeight, KeyChord, KeyboardCommand, LayoutContext, LayoutResult, LightTheme, PseudoClass,
-    ResizeEdge, Row, RuntimeStats, Selector, Signal, StyleRule, StyleSheet, StyleTarget, Styled,
-    Subscription, SurfaceStyle, SystemAppearance, SystemTheme, Theme, TssError, TssStyle, TssTheme,
+    Accessibility, AccessibilityAction, AccessibilityActions, AccessibilityRole,
+    AccessibilityState, AccessibilityTextSelection, Border, ChildLayout, Column, DEFAULT_DPI,
+    DarkTheme, DirtyFlags, EventContext, EventPhase, EventStatus, Font, FontDatabase,
+    FontDescriptor, FontFamily, FontMetrics, FontSize, FontStyle, FontWeight, FrameDiagnostics,
+    KeyChord, KeyboardCommand, LayoutContext, LayoutResult, LightTheme, PseudoClass, ResizeEdge,
+    Row, RuntimeStats, Selector, Signal, StyleRule, StyleSheet, StyleTarget, Styled, Subscription,
+    SurfaceStyle, SystemAppearance, SystemTheme, Theme, TssError, TssStyle, TssTheme,
     UiEnvironment, UiRuntime, UiRuntimeError, Widget, WindowCommand,
 };
 pub use torn_widgets::{
     Align, Alignment, Badge, BadgeTone, Box, Button, ButtonStyle, Card, CardStyle, Checkbox,
     ComboBox, Container, Divider, DividerAxis, DockArea, DockAreaError, DockItem, Dropdown, Image,
     ListView, MenuBar, Padding, ProgressBar, RadioButton, RadioGroup, ScrollAxis, ScrollView,
-    SizedBox, Slider, SplitAxis, Splitter, Stack, Switch, TabBar, Text, TextField, TextInput,
-    TitleBar, TitleBarStyle, Toolbar, WindowChromeState, WindowControl, WindowFrame,
+    SelectionMode, SelectionModel, SizedBox, Slider, SplitAxis, Splitter, Stack, Switch, TabBar,
+    Text, TextEdit, TextField, TextInput, TitleBar, TitleBarStyle, Toolbar, VirtualDataSource,
+    VirtualList, VirtualTable, VirtualTableSource, WindowChromeState, WindowControl, WindowFrame,
 };
 pub use torn_workspace::{
     DockAxis, DocumentId, DocumentPresentation, FloatingDocument, FloatingPanel, LayoutNode,
@@ -67,9 +70,9 @@ pub mod platform {
 /// Backend-neutral display-list and text-shaping contracts.
 pub mod render {
     pub use torn_render::{
-        DisplayCommand, DisplayList, FontError, FontFace, FontdueTextShaper, GlyphBitmap, GlyphRun,
-        LineMetrics, PaintContext, PositionedGlyph, RasterImage, RasterImageError, TextLayout,
-        TextShaper, TextStyle, TextureId,
+        DisplayCommand, DisplayList, DisplayListStats, FontError, FontFace, FontdueTextShaper,
+        GlyphBitmap, GlyphRun, LineMetrics, PaintContext, PositionedGlyph, RasterImage,
+        RasterImageError, TextLayout, TextLayoutCacheStats, TextShaper, TextStyle, TextureId,
     };
 }
 

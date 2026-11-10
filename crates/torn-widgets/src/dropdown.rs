@@ -1,8 +1,9 @@
 use torn_core::{Constraints, InputEvent, Insets, Key, NamedKey, Point, PointerButton, Rect, Size};
 use torn_render::{PaintContext, TextStyle};
 use torn_ui::{
-    EventContext, EventPhase, EventStatus, LayoutContext, LayoutResult, Signal, StyleTarget,
-    TssStyle, UiEnvironment, Widget,
+    Accessibility, AccessibilityAction, AccessibilityActions, AccessibilityRole,
+    AccessibilityState, EventContext, EventPhase, EventStatus, LayoutContext, LayoutResult, Signal,
+    StyleTarget, TssStyle, UiEnvironment, Widget,
 };
 
 const DEFAULT_WIDTH: f32 = 120.0;
@@ -131,6 +132,35 @@ impl Dropdown {
             selected.is_none_or(|index| index < self.options.len()),
             "dropdown selection must refer to an available option"
         );
+    }
+
+    fn select_without_context(&mut self, selected: usize) {
+        self.assert_valid_selection(Some(selected));
+        if self.selected != Some(selected) {
+            self.selected = Some(selected);
+            self.changed.emit(&selected);
+        }
+        self.open = false;
+    }
+
+    fn accept_accessibility_value(&mut self, value: &str) -> bool {
+        let Some(index) = self.options.iter().position(|option| option == value) else {
+            return false;
+        };
+        self.select_without_context(index);
+        true
+    }
+
+    fn accept_accessibility_step(&mut self, offset: isize) -> bool {
+        let Some(last) = self.options.len().checked_sub(1) else {
+            return false;
+        };
+        let selected = self
+            .selected
+            .unwrap_or(if offset.is_negative() { last } else { 0 });
+        let next = selected.saturating_add_signed(offset).min(last);
+        self.select_without_context(next);
+        true
     }
 }
 
@@ -302,6 +332,48 @@ impl Widget for Dropdown {
 
     fn accepts_focus(&self) -> bool {
         true
+    }
+
+    fn accessibility(&self) -> Accessibility {
+        let mut accessibility = Accessibility::new(AccessibilityRole::ComboBox)
+            .with_states(AccessibilityState::FOCUSABLE)
+            .with_actions(
+                AccessibilityActions::FOCUS
+                    | AccessibilityActions::CLICK
+                    | AccessibilityActions::SET_VALUE
+                    | AccessibilityActions::EXPAND
+                    | AccessibilityActions::COLLAPSE
+                    | AccessibilityActions::INCREMENT
+                    | AccessibilityActions::DECREMENT,
+            );
+        if let Some(option) = self.selected_option() {
+            accessibility = accessibility.with_value(option);
+        }
+        if self.open {
+            accessibility = accessibility.with_states(AccessibilityState::EXPANDED);
+        }
+        accessibility
+    }
+
+    fn accessibility_action(&mut self, action: &AccessibilityAction) -> bool {
+        match action {
+            AccessibilityAction::Click => {
+                self.open = !self.open;
+                true
+            }
+            AccessibilityAction::Expand => {
+                self.open = true;
+                true
+            }
+            AccessibilityAction::Collapse => {
+                self.open = false;
+                true
+            }
+            AccessibilityAction::SetValue(value) => self.accept_accessibility_value(value),
+            AccessibilityAction::Increment => self.accept_accessibility_step(1),
+            AccessibilityAction::Decrement => self.accept_accessibility_step(-1),
+            _ => false,
+        }
     }
 }
 

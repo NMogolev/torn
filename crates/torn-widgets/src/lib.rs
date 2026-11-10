@@ -23,9 +23,12 @@ mod stack;
 mod switch;
 mod tab_bar;
 mod text;
+mod text_edit;
+mod text_editor;
 mod text_field;
 mod title_bar;
 mod toolbar;
+mod virtual_list;
 mod window_frame;
 
 pub use align::{Align, Alignment};
@@ -51,9 +54,14 @@ pub use stack::Stack;
 pub use switch::Switch;
 pub use tab_bar::TabBar;
 pub use text::Text;
+pub use text_edit::TextEdit;
 pub use text_field::TextField;
 pub use title_bar::{TitleBar, TitleBarStyle, WindowChromeState, WindowControl};
 pub use toolbar::Toolbar;
+pub use virtual_list::{
+    Column, SelectionMode, SelectionModel, VirtualDataSource, VirtualList, VirtualTable,
+    VirtualTableSource,
+};
 pub use window_frame::WindowFrame;
 
 /// A single-child surface container.

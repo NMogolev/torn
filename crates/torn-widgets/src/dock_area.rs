@@ -744,6 +744,7 @@ mod tests {
             .borrow_mut()
             .activate_panel(&second)
             .expect("second panel is docked");
+        runtime.invalidate_layout();
         runtime.layout(canvas).expect("updated layout succeeds");
 
         assert_eq!(runtime.bounds(first_widget), Some(Rect::ZERO));
@@ -794,6 +795,7 @@ mod tests {
             .borrow_mut()
             .activate_panel(&second)
             .expect("second panel is docked");
+        runtime.invalidate_layout();
         runtime.layout(canvas).expect("updated layout succeeds");
         assert!(runtime.dispatch_event(&pointer_down).is_handled());
         assert_eq!(first_events.get(), 1);

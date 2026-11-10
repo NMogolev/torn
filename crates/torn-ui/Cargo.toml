@@ -11,5 +11,6 @@ repository.workspace = true
 workspace = true
 
 [dependencies]
+accesskit = "0.24"
 torn-core = { path = "../torn-core" }
 torn-render = { path = "../torn-render" }

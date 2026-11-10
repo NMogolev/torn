@@ -18,9 +18,10 @@ widgets use Rust traits and composition rather than inheritance.
   A Cassowary/Auto Layout-style solver is explicitly out of scope for v0.
 - **Composition first.** Composite controls expose content slots rather than
   assuming fixed child types. For example, a button may contain any one widget.
-- **Correctness before optimization.** The first renderer repaints every
-  frame. Dirty state is tracked from the start but partial repainting follows
-  only after the basic pipeline is tested and profiled.
+- **Correctness before optimization.** Benchmark scenes and frame diagnostics
+  come first. Dirty state, damage regions, retained display lists, text-layout
+  caching, and GPU batching build on the measured baseline rather than
+  speculative shortcuts.
 - **Testable internals.** Geometry, layout, display-list generation, and
   software rendering must be deterministic and usable without a window.
 
@@ -117,15 +118,16 @@ trait TextShaper {
 Paint commands consume `TextLayout` rather than raw strings, so layout metrics
 and rendering cannot disagree.
 
-`FontdueTextShaper` is the initial deterministic implementation. It wraps a
+`FontdueTextShaper` is the deterministic implementation. It wraps a
 `FontDatabase`: a font request (ordered families, pixel/point size, weight, and
-style) is resolved to concrete faces, and the shaper converts text into
-positioned glyph runs and line metrics. The software backend rasterizes the same
-glyphs. It covers basic horizontal text, newlines, width wrapping, GPOS pair
-kerning, case-insensitive family matching, closest weight/style selection, a
-default-face fallback, and per-character fallback across registered faces.
-Complex OpenType shaping, bidirectional text, and platform font enumeration
-remain deliberate follow-up work. See [`FONTS.md`](FONTS.md).
+style) is resolved to concrete faces, and HarfRust shapes text into positioned
+glyph runs, grapheme clusters, and line metrics. It covers complex OpenType
+shaping (ligatures, contextual substitutions, mark positioning), bidirectional
+reordering, grapheme-aware fallback, newlines, width wrapping, caret hit
+testing, and selection rectangles. `FontDatabase::load_system_fonts` enumerates
+platform fonts through `fontdb`. The text-layout cache exposes hit/miss/eviction
+counters through `TextShaper::cache_stats` for frame diagnostics. See
+[`FONTS.md`](FONTS.md).
 
 ### Styling and invalidation
 
@@ -151,8 +153,11 @@ its boundary.
 
 Dirty state is represented separately for `LAYOUT`, `PAINT`, and `STYLE`.
 Changing text or padding invalidates layout and paint; a hover color normally
-invalidates paint only. The initial runtime still creates and renders a full
-frame each redraw.
+invalidates paint only. The runtime retains the last display list and reports
+frame diagnostics: layout/paint timings, cache reuse, per-command composition,
+the conservative damage rectangle, and text-cache activity. `DisplayList` also
+exposes backend-neutral command counters and bounds so backends can batch and
+tests can assert output shape.
 
 ## Workspace plan
 
@@ -259,20 +264,43 @@ See [`DOCKING.md`](DOCKING.md) for the proposed contract and persistence rules.
 ### M6 — Capability expansion
 
 Add scrolling, editable text, advanced text shaping (complex OpenType,
-bidirectional layout), platform font enumeration, themes, accessibility design,
-GPU rendering, paint caching, and selective repainting, in that order of
+bidirectional layout), platform font enumeration, themes, accessibility, GPU
+rendering, paint caching, and selective repainting, in that order of
 demonstrated need.
 
-## Explicit non-goals before M5
+The completed implementation includes:
+
+- semantic accessibility trees, roles, states, actions, tab order, and an
+  AccessKit bridge for UI Automation, AT-SPI, and macOS Accessibility;
+- single-line and multiline editing with pointer and keyboard selection,
+  grapheme navigation, clipboard, IME preedit, undo/redo, and scrolling;
+- HarfRust shaping, bidi, ligatures, font fallback, system font enumeration,
+  caret hit testing, and selection geometry;
+- retained display-list and text-layout caches, damage reporting, per-command
+  counters, and the `frame_benchmark` example scenes;
+- data-driven `VirtualList`/`VirtualTable` controls with stable-key row caching,
+  keyboard navigation, and a shared selection model.
+
+### M8 — Accessibility and virtualization
+
+Deliver the accessibility, text-editing, shaping, virtualization, and
+observability capabilities above as stable public contracts. Keep existing
+widget APIs compatible: `ListView` remains available alongside the data-driven
+virtual controls, and `TextField` keeps its character-index cursor API while
+using byte offsets internally.
+
+## Explicit non-goals before v0
 
 - Full web-CSS compatibility (variables, descendant selectors, media queries,
   animations, and a browser-compatible value grammar).
 - General linear constraint solving.
 - Multiple renderer and windowing backends.
 - Cross-thread widget access.
-- Accessibility implementation, while keeping its future requirements in mind.
-- Native platform controls beyond the window and system integration.
-- GPU batching, layers, filters, and dirty-region command skipping.
+- Native platform controls beyond the window, clipboard, and accessibility
+  system integration.
+- Vertical writing modes, color fonts, and synthetic bold or oblique.
+- Automatic partial-window presentation; damage regions are reported, but
+  backends may still present a complete frame.
 
 ## Validation policy
 

@@ -1,8 +1,9 @@
 use torn_core::{Color, Constraints, InputEvent, Key, NamedKey, Point, PointerButton, Rect, Size};
 use torn_render::PaintContext;
 use torn_ui::{
-    Border, ChildLayout, EventContext, EventPhase, EventStatus, LayoutContext, LayoutResult,
-    Signal, StyleTarget, TssStyle, UiEnvironment, Widget,
+    Accessibility, AccessibilityAction, AccessibilityActions, AccessibilityRole,
+    AccessibilityState, Border, ChildLayout, EventContext, EventPhase, EventStatus, LayoutContext,
+    LayoutResult, Signal, StyleTarget, TssStyle, UiEnvironment, Widget,
 };
 
 const CONTROL_SIZE: f32 = 18.0;
@@ -52,9 +53,13 @@ impl Checkbox {
     }
 
     fn toggle(&mut self, context: &mut EventContext<'_>) {
+        self.toggle_state();
+        context.request_redraw();
+    }
+
+    fn toggle_state(&mut self) {
         self.checked = !self.checked;
         self.toggled.emit(&self.checked);
-        context.request_redraw();
     }
 }
 
@@ -194,6 +199,32 @@ impl Widget for Checkbox {
 
     fn accepts_focus(&self) -> bool {
         true
+    }
+
+    fn accessibility(&self) -> Accessibility {
+        let mut accessibility = Accessibility::new(AccessibilityRole::CheckBox)
+            .with_states(AccessibilityState::FOCUSABLE)
+            .with_actions(
+                AccessibilityActions::FOCUS
+                    | AccessibilityActions::CLICK
+                    | AccessibilityActions::TOGGLE,
+            );
+        if self.checked {
+            accessibility = accessibility.with_states(AccessibilityState::CHECKED);
+        }
+        accessibility
+    }
+
+    fn accessibility_action(&mut self, action: &AccessibilityAction) -> bool {
+        if matches!(
+            action,
+            AccessibilityAction::Click | AccessibilityAction::Toggle
+        ) {
+            self.toggle_state();
+            true
+        } else {
+            false
+        }
     }
 }
 

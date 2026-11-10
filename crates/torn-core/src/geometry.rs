@@ -329,6 +329,47 @@ impl Rect {
             },
         )
     }
+
+    /// Returns the smallest rectangle containing both `self` and `other`.
+    #[must_use]
+    pub fn union(self, other: Self) -> Self {
+        let x = self.origin.x.min(other.origin.x);
+        let y = self.origin.y.min(other.origin.y);
+        let right = self.right().max(other.right());
+        let bottom = self.bottom().max(other.bottom());
+        Self::new(
+            Point::new(x, y),
+            Size {
+                width: (right - x).max(0.0),
+                height: (bottom - y).max(0.0),
+            },
+        )
+    }
+
+    /// Returns the overlapping area, or [`Rect::ZERO`] when the rectangles are disjoint.
+    #[must_use]
+    pub fn intersection(self, other: Self) -> Self {
+        let x = self.origin.x.max(other.origin.x);
+        let y = self.origin.y.max(other.origin.y);
+        let right = self.right().min(other.right());
+        let bottom = self.bottom().min(other.bottom());
+        if right <= x || bottom <= y {
+            return Self::ZERO;
+        }
+        Self::new(
+            Point::new(x, y),
+            Size {
+                width: right - x,
+                height: bottom - y,
+            },
+        )
+    }
+
+    /// Returns whether the rectangle has positive area.
+    #[must_use]
+    pub fn is_empty(self) -> bool {
+        self.size.width() <= 0.0 || self.size.height() <= 0.0
+    }
 }
 
 #[cfg(test)]

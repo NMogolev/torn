@@ -1,20 +1,23 @@
 use std::{
     any::Any,
+    cell::RefCell,
     collections::HashMap,
     fmt,
     panic::{AssertUnwindSafe, catch_unwind, resume_unwind},
+    rc::Rc,
     time::{Duration, Instant},
 };
 
 use torn_core::{
-    Constraints, Diagnostic, DiagnosticReporter, FocusChanged, InputEvent, Key, Modifiers,
-    NamedKey, Point, PointerId, Rect, WidgetId,
+    Clipboard, Constraints, Diagnostic, DiagnosticReporter, FocusChanged, InputEvent, Key,
+    Modifiers, NamedKey, Point, PointerId, Rect, WidgetId,
 };
-use torn_render::{DisplayList, PaintContext};
+use torn_render::{DisplayList, DisplayListStats, PaintContext, TextLayoutCacheStats};
 
 use crate::{
-    EventContext, EventPhase, EventStatus, KeyboardCommand, LayoutResult, PseudoClass, StyleTarget,
-    TssStyle, UiEnvironment, Widget, WindowCommand, event,
+    AccessibilityAction, AccessibilityActions, AccessibilityRole, AccessibilityState, EventContext,
+    EventPhase, EventStatus, KeyboardCommand, LayoutResult, PseudoClass, SemanticTree,
+    SemanticsBuilder, StyleTarget, TssStyle, UiEnvironment, Widget, WindowCommand, event,
 };
 use event::{EventEffects, FocusRequest};
 
@@ -39,22 +42,34 @@ impl DirtyFlags {
     };
 }
 
-/// Timings and output counters collected by [`UiRuntime`].
+/// Timings, damage, and output counters collected by [`UiRuntime`].
 ///
 /// Durations describe the most recently completed layout or paint pass. The
-/// counters are lifetime totals for this runtime, while the command count is
-/// the number emitted by the most recent paint pass only. Backend execution
-/// time is intentionally excluded because presentation may be asynchronous.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub struct RuntimeStats {
+/// counters are lifetime totals for this runtime, while the command counters
+/// describe the most recent paint pass only. Backend execution time is
+/// intentionally excluded because presentation may be asynchronous.
+///
+/// A frame that reuses retained output reports `last_layout_reused` or
+/// `last_paint_reused`, which distinguishes cache hits from newly generated
+/// work when profiling interactive scenes.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct FrameDiagnostics {
     layout_passes: u64,
     paint_passes: u64,
     last_layout_time: Duration,
     last_paint_time: Duration,
     last_paint_command_count: usize,
+    last_layout_reused: bool,
+    last_paint_reused: bool,
+    last_display_stats: DisplayListStats,
+    last_damage: Option<Rect>,
+    last_text_cache: TextLayoutCacheStats,
 }
 
-impl RuntimeStats {
+/// Backwards-compatible name for [`FrameDiagnostics`].
+pub type RuntimeStats = FrameDiagnostics;
+
+impl FrameDiagnostics {
     /// Returns the number of completed layout passes.
     #[must_use]
     pub const fn layout_passes(self) -> u64 {
@@ -85,15 +100,64 @@ impl RuntimeStats {
         self.last_paint_command_count
     }
 
-    fn record_layout(&mut self, elapsed: Duration) {
-        self.layout_passes = self.layout_passes.saturating_add(1);
-        self.last_layout_time = elapsed;
+    /// Returns whether the most recent layout request reused cached geometry.
+    #[must_use]
+    pub const fn last_layout_reused(self) -> bool {
+        self.last_layout_reused
     }
 
-    fn record_paint(&mut self, elapsed: Duration, command_count: usize) {
-        self.paint_passes = self.paint_passes.saturating_add(1);
-        self.last_paint_time = elapsed;
+    /// Returns whether the most recent paint request reused a cached display list.
+    #[must_use]
+    pub const fn last_paint_reused(self) -> bool {
+        self.last_paint_reused
+    }
+
+    /// Returns per-command counters for the most recent painted display list.
+    #[must_use]
+    pub const fn last_display_stats(self) -> DisplayListStats {
+        self.last_display_stats
+    }
+
+    /// Returns the conservative region requiring repaint in the most recent frame.
+    ///
+    /// `None` means the frame reused retained output and needed no new damage.
+    #[must_use]
+    pub const fn last_damage(self) -> Option<Rect> {
+        self.last_damage
+    }
+
+    /// Returns text-layout cache counters sampled during the most recent paint.
+    #[must_use]
+    pub const fn last_text_cache(self) -> TextLayoutCacheStats {
+        self.last_text_cache
+    }
+
+    fn record_layout(&mut self, elapsed: Duration, reused: bool) {
+        if !reused {
+            self.layout_passes = self.layout_passes.saturating_add(1);
+            self.last_layout_time = elapsed;
+        }
+        self.last_layout_reused = reused;
+    }
+
+    fn record_paint(
+        &mut self,
+        elapsed: Duration,
+        command_count: usize,
+        reused: bool,
+        display: DisplayListStats,
+        damage: Option<Rect>,
+        text_cache: TextLayoutCacheStats,
+    ) {
+        if !reused {
+            self.paint_passes = self.paint_passes.saturating_add(1);
+            self.last_paint_time = elapsed;
+        }
+        self.last_paint_reused = reused;
         self.last_paint_command_count = command_count;
+        self.last_display_stats = display;
+        self.last_damage = damage;
+        self.last_text_cache = text_cache;
     }
 }
 
@@ -177,7 +241,9 @@ pub struct UiRuntime {
     window_commands: Vec<WindowCommand>,
     redraw_requested: bool,
     environment: UiEnvironment,
-    stats: RuntimeStats,
+    clipboard: Rc<RefCell<Box<dyn Clipboard>>>,
+    stats: FrameDiagnostics,
+    pending_damage: Option<Rect>,
 }
 
 struct ArenaSlot {
@@ -193,6 +259,7 @@ struct Node {
     visible: bool,
     dirty: DirtyFlags,
     accepts_focus: bool,
+    tab_index: Option<i32>,
     style_target: StyleTarget,
     style: TssStyle,
 }
@@ -248,7 +315,9 @@ impl UiRuntime {
             window_commands: Vec::new(),
             redraw_requested: true,
             environment,
+            clipboard: Rc::new(RefCell::new(Box::new(torn_core::MemoryClipboard::new()))),
             stats: RuntimeStats::default(),
+            pending_damage: None,
         };
         runtime.root = runtime.insert_node(Box::new(root), None);
         runtime
@@ -266,6 +335,15 @@ impl UiRuntime {
         self.stats
     }
 
+    /// Returns timings, damage, and output counters from the most recent frame.
+    ///
+    /// This is the same snapshot as [`Self::stats`], named for profiling call
+    /// sites that display a per-frame diagnostics overlay.
+    #[must_use]
+    pub const fn frame_diagnostics(&self) -> FrameDiagnostics {
+        self.stats
+    }
+
     /// Returns mutable access to the shared environment and invalidates layout.
     ///
     /// Theme and scale changes can affect a widget's intrinsic size, so the
@@ -280,6 +358,7 @@ impl UiRuntime {
     /// Use this when external state read by [`Widget::paint`] changed but it
     /// cannot affect geometry, such as a clock or performance counter.
     pub fn invalidate_paint(&mut self) {
+        self.mark_full_damage();
         self.cached_display_list = None;
         self.redraw_requested = true;
         for slot in &mut self.nodes {
@@ -287,6 +366,19 @@ impl UiRuntime {
                 node.dirty.paint = true;
             }
         }
+    }
+
+    fn mark_full_damage(&mut self) {
+        let Some(bounds) = self.node(self.root).map(|node| node.bounds) else {
+            return;
+        };
+        if bounds.is_empty() {
+            return;
+        }
+        self.pending_damage = Some(match self.pending_damage {
+            Some(existing) => existing.union(bounds),
+            None => bounds,
+        });
     }
 
     /// Returns the stable handle of the root node.
@@ -413,6 +505,14 @@ impl UiRuntime {
             .expect("runtime root is always live")
     }
 
+    /// Replaces the clipboard used by editable widgets and accessibility actions.
+    ///
+    /// Platform adapters provide an operating-system clipboard; headless runtimes
+    /// keep the default in-memory clipboard so text editing remains testable.
+    pub fn set_clipboard(&mut self, clipboard: impl Clipboard + 'static) {
+        self.clipboard = Rc::new(RefCell::new(Box::new(clipboard)));
+    }
+
     /// Sets a reporter that receives every runtime diagnostic.
     pub fn set_diagnostic_reporter(&mut self, reporter: impl DiagnosticReporter + 'static) {
         self.reporter = Some(Box::new(reporter));
@@ -449,6 +549,7 @@ impl UiRuntime {
     pub fn layout(&mut self, constraints: Constraints) -> Result<&LayoutResult, UiRuntimeError> {
         let can_reuse_layout = self.last_constraints == Some(constraints) && self.layout.is_some();
         if can_reuse_layout {
+            self.stats.record_layout(Duration::ZERO, true);
             return self.layout.as_ref().ok_or(UiRuntimeError::InvalidLayout);
         }
         let started = Instant::now();
@@ -460,18 +561,18 @@ impl UiRuntime {
                 self.layout = Some(layout);
                 self.last_constraints = Some(constraints);
                 self.redraw_requested = true;
-                self.stats.record_layout(started.elapsed());
+                self.stats.record_layout(started.elapsed(), false);
                 self.layout.as_ref().ok_or(UiRuntimeError::InvalidLayout)
             }
             Ok(Err(error)) => {
                 self.clear_layout_state();
-                self.stats.record_layout(started.elapsed());
+                self.stats.record_layout(started.elapsed(), false);
                 Err(error)
             }
             Err(payload) => {
                 self.clear_layout_state();
                 self.report_panic("layout", payload);
-                self.stats.record_layout(started.elapsed());
+                self.stats.record_layout(started.elapsed(), false);
                 Err(UiRuntimeError::WidgetPanicked)
             }
         }
@@ -487,6 +588,132 @@ impl UiRuntime {
     #[must_use]
     pub const fn focused_widget(&self) -> Option<WidgetId> {
         self.focused
+    }
+
+    /// Moves keyboard focus to `node` when it accepts focus.
+    ///
+    /// Passing a stale handle or a widget that does not accept focus clears
+    /// the current focus. This is the programmatic equivalent of clicking a
+    /// control or invoking its accessibility `Focus` action.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`UiRuntimeError::InvalidWidgetId`] when `node` is stale.
+    pub fn focus_widget(&mut self, node: WidgetId) -> Result<(), UiRuntimeError> {
+        let Some(current) = self.node(node) else {
+            return Err(UiRuntimeError::InvalidWidgetId);
+        };
+        if current.accepts_focus {
+            self.set_focus(Some(node));
+        } else {
+            self.set_focus(None);
+        }
+        Ok(())
+    }
+
+    /// Removes keyboard focus from the retained tree.
+    pub fn clear_focus(&mut self) {
+        self.set_focus(None);
+    }
+
+    /// Returns the semantic snapshot of the currently laid-out tree.
+    ///
+    /// The tree includes roles, accessible names and values, states, actions,
+    /// absolute bounds, and tab order for every visible widget. Assistive
+    /// technology adapters publish [`SemanticTree::to_accesskit`] or consume
+    /// the typed nodes directly.
+    #[must_use]
+    pub fn semantic_tree(&self) -> SemanticTree {
+        let mut builder = SemanticsBuilder::new(self.focused);
+        self.collect_semantics(self.root, None, &mut builder);
+        builder.finish(Some(self.root))
+    }
+
+    /// Returns an AccessKit tree update for the current runtime state.
+    #[must_use]
+    pub fn accessibility_tree(&self) -> accesskit::TreeUpdate {
+        self.semantic_tree().to_accesskit()
+    }
+
+    /// Returns widget handles in sequential focus order.
+    ///
+    /// Widgets with positive tab indices come first in ascending order, then
+    /// widgets with zero or no explicit index in tree order. Negative indices
+    /// are omitted from sequential traversal.
+    #[must_use]
+    pub fn tab_order(&self) -> Vec<WidgetId> {
+        self.focusable_nodes()
+    }
+
+    /// Performs an action requested by an assistive technology.
+    ///
+    /// Focus requests are handled by the runtime. Other actions are offered to
+    /// the target widget. Returns whether the runtime or widget handled the
+    /// action.
+    pub fn perform_accessibility_action(
+        &mut self,
+        node: WidgetId,
+        action: &AccessibilityAction,
+    ) -> bool {
+        if self.node(node).is_none() {
+            return false;
+        }
+        if matches!(action, AccessibilityAction::Focus) {
+            let _ = self.focus_widget(node);
+            return true;
+        }
+        let handled = self
+            .node_mut(node)
+            .and_then(|node| node.widget.as_deref_mut())
+            .is_some_and(|widget| widget.accessibility_action(action));
+        if handled {
+            self.invalidate_layout();
+        }
+        handled
+    }
+
+    fn collect_semantics(
+        &self,
+        id: WidgetId,
+        parent: Option<WidgetId>,
+        builder: &mut SemanticsBuilder,
+    ) {
+        let Some(node) = self.node(id) else {
+            return;
+        };
+        if !node.visible {
+            return;
+        }
+        let Some(widget) = node.widget.as_ref() else {
+            return;
+        };
+        let mut accessibility = widget.accessibility();
+        if accessibility.role == AccessibilityRole::GenericContainer
+            && accessibility.label.is_none()
+            && accessibility.value.is_none()
+            && node.children.is_empty()
+        {
+            // Empty structural leaves add noise to platform trees.
+            return;
+        }
+        if accessibility.hidden {
+            return;
+        }
+        if node.accepts_focus {
+            accessibility.states |= AccessibilityState::FOCUSABLE;
+        }
+        if accessibility.tab_index.is_none() {
+            accessibility.tab_index = node.tab_index;
+        }
+        if accessibility.actions.contains(AccessibilityActions::CLICK)
+            || accessibility.actions.contains(AccessibilityActions::TOGGLE)
+        {
+            accessibility.actions |= AccessibilityActions::FOCUS;
+        }
+        builder.push(id, parent, node.bounds, accessibility);
+        for child in &node.children {
+            self.collect_semantics(*child, Some(id), builder);
+        }
     }
 
     /// Returns the widget currently capturing `pointer_id`, if any.
@@ -532,9 +759,16 @@ impl UiRuntime {
         let started = Instant::now();
         if let Some(cached) = &self.cached_display_list {
             context.append_display_list(cached);
+            let command_count = context.command_count().saturating_sub(command_count_before);
+            let display = cached.stats();
+            let text_cache = self.environment.text_shaper().cache_stats();
             self.stats.record_paint(
                 started.elapsed(),
-                context.command_count().saturating_sub(command_count_before),
+                command_count,
+                true,
+                display,
+                None,
+                text_cache,
             );
             return Ok(());
         }
@@ -553,9 +787,24 @@ impl UiRuntime {
                 Err(UiRuntimeError::WidgetPanicked)
             }
         };
+        let command_count = context.command_count().saturating_sub(command_count_before);
+        let display = self
+            .cached_display_list
+            .as_ref()
+            .map_or_else(DisplayListStats::default, DisplayList::stats);
+        let damage = self.pending_damage.take().or_else(|| {
+            self.cached_display_list
+                .as_ref()
+                .and_then(DisplayList::bounds)
+        });
+        let text_cache = self.environment.text_shaper().cache_stats();
         self.stats.record_paint(
             started.elapsed(),
-            context.command_count().saturating_sub(command_count_before),
+            command_count,
+            false,
+            display,
+            damage,
+            text_cache,
         );
         result
     }
@@ -750,16 +999,19 @@ impl UiRuntime {
             next_child += index + 1;
         }
 
-        let accepts_focus = self
+        let (accepts_focus, tab_index) = self
             .node(id)
             .expect("node was validated")
             .widget
             .as_ref()
-            .is_some_and(Widget::accepts_focus);
+            .map_or((false, None), |widget| {
+                (widget.accepts_focus(), widget.tab_index())
+            });
         let node = self.node_mut(id).expect("node was validated");
         node.bounds = Rect::new(origin, result.size());
         node.dirty = DirtyFlags::default();
         node.accepts_focus = accepts_focus;
+        node.tab_index = tab_index;
         for child in &children {
             self.node_mut(*child).expect("child was validated").visible = false;
         }
@@ -940,6 +1192,12 @@ impl UiRuntime {
     fn focusable_nodes(&self) -> Vec<WidgetId> {
         let mut result = Vec::new();
         self.collect_focusable(self.root, &mut result);
+        // Positive tab indices sort before zero/unspecified values; equal
+        // indices retain tree order thanks to the stable sort.
+        result.sort_by_key(|id| {
+            let index = self.node(*id).and_then(|node| node.tab_index).unwrap_or(0);
+            (i32::from(index <= 0), index)
+        });
         result
     }
 
@@ -950,7 +1208,7 @@ impl UiRuntime {
         if !node.visible {
             return;
         }
-        if node.accepts_focus {
+        if node.accepts_focus && node.tab_index.is_none_or(|index| index >= 0) {
             result.push(id);
         }
         for child in &node.children {
@@ -1013,6 +1271,7 @@ impl UiRuntime {
         event: &InputEvent,
         effects: &mut EventEffects,
     ) -> EventStatus {
+        let clipboard = Rc::clone(&self.clipboard);
         let origin = self
             .node(id)
             .expect("route contains live nodes")
@@ -1026,7 +1285,7 @@ impl UiRuntime {
                 .widget
                 .as_deref_mut()
                 .expect("widget is present outside layout call");
-            let mut context = EventContext::new(phase, target, id, effects);
+            let mut context = EventContext::new(phase, target, id, effects, &clipboard);
             widget.handle_event(&mut context, &local_event)
         }));
         match result {
@@ -1105,6 +1364,7 @@ impl UiRuntime {
             visible: true,
             dirty: DirtyFlags::ALL,
             accepts_focus: false,
+            tab_index: None,
             style_target: StyleTarget::empty(),
             style: TssStyle::default(),
         };
@@ -1153,7 +1413,14 @@ impl UiRuntime {
         (slot.generation == id.generation()).then_some(slot.node.as_mut()?)
     }
 
-    fn invalidate_layout(&mut self) {
+    /// Forces the next layout and paint pass to rebuild retained output.
+    ///
+    /// [`Self::layout`] deliberately reuses its cached layout when the
+    /// constraints are unchanged. Call this after mutating widget state that
+    /// participates in layout outside the event system, such as an external
+    /// workspace model, data source, or theme.
+    pub fn invalidate_layout(&mut self) {
+        self.mark_full_damage();
         self.layout = None;
         self.cached_display_list = None;
         self.redraw_requested = true;
@@ -1835,7 +2102,9 @@ mod tests {
 
         assert_eq!(paints.get(), 1);
         assert_eq!(first, second);
-        assert_eq!(runtime.stats().paint_passes(), 2);
+        let stats = runtime.stats();
+        assert_eq!(stats.paint_passes(), 1);
+        assert!(stats.last_paint_reused());
     }
 
     #[test]

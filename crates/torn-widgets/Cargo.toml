@@ -15,3 +15,4 @@ torn-core = { path = "../torn-core" }
 torn-render = { path = "../torn-render" }
 torn-ui = { path = "../torn-ui" }
 torn-workspace = { path = "../torn-workspace" }
+unicode-segmentation = "1.12"

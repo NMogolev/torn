@@ -1,5 +1,6 @@
 //! Retained widget tree, layout lifecycle, routing, and invalidation for Torn.
 
+mod accessibility;
 mod column;
 mod command;
 mod environment;
@@ -19,13 +20,21 @@ pub use torn_render::{
     FontWeight,
 };
 
+pub(crate) use accessibility::SemanticsBuilder;
+pub use accessibility::{
+    Accessibility, AccessibilityAction, AccessibilityActions, AccessibilityRole,
+    AccessibilityState, AccessibilityTextSelection, SemanticNode, SemanticTree,
+    accessibility_action_from_accesskit, widget_id_from_accesskit,
+};
 pub use column::Column;
 pub use command::{KeyChord, KeyboardCommand};
 pub use environment::UiEnvironment;
 pub use event::{EventContext, EventPhase, EventStatus, ResizeEdge, WindowCommand};
 pub use layout::{ChildLayout, LayoutResult};
 pub use row::Row;
-pub use runtime::{DirtyFlags, LayoutContext, RuntimeStats, UiRuntime, UiRuntimeError};
+pub use runtime::{
+    DirtyFlags, FrameDiagnostics, LayoutContext, RuntimeStats, UiRuntime, UiRuntimeError,
+};
 pub use signal::{Signal, Subscription};
 pub use style::{Border, SurfaceStyle};
 pub use styled::Styled;

@@ -1,6 +1,8 @@
+use std::cell::RefCell;
 use std::collections::HashMap;
+use std::rc::Rc;
 
-use torn_core::{InputEvent, Point, PointerId, WidgetId};
+use torn_core::{Clipboard, InputEvent, Point, PointerId, WidgetId};
 
 /// A window operation requested by a widget.
 ///
@@ -85,6 +87,7 @@ pub struct EventContext<'a> {
     target: WidgetId,
     current_target: WidgetId,
     effects: &'a mut EventEffects,
+    clipboard: &'a Rc<RefCell<Box<dyn Clipboard>>>,
 }
 
 impl<'a> EventContext<'a> {
@@ -93,12 +96,14 @@ impl<'a> EventContext<'a> {
         target: WidgetId,
         current_target: WidgetId,
         effects: &'a mut EventEffects,
+        clipboard: &'a Rc<RefCell<Box<dyn Clipboard>>>,
     ) -> Self {
         Self {
             phase,
             target,
             current_target,
             effects,
+            clipboard,
         }
     }
 
@@ -172,6 +177,17 @@ impl<'a> EventContext<'a> {
     /// know which windowing backend the application uses.
     pub fn request_window_command(&mut self, command: WindowCommand) {
         self.effects.window_commands.push(command);
+    }
+
+    /// Returns the clipboard's current plain text, if any.
+    #[must_use]
+    pub fn read_clipboard(&self) -> Option<String> {
+        self.clipboard.borrow_mut().read_text()
+    }
+
+    /// Replaces the clipboard's plain-text contents.
+    pub fn write_clipboard(&self, text: &str) {
+        self.clipboard.borrow_mut().write_text(text);
     }
 }
 

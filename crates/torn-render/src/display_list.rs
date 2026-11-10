@@ -2,6 +2,49 @@ use torn_core::{Affine, Color, Point, Rect};
 
 use crate::{RasterImage, TextLayout};
 
+/// Per-command counters for one [`DisplayList`].
+///
+/// Backends use these counters to understand where a frame's draw work comes
+/// from before optimizing batching or caching. They are cheap to compute and do
+/// not allocate.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct DisplayListStats {
+    /// Number of [`DisplayCommand::FillRect`] operations.
+    pub fills: usize,
+    /// Number of [`DisplayCommand::FillRoundedRect`] operations.
+    pub rounded_fills: usize,
+    /// Number of [`DisplayCommand::StrokeRect`] operations.
+    pub strokes: usize,
+    /// Number of [`DisplayCommand::StrokeRoundedRect`] operations.
+    pub rounded_strokes: usize,
+    /// Number of [`DisplayCommand::DrawText`] operations.
+    pub text_runs: usize,
+    /// Number of [`DisplayCommand::DrawImage`] operations.
+    pub images: usize,
+    /// Number of [`DisplayCommand::DrawTexture`] operations.
+    pub textures: usize,
+    /// Number of clipping regions pushed.
+    pub clips: usize,
+    /// Number of save/restore and transform state operations.
+    pub state_changes: usize,
+}
+
+impl DisplayListStats {
+    /// Returns the total number of recorded commands.
+    #[must_use]
+    pub const fn commands(self) -> usize {
+        self.fills
+            + self.rounded_fills
+            + self.strokes
+            + self.rounded_strokes
+            + self.text_runs
+            + self.images
+            + self.textures
+            + self.clips
+            + self.state_changes
+    }
+}
+
 /// An ordered, backend-neutral sequence of paint operations.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct DisplayList {
@@ -35,6 +78,42 @@ impl DisplayList {
         self.commands.is_empty()
     }
 
+    /// Returns per-command counters for profiling.
+    #[must_use]
+    pub fn stats(&self) -> DisplayListStats {
+        let mut stats = DisplayListStats::default();
+        for command in &self.commands {
+            match command {
+                DisplayCommand::FillRect { .. } => stats.fills += 1,
+                DisplayCommand::FillRoundedRect { .. } => stats.rounded_fills += 1,
+                DisplayCommand::StrokeRect { .. } => stats.strokes += 1,
+                DisplayCommand::StrokeRoundedRect { .. } => stats.rounded_strokes += 1,
+                DisplayCommand::DrawText { .. } => stats.text_runs += 1,
+                DisplayCommand::DrawImage { .. } => stats.images += 1,
+                DisplayCommand::DrawTexture { .. } => stats.textures += 1,
+                DisplayCommand::PushClip { .. } => stats.clips += 1,
+                DisplayCommand::Save
+                | DisplayCommand::Restore
+                | DisplayCommand::Transform { .. }
+                | DisplayCommand::PopClip => stats.state_changes += 1,
+            }
+        }
+        stats
+    }
+
+    /// Returns a conservative bounding rectangle for all recorded paint.
+    ///
+    /// The result unions command bounds without applying transforms, so it is
+    /// never smaller than the truly painted area. It is suitable for damage
+    /// tracking and diagnostics, not for exact culling.
+    #[must_use]
+    pub fn bounds(&self) -> Option<Rect> {
+        self.commands
+            .iter()
+            .filter_map(command_bounds)
+            .reduce(Rect::union)
+    }
+
     /// Appends a copy of all commands from `other` in recording order.
     ///
     /// This is useful for retained runtimes that reuse an unchanged display
@@ -45,6 +124,27 @@ impl DisplayList {
 
     pub(crate) fn push(&mut self, command: DisplayCommand) {
         self.commands.push(command);
+    }
+}
+
+fn command_bounds(command: &DisplayCommand) -> Option<Rect> {
+    match command {
+        DisplayCommand::FillRect { rect, .. }
+        | DisplayCommand::FillRoundedRect { rect, .. }
+        | DisplayCommand::StrokeRect { rect, .. }
+        | DisplayCommand::StrokeRoundedRect { rect, .. }
+        | DisplayCommand::PushClip { rect }
+        | DisplayCommand::DrawImage {
+            destination: rect, ..
+        }
+        | DisplayCommand::DrawTexture {
+            destination: rect, ..
+        } => Some(*rect),
+        DisplayCommand::DrawText { layout, origin } => Some(Rect::new(*origin, layout.size())),
+        DisplayCommand::Save
+        | DisplayCommand::Restore
+        | DisplayCommand::Transform { .. }
+        | DisplayCommand::PopClip => None,
     }
 }
 

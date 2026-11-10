@@ -11,6 +11,9 @@ repository.workspace = true
 workspace = true
 
 [dependencies]
+accesskit = "0.24"
+accesskit_winit = { version = "0.32", default-features = false, features = ["rwh_06"] }
+arboard = "3.6"
 torn-core = { path = "../torn-core" }
 torn-platform = { path = "../torn-platform" }
 torn-wgpu = { path = "../torn-wgpu" }

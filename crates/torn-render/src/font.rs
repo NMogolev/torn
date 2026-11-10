@@ -435,7 +435,6 @@ pub struct FontFace {
     inner: Arc<FontdueFont>,
     descriptor: FontDescriptor,
     data: Arc<[u8]>,
-    kern_lookups: Vec<u16>,
     glyph_rasters: Arc<Mutex<GlyphRasterCache>>,
 }
 
@@ -488,12 +487,10 @@ impl FontFace {
     }
 
     fn from_parts(font: FontdueFont, descriptor: FontDescriptor, data: Vec<u8>) -> Self {
-        let kern_lookups = crate::kerning::collect_kern_lookups(&data);
         Self {
             inner: Arc::new(font),
             descriptor,
             data: Arc::from(data),
-            kern_lookups,
             glyph_rasters: Arc::new(Mutex::new(GlyphRasterCache::default())),
         }
     }
@@ -621,41 +618,12 @@ impl FontFace {
         &self.inner
     }
 
-    /// Returns whether GPOS `kern` features were found in this face.
-    pub(crate) fn has_gpos_kerning(&self) -> bool {
-        !self.kern_lookups.is_empty()
-    }
-
-    /// Parses the face with `ttf-parser` for OpenType layout queries.
-    pub(crate) fn parsed(&self) -> Option<ttf_parser::Face<'_>> {
-        ttf_parser::Face::parse(&self.data, 0).ok()
-    }
-
-    /// Returns the horizontal kerning adjustment for two adjacent glyphs.
+    /// Returns the raw OpenType file used to build this face.
     ///
-    /// GPOS kerning is preferred when the face provides it. Fonts that only
-    /// carry the legacy `kern` table fall back to `fontdue`'s implementation.
-    /// The returned value is in logical pixels for `font_size`.
-    pub(crate) fn horizontal_kerning(
-        &self,
-        parsed: Option<&ttf_parser::Face<'_>>,
-        left: u16,
-        right: u16,
-        font_size: f32,
-    ) -> Option<crate::kerning::KerningAdjustment> {
-        let scale = self.inner.scale_factor(font_size);
-        if let Some(parsed) = parsed
-            && let Some(adjustment) =
-                crate::kerning::gpos_kerning(parsed, &self.kern_lookups, left, right)
-        {
-            return Some(adjustment.scaled(scale));
-        }
-        self.inner
-            .horizontal_kern_indexed(left, right, font_size)
-            .map(|advance| crate::kerning::KerningAdjustment {
-                advance,
-                placement: 0.0,
-            })
+    /// Shaping consumes the same bytes so `HarfRust` and `fontdue` always agree
+    /// on the face's glyph identifiers and metrics.
+    pub(crate) fn data(&self) -> &[u8] {
+        &self.data
     }
 }
 
@@ -781,6 +749,52 @@ impl FontDatabase {
         let mut database = Self::new();
         database.add_face(FontFace::ubuntu_light());
         database
+    }
+
+    /// Enumerates the operating system's installed fonts and registers the
+    /// faces that Torn can shape and rasterize.
+    ///
+    /// Enumeration is delegated to `fontdb`, which scans the platform's
+    /// standard font directories without calling into a particular windowing
+    /// toolkit. Faces from font collections after the first are skipped because
+    /// the `fontdue` rasterizer used by Torn addresses simple TrueType/OpenType
+    /// files directly.
+    ///
+    /// The returned database uses the first discovered face as its default.
+    /// Applications that want Torn's deterministic bundled face should call
+    /// [`Self::set_default_face`] afterwards.
+    #[must_use]
+    pub fn load_system_fonts() -> Self {
+        let mut database = Self::new();
+        database.discover_system_fonts();
+        database
+    }
+
+    /// Adds every suitable installed system font to this database.
+    ///
+    /// Existing faces and the current default selection are preserved.
+    pub fn discover_system_fonts(&mut self) {
+        let mut system = fontdb::Database::new();
+        system.load_system_fonts();
+        for face in system.faces() {
+            if face.index != 0 {
+                continue;
+            }
+            let Some(bytes) = system.with_face_data(face.id, |data, _| data.to_vec()) else {
+                continue;
+            };
+            let family = face
+                .families
+                .first()
+                .map_or_else(|| face.post_script_name.clone(), |(name, _)| name.clone());
+            let weight = FontWeight::new(face.weight.0).unwrap_or(FontWeight::NORMAL);
+            let style = match face.style {
+                fontdb::Style::Normal => FontStyle::Normal,
+                fontdb::Style::Italic => FontStyle::Italic,
+                fontdb::Style::Oblique => FontStyle::Oblique,
+            };
+            let _ = self.add_font(FontDescriptor::new(family, weight, style), bytes);
+        }
     }
 
     /// Creates a database whose default face is `face`.
@@ -1032,23 +1046,6 @@ mod tests {
         let second = clone.rasterize_cached(glyph_id, 16.0);
 
         assert!(Arc::ptr_eq(&first, &second));
-    }
-
-    #[test]
-    fn extracts_gpos_kern_lookups_for_the_bundled_font() {
-        let face = FontFace::ubuntu_light();
-        assert!(face.has_gpos_kerning());
-
-        let parsed = face.parsed().expect("bundled font parses");
-        let left = face.font().lookup_glyph_index('A');
-        let right = face.font().lookup_glyph_index('V');
-        let adjustment = crate::kerning::gpos_kerning(&parsed, &face.kern_lookups, left, right)
-            .expect("Ubuntu kerns AV");
-
-        assert!(
-            adjustment.advance < 0.0,
-            "AV should tighten, got {adjustment:?}"
-        );
     }
 
     #[test]

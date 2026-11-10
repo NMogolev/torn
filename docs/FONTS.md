@@ -59,9 +59,10 @@ performs Qt-style matching:
    duplicates of the same physical font file.
 
 `resolve` therefore returns a non-empty ordered list whenever the database has
-any face. Shaping walks the text one character at a time, using the first face
-that contains a glyph for that character, and substitutes `?` only when no face
-can render it.
+any face. Shaping selects a face per grapheme cluster: the first face that
+contains a glyph for the cluster's first printable character wins, consecutive
+clusters using the same face are merged into one run, and `?` is substituted
+only when no face can render the cluster.
 
 The first face added to a database becomes its default. Torn ships with Ubuntu
 Light registered under the `"Ubuntu"` family at `FontWeight::LIGHT`:
@@ -91,11 +92,27 @@ normal weight and style. Prefer `from_bytes_with_descriptor` (or
 `FontDatabase::add_font`) whenever the file name or metadata does not describe
 the face exactly.
 
+## System fonts
+
+`FontDatabase::load_system_fonts()` scans the platform's standard font
+directories through `fontdb`; `discover_system_fonts()` adds those faces to an
+existing database while preserving its default. This is the portable
+enumeration path: it does not depend on `winit`, and applications can still
+prefer Torn's deterministic bundled face with `set_default_face`.
+
+```rust
+use torn::FontDatabase;
+
+let database = FontDatabase::load_system_fonts();
+assert!(!database.faces().is_empty());
+```
+
 ## Shaping
 
 `FontdueTextShaper` wraps a `FontDatabase` and a logical DPI. It resolves the
-request in a `TextStyle`, shapes the text, and records one `GlyphRun` per
-consecutive sequence of glyphs that share a face and size:
+request in a `TextStyle`, shapes each bidirectional run with HarfRust, and
+records one `GlyphRun` per consecutive sequence of glyphs that share a face and
+size:
 
 ```rust
 use torn::render::{FontdueTextShaper, TextStyle};
@@ -121,14 +138,15 @@ face. `TextStyle::new_with_font` carries a complete request. The selected face
 is available from `TextLayout::glyph_runs()`, so callers and tests can verify
 exactly which font produced the output.
 
-Adjacent glyphs are pair-kerned with the font's OpenType `GPOS` data. The shaper
-reads the lookups referenced by `kern` features and applies the first matching
-subtable from each lookup, so fonts such as the bundled Ubuntu Light — which
-have no legacy `kern` table — still tighten pairs like `AV` and `To`. Fonts that
-only carry a legacy `kern` table fall back to `fontdue`'s implementation. Line
-breaking still uses unkerned advances; kerning is applied to the final glyph
-positions and to the measured width, so wrapping can differ by at most the small
-pair adjustment.
+HarfRust performs complex OpenType shaping: kerning, ligatures, contextual
+substitutions, mark positioning, and script-specific behavior. The shaper
+splits paragraphs into bidirectional visual runs, shapes each run with the
+appropriate direction, applies per-grapheme fallback across registered faces,
+wraps at grapheme boundaries, and exposes caret, hit-testing, line, and selection
+geometry through `TextLayout` (`caret_x`, `caret_rect`, `byte_at_point`,
+`line_at`, `line_at_y`, `line_ranges`, and `selection_rects`). The bounded
+layout cache reports hits, misses, and evictions through
+`TextShaper::cache_stats()` for frame diagnostics.
 
 To install a custom database, build the shaper and give it to the environment:
 
@@ -197,10 +215,10 @@ See [`TSS.md`](TSS.md#supported-properties) for the accepted value grammar.
 
 ## Current limits
 
-The bundled shaper performs horizontal glyph placement with newlines, width
-wrapping, and GPOS pair kerning. It does not implement complex OpenType shaping
-(ligatures, contextual substitutions), bidirectional reordering, synthetic bold
-or oblique, or font substitution based on script. Per-character fallback across
-registered faces is implemented, but there is no platform font enumeration yet:
-applications register the faces they ship or find themselves. These are
-deliberate follow-ups rather than silent behavior.
+The shaper performs complex OpenType shaping, bidirectional reordering,
+grapheme-aware fallback, newlines, width wrapping, and system font enumeration.
+It does not implement vertical writing modes, synthetic bold or oblique, color
+fonts, or font matching by script metadata; fallback is coverage-driven per
+grapheme. Paragraph and line breaking use a grapheme/whitespace heuristic rather
+than the full Unicode line-breaking algorithm. These are deliberate follow-ups
+rather than silent behavior.

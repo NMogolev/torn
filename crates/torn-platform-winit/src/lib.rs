@@ -7,8 +7,8 @@
 use std::{error::Error, fmt, sync::Arc};
 
 use torn_core::{
-    InputEvent, Key, KeyCode, KeyEvent, Modifiers, NamedKey, Point, PointerButton, PointerButtons,
-    PointerEvent, PointerId, Size, TextPreedit, WheelDelta, WheelEvent,
+    Clipboard, InputEvent, Key, KeyCode, KeyEvent, Modifiers, NamedKey, Point, PointerButton,
+    PointerButtons, PointerEvent, PointerId, Size, TextPreedit, WheelDelta, WheelEvent,
 };
 use torn_platform::{
     WindowAction, WindowApplication, WindowEvent, WindowOptions, WindowResizeDirection,
@@ -18,7 +18,7 @@ use winit::{
     application::ApplicationHandler,
     dpi::{LogicalPosition, LogicalSize, PhysicalSize},
     event::{ElementState, Ime, MouseButton, MouseScrollDelta, WindowEvent as WinitWindowEvent},
-    event_loop::{ActiveEventLoop, EventLoop},
+    event_loop::{ActiveEventLoop, EventLoop, EventLoopProxy},
     keyboard::{Key as WinitKey, NamedKey as WinitNamedKey, PhysicalKey},
     window::{Fullscreen, ResizeDirection, Window, WindowId},
 };
@@ -51,6 +51,50 @@ impl fmt::Display for RunError {
 
 impl Error for RunError {}
 
+/// A clipboard backed by the operating system clipboard.
+///
+/// Applications can install this adapter with
+/// [`torn_ui::UiRuntime::set_clipboard`] to give editable widgets real
+/// cut, copy, and paste behavior. Construction succeeds even when the platform
+/// clipboard is unavailable; reads then return `None` and writes are ignored.
+pub struct ArboardClipboard {
+    clipboard: Option<arboard::Clipboard>,
+}
+
+impl ArboardClipboard {
+    /// Connects to the operating system clipboard.
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            clipboard: arboard::Clipboard::new().ok(),
+        }
+    }
+
+    /// Returns whether the operating system clipboard is available.
+    #[must_use]
+    pub const fn is_available(&self) -> bool {
+        self.clipboard.is_some()
+    }
+}
+
+impl Default for ArboardClipboard {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Clipboard for ArboardClipboard {
+    fn read_text(&mut self) -> Option<String> {
+        self.clipboard.as_mut()?.get_text().ok()
+    }
+
+    fn write_text(&mut self, text: &str) {
+        if let Some(clipboard) = self.clipboard.as_mut() {
+            let _ = clipboard.set_text(text.to_owned());
+        }
+    }
+}
+
 /// Runs `application` in a native event loop.
 ///
 /// The returned function is portable across Windows and Linux environments with
@@ -62,11 +106,27 @@ impl Error for RunError {}
 /// presentation failures close the event loop because `winit` callbacks cannot
 /// return errors directly.
 pub fn run(application: impl WindowApplication + 'static) -> Result<(), RunError> {
-    let event_loop = EventLoop::new().map_err(RunError::EventLoop)?;
-    let mut adapter = Adapter::new(Box::new(application));
+    let event_loop = EventLoop::<UserEvent>::with_user_event()
+        .build()
+        .map_err(RunError::EventLoop)?;
+    let proxy = event_loop.create_proxy();
+    let mut adapter = Adapter::new(Box::new(application), proxy);
     event_loop
         .run_app(&mut adapter)
         .map_err(RunError::EventLoop)
+}
+
+/// A custom event delivered through the native event loop.
+#[derive(Debug)]
+enum UserEvent {
+    /// An accessibility request from the platform adapter.
+    Accessibility(accesskit_winit::Event),
+}
+
+impl From<accesskit_winit::Event> for UserEvent {
+    fn from(event: accesskit_winit::Event) -> Self {
+        Self::Accessibility(event)
+    }
 }
 
 struct Adapter {
@@ -74,6 +134,8 @@ struct Adapter {
     options: WindowOptions,
     window: Option<Arc<Window>>,
     renderer: Option<GpuRenderer>,
+    accessibility: Option<accesskit_winit::Adapter>,
+    event_loop_proxy: EventLoopProxy<UserEvent>,
     logical_size: Option<Size>,
     needs_render: bool,
     maximized: bool,
@@ -84,7 +146,10 @@ struct Adapter {
 }
 
 impl Adapter {
-    fn new(application: Box<dyn WindowApplication>) -> Self {
+    fn new(
+        application: Box<dyn WindowApplication>,
+        event_loop_proxy: EventLoopProxy<UserEvent>,
+    ) -> Self {
         let options = application.window_options();
         let maximized = options.maximized;
         let fullscreen = options.fullscreen;
@@ -93,6 +158,8 @@ impl Adapter {
             options,
             window: None,
             renderer: None,
+            accessibility: None,
+            event_loop_proxy,
             logical_size: None,
             needs_render: false,
             maximized,
@@ -222,8 +289,34 @@ impl Adapter {
     }
 
     fn dispatch(&mut self, event_loop: &ActiveEventLoop, event: WindowEvent) {
+        let refresh_accessibility = should_refresh_accessibility(&event);
         let action = self.application.window_event(event);
         self.apply_action(event_loop, action);
+        if refresh_accessibility {
+            self.refresh_accessibility();
+        }
+    }
+
+    fn refresh_accessibility(&mut self) {
+        let Some(tree) = self.application.accessibility_tree() else {
+            return;
+        };
+        if let Some(adapter) = self.accessibility.as_mut() {
+            adapter.update_if_active(|| tree);
+        }
+    }
+
+    fn handle_accessibility_event(&mut self, event: accesskit_winit::Event) {
+        match event.window_event {
+            accesskit_winit::WindowEvent::InitialTreeRequested => self.refresh_accessibility(),
+            accesskit_winit::WindowEvent::ActionRequested(request) => {
+                if self.application.accessibility_action(&request) {
+                    self.refresh_accessibility();
+                    self.request_render();
+                }
+            }
+            accesskit_winit::WindowEvent::AccessibilityDeactivated => {}
+        }
     }
 
     fn handle_input_event(
@@ -328,7 +421,12 @@ impl Adapter {
     }
 }
 
-impl ApplicationHandler for Adapter {
+impl ApplicationHandler<UserEvent> for Adapter {
+    fn user_event(&mut self, _event_loop: &ActiveEventLoop, event: UserEvent) {
+        let UserEvent::Accessibility(event) = event;
+        self.handle_accessibility_event(event);
+    }
+
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.window.is_some() {
             return;
@@ -342,6 +440,7 @@ impl ApplicationHandler for Adapter {
             .with_decorations(self.options.decorations)
             .with_resizable(self.options.resizable)
             .with_maximized(self.options.maximized)
+            .with_visible(false)
             .with_fullscreen(
                 self.options
                     .fullscreen
@@ -365,6 +464,13 @@ impl ApplicationHandler for Adapter {
         };
         self.window = Some(Arc::new(window));
         let window = self.window.as_ref().expect("window was stored");
+        {
+            let proxy = self.event_loop_proxy.clone();
+            self.accessibility = Some(accesskit_winit::Adapter::with_event_loop_proxy(
+                event_loop, window, proxy,
+            ));
+        }
+        window.set_visible(true);
         self.maximized = window.is_maximized();
         self.fullscreen = window.fullscreen().is_some();
         let physical_size = window.inner_size();
@@ -388,6 +494,11 @@ impl ApplicationHandler for Adapter {
         if self.window.as_ref().map(|window| window.id()) != Some(window_id) {
             return;
         }
+        if let (Some(accessibility), Some(window)) =
+            (self.accessibility.as_mut(), self.window.as_ref())
+        {
+            accessibility.process_event(window, &event);
+        }
         let scale_factor = self.window.as_ref().expect("window exists").scale_factor();
         match event {
             WinitWindowEvent::CloseRequested => {
@@ -407,6 +518,17 @@ impl ApplicationHandler for Adapter {
                 let _ = self.handle_input_event(event_loop, event, scale_factor);
             }
         }
+    }
+}
+
+fn should_refresh_accessibility(event: &WindowEvent) -> bool {
+    match event {
+        WindowEvent::Input(InputEvent::PointerMove(_) | InputEvent::PointerLeave(_))
+        | WindowEvent::Maximized(_)
+        | WindowEvent::Fullscreen(_)
+        | WindowEvent::RedrawRequested
+        | WindowEvent::CloseRequested => false,
+        WindowEvent::Resized(_) | WindowEvent::Input(_) => true,
     }
 }
 

@@ -2,7 +2,8 @@ use torn_core::{Constraints, InputEvent, Rect};
 use torn_render::PaintContext;
 
 use crate::{
-    EventContext, EventStatus, LayoutContext, LayoutResult, StyleTarget, TssStyle, UiEnvironment,
+    Accessibility, AccessibilityAction, AccessibilityRole, EventContext, EventStatus,
+    LayoutContext, LayoutResult, StyleTarget, TssStyle, UiEnvironment,
 };
 
 /// A retained UI element whose placement and relationships are owned by the runtime.
@@ -64,6 +65,34 @@ pub trait Widget {
         false
     }
 
+    /// Describes this widget to assistive technologies.
+    ///
+    /// The runtime adds focus state and absolute bounds. Widgets should report
+    /// their role, accessible name, value, and interaction states. Returning
+    /// the default [`AccessibilityRole::GenericContainer`] keeps the node in
+    /// the tree as a structural container.
+    fn accessibility(&self) -> Accessibility {
+        Accessibility::new(AccessibilityRole::GenericContainer)
+    }
+
+    /// Returns this widget's position in the sequential tab order.
+    ///
+    /// Positive values are visited before zero or unspecified values. A
+    /// negative index removes the widget from Tab traversal while leaving it
+    /// available to [`crate::UiRuntime::focus_widget`].
+    fn tab_index(&self) -> Option<i32> {
+        None
+    }
+
+    /// Performs an action requested by an assistive technology.
+    ///
+    /// The runtime validates focus requests itself. Returning `true` means the
+    /// widget handled the action and the runtime should invalidate its layout
+    /// and paint output.
+    fn accessibility_action(&mut self, _action: &AccessibilityAction) -> bool {
+        false
+    }
+
     /// Returns whether this widget itself may be selected as a pointer hit-test target.
     ///
     /// Decorative widgets should return `false` so an interactive ancestor can
@@ -114,6 +143,18 @@ where
 
     fn accepts_focus(&self) -> bool {
         (**self).accepts_focus()
+    }
+
+    fn accessibility(&self) -> Accessibility {
+        (**self).accessibility()
+    }
+
+    fn tab_index(&self) -> Option<i32> {
+        (**self).tab_index()
+    }
+
+    fn accessibility_action(&mut self, action: &AccessibilityAction) -> bool {
+        (**self).accessibility_action(action)
     }
 
     fn participates_in_hit_test(&self) -> bool {

@@ -3,8 +3,9 @@ use torn_core::{
 };
 use torn_render::PaintContext;
 use torn_ui::{
-    EventContext, EventPhase, EventStatus, LayoutContext, LayoutResult, Signal, StyleTarget,
-    TssStyle, UiEnvironment, Widget,
+    Accessibility, AccessibilityAction, AccessibilityActions, AccessibilityRole,
+    AccessibilityState, EventContext, EventPhase, EventStatus, LayoutContext, LayoutResult, Signal,
+    StyleTarget, TssStyle, UiEnvironment, Widget,
 };
 
 const DEFAULT_WIDTH: f32 = 42.0;
@@ -108,9 +109,13 @@ impl Switch {
     }
 
     fn toggle(&mut self, context: &mut EventContext<'_>) {
+        self.toggle_state();
+        context.request_redraw();
+    }
+
+    fn toggle_state(&mut self) {
         self.checked = !self.checked;
         self.toggled.emit(&self.checked);
-        context.request_redraw();
     }
 }
 
@@ -221,6 +226,32 @@ impl Widget for Switch {
 
     fn accepts_focus(&self) -> bool {
         true
+    }
+
+    fn accessibility(&self) -> Accessibility {
+        let mut accessibility = Accessibility::new(AccessibilityRole::Switch)
+            .with_states(AccessibilityState::FOCUSABLE)
+            .with_actions(
+                AccessibilityActions::FOCUS
+                    | AccessibilityActions::CLICK
+                    | AccessibilityActions::TOGGLE,
+            );
+        if self.checked {
+            accessibility = accessibility.with_states(AccessibilityState::CHECKED);
+        }
+        accessibility
+    }
+
+    fn accessibility_action(&mut self, action: &AccessibilityAction) -> bool {
+        if matches!(
+            action,
+            AccessibilityAction::Click | AccessibilityAction::Toggle
+        ) {
+            self.toggle_state();
+            true
+        } else {
+            false
+        }
     }
 }
 

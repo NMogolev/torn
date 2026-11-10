@@ -1,8 +1,9 @@
 use torn_core::{Constraints, InputEvent, Point, PointerButton, Rect, Size};
 use torn_render::{PaintContext, TextStyle};
 use torn_ui::{
-    EventContext, EventPhase, EventStatus, LayoutContext, LayoutResult, Signal, StyleTarget,
-    TssStyle, UiEnvironment, Widget,
+    Accessibility, AccessibilityActions, AccessibilityRole, AccessibilityState, EventContext,
+    EventPhase, EventStatus, LayoutContext, LayoutResult, Signal, StyleTarget, TssStyle,
+    UiEnvironment, Widget,
 };
 
 const HORIZONTAL_PADDING: f32 = 10.0;
@@ -152,6 +153,12 @@ impl Widget for MenuBar {
 
     fn accepts_focus(&self) -> bool {
         true
+    }
+
+    fn accessibility(&self) -> Accessibility {
+        Accessibility::new(AccessibilityRole::MenuBar)
+            .with_states(AccessibilityState::FOCUSABLE)
+            .with_actions(AccessibilityActions::FOCUS)
     }
 }
 

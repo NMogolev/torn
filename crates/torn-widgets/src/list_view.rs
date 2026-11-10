@@ -1,7 +1,7 @@
 use torn_core::{Constraints, InputEvent, Point, Size, WheelDelta};
 use torn_ui::{
-    ChildLayout, EventContext, EventPhase, EventStatus, LayoutContext, LayoutResult, StyleTarget,
-    Widget,
+    Accessibility, AccessibilityAction, AccessibilityActions, AccessibilityRole, ChildLayout,
+    EventContext, EventPhase, EventStatus, LayoutContext, LayoutResult, StyleTarget, Widget,
 };
 
 /// A clipped, vertically scrolling list that lays out only the visible rows.
@@ -124,6 +124,20 @@ impl Widget for ListView {
 
     fn clips_children(&self) -> bool {
         true
+    }
+
+    fn accessibility(&self) -> Accessibility {
+        Accessibility::new(AccessibilityRole::List).with_actions(AccessibilityActions::SCROLL)
+    }
+
+    fn accessibility_action(&mut self, action: &AccessibilityAction) -> bool {
+        if let AccessibilityAction::ScrollBy(delta) = action {
+            let old = self.offset;
+            self.set_offset(self.offset + delta.y);
+            (self.offset - old).abs() > f32::EPSILON
+        } else {
+            false
+        }
     }
 }
 

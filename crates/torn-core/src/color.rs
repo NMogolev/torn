@@ -48,6 +48,13 @@ impl Color {
         )
     }
 
+    /// Returns this color with a different alpha component.
+    #[must_use]
+    pub const fn with_alpha(mut self, alpha: f32) -> Self {
+        self.alpha = alpha;
+        self
+    }
+
     /// Returns this color with RGB components premultiplied by alpha.
     ///
     /// Torn's public color values are unpremultiplied. Renderers that use

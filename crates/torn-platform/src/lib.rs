@@ -155,6 +155,24 @@ pub trait WindowApplication {
     /// Platform adapters may execute this list asynchronously and continue to
     /// present the last completed frame while it is rendering.
     fn redraw(&mut self) -> DisplayList;
+
+    /// Returns the current accessibility tree for this window, if any.
+    ///
+    /// Platform adapters publish the returned tree through the native
+    /// accessibility bridge: UI Automation on Windows, AT-SPI on Linux, and the
+    /// macOS Accessibility API. Returning `None` leaves accessibility disabled
+    /// for applications that do not expose semantics.
+    fn accessibility_tree(&self) -> Option<accesskit::TreeUpdate> {
+        None
+    }
+
+    /// Handles an accessibility action requested by the native bridge.
+    ///
+    /// Return `true` when the action changed application state and a new frame
+    /// should be produced. The default ignores every request.
+    fn accessibility_action(&mut self, _request: &accesskit::ActionRequest) -> bool {
+        false
+    }
 }
 
 #[cfg(test)]

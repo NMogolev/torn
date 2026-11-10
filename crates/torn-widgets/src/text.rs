@@ -1,6 +1,9 @@
 use torn_core::{Constraints, Rect};
 use torn_render::{Font, FontdueTextShaper, PaintContext, TextLayout, TextShaper, TextStyle};
-use torn_ui::{LayoutContext, LayoutResult, StyleTarget, TssStyle, UiEnvironment, Widget};
+use torn_ui::{
+    Accessibility, AccessibilityRole, LayoutContext, LayoutResult, StyleTarget, TssStyle,
+    UiEnvironment, Widget,
+};
 
 /// A widget that paints text.
 ///
@@ -145,6 +148,10 @@ impl Widget for Text {
 
     fn participates_in_hit_test(&self) -> bool {
         false
+    }
+
+    fn accessibility(&self) -> Accessibility {
+        Accessibility::new(AccessibilityRole::Label).with_value(self.layout.text())
     }
 }
 

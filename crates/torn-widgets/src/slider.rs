@@ -3,8 +3,9 @@ use torn_core::{
 };
 use torn_render::PaintContext;
 use torn_ui::{
-    EventContext, EventPhase, EventStatus, LayoutContext, LayoutResult, Signal, StyleTarget,
-    TssStyle, UiEnvironment, Widget,
+    Accessibility, AccessibilityAction, AccessibilityActions, AccessibilityRole,
+    AccessibilityState, EventContext, EventPhase, EventStatus, LayoutContext, LayoutResult, Signal,
+    StyleTarget, TssStyle, UiEnvironment, Widget,
 };
 
 const DEFAULT_WIDTH: f32 = 160.0;
@@ -238,9 +239,54 @@ impl Widget for Slider {
     fn accepts_focus(&self) -> bool {
         true
     }
+
+    fn accessibility(&self) -> Accessibility {
+        Accessibility::new(AccessibilityRole::Slider)
+            .with_numeric_value(
+                f64::from(self.value),
+                f64::from(self.minimum),
+                f64::from(self.maximum),
+            )
+            .with_states(AccessibilityState::FOCUSABLE)
+            .with_actions(
+                AccessibilityActions::FOCUS
+                    | AccessibilityActions::SET_VALUE
+                    | AccessibilityActions::INCREMENT
+                    | AccessibilityActions::DECREMENT,
+            )
+    }
+
+    fn accessibility_action(&mut self, action: &AccessibilityAction) -> bool {
+        match action {
+            AccessibilityAction::SetValue(value) => {
+                let Ok(value) = value.parse::<f32>() else {
+                    return false;
+                };
+                self.set_accessibility_value(value);
+                true
+            }
+            AccessibilityAction::Increment => {
+                self.set_accessibility_value(self.value + self.keyboard_step());
+                true
+            }
+            AccessibilityAction::Decrement => {
+                self.set_accessibility_value(self.value - self.keyboard_step());
+                true
+            }
+            _ => false,
+        }
+    }
 }
 
 impl Slider {
+    fn set_accessibility_value(&mut self, value: f32) {
+        if !value.is_finite() {
+            return;
+        }
+        self.value = value.clamp(self.minimum, self.maximum);
+        self.changed.emit(&self.value);
+    }
+
     fn value_ratio(&self) -> f32 {
         let range = self.maximum - self.minimum;
         if range > 0.0 {

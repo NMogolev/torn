@@ -1,6 +1,9 @@
 use torn_core::{Constraints, Rect, Size};
 use torn_render::PaintContext;
-use torn_ui::{LayoutContext, LayoutResult, StyleTarget, TssStyle, UiEnvironment, Widget};
+use torn_ui::{
+    Accessibility, AccessibilityRole, LayoutContext, LayoutResult, StyleTarget, TssStyle,
+    UiEnvironment, Widget,
+};
 
 const DEFAULT_WIDTH: f32 = 120.0;
 const HEIGHT: f32 = 12.0;
@@ -101,6 +104,14 @@ impl Widget for ProgressBar {
                 style.accent.unwrap_or_else(|| theme.accent()),
             );
         }
+    }
+
+    fn accessibility(&self) -> Accessibility {
+        Accessibility::new(AccessibilityRole::ProgressIndicator).with_numeric_value(
+            f64::from(self.progress),
+            0.0,
+            1.0,
+        )
     }
 }
 

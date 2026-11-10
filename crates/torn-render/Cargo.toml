@@ -12,5 +12,8 @@ workspace = true
 
 [dependencies]
 fontdue = "0.9.3"
+fontdb = { version = "0.24", default-features = false, features = ["std", "fs", "memmap"] }
+harfrust = "0.12"
 torn-core = { path = "../torn-core" }
-ttf-parser = { version = "0.25", default-features = false, features = ["opentype-layout"] }
+unicode-bidi = "0.3"
+unicode-segmentation = "1.12"

@@ -1,8 +1,9 @@
 use torn_core::{Constraints, InputEvent, Point, PointerButton, Rect, Size};
 use torn_render::{PaintContext, TextStyle};
 use torn_ui::{
-    ChildLayout, EventContext, EventPhase, EventStatus, LayoutContext, LayoutResult, Signal,
-    StyleTarget, TssStyle, UiEnvironment, Widget,
+    Accessibility, AccessibilityAction, AccessibilityActions, AccessibilityRole,
+    AccessibilityState, ChildLayout, EventContext, EventPhase, EventStatus, LayoutContext,
+    LayoutResult, Signal, StyleTarget, TssStyle, UiEnvironment, Widget,
 };
 
 const DEFAULT_TAB_HEIGHT: f32 = 30.0;
@@ -78,6 +79,33 @@ impl TabBar {
             self.changed.emit(&index);
             context.request_layout();
         }
+    }
+
+    fn select_without_context(&mut self, index: usize) -> bool {
+        if self.selected == Some(index) {
+            return true;
+        }
+        self.selected = Some(index);
+        self.changed.emit(&index);
+        true
+    }
+
+    fn accept_accessibility_value(&mut self, value: &str) -> bool {
+        let Some(index) = self.tabs.iter().position(|tab| tab == value) else {
+            return false;
+        };
+        self.select_without_context(index)
+    }
+
+    fn accept_accessibility_step(&mut self, offset: isize) -> bool {
+        let Some(last) = self.tabs.len().checked_sub(1) else {
+            return false;
+        };
+        let selected = self
+            .selected
+            .unwrap_or(if offset.is_negative() { last } else { 0 });
+        let next = selected.saturating_add_signed(offset).min(last);
+        self.select_without_context(next)
     }
 }
 
@@ -218,6 +246,32 @@ impl Widget for TabBar {
 
     fn accepts_focus(&self) -> bool {
         true
+    }
+
+    fn accessibility(&self) -> Accessibility {
+        let mut accessibility = Accessibility::new(AccessibilityRole::TabList)
+            .with_states(AccessibilityState::FOCUSABLE)
+            .with_actions(
+                AccessibilityActions::FOCUS
+                    | AccessibilityActions::SET_VALUE
+                    | AccessibilityActions::INCREMENT
+                    | AccessibilityActions::DECREMENT,
+            );
+        if let Some(index) = self.selected
+            && let Some(tab) = self.tabs.get(index)
+        {
+            accessibility = accessibility.with_value(tab);
+        }
+        accessibility
+    }
+
+    fn accessibility_action(&mut self, action: &AccessibilityAction) -> bool {
+        match action {
+            AccessibilityAction::SetValue(value) => self.accept_accessibility_value(value),
+            AccessibilityAction::Increment => self.accept_accessibility_step(1),
+            AccessibilityAction::Decrement => self.accept_accessibility_step(-1),
+            _ => false,
+        }
     }
 }
 

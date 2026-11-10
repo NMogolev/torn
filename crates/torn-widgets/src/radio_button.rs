@@ -3,8 +3,9 @@ use std::{cell::RefCell, rc::Rc};
 use torn_core::{Constraints, InputEvent, Key, NamedKey, Point, PointerButton, Rect, Size};
 use torn_render::PaintContext;
 use torn_ui::{
-    Border, ChildLayout, EventContext, EventPhase, EventStatus, LayoutContext, LayoutResult,
-    Signal, StyleTarget, TssStyle, UiEnvironment, Widget,
+    Accessibility, AccessibilityAction, AccessibilityActions, AccessibilityRole,
+    AccessibilityState, Border, ChildLayout, EventContext, EventPhase, EventStatus, LayoutContext,
+    LayoutResult, Signal, StyleTarget, TssStyle, UiEnvironment, Widget,
 };
 
 const CONTROL_SIZE: f32 = 18.0;
@@ -246,6 +247,32 @@ where
 
     fn accepts_focus(&self) -> bool {
         true
+    }
+
+    fn accessibility(&self) -> Accessibility {
+        let mut accessibility = Accessibility::new(AccessibilityRole::RadioButton)
+            .with_states(AccessibilityState::FOCUSABLE)
+            .with_actions(
+                AccessibilityActions::FOCUS
+                    | AccessibilityActions::CLICK
+                    | AccessibilityActions::SELECT,
+            );
+        if self.is_selected() {
+            accessibility = accessibility.with_states(AccessibilityState::CHECKED);
+        }
+        accessibility
+    }
+
+    fn accessibility_action(&mut self, action: &AccessibilityAction) -> bool {
+        if matches!(
+            action,
+            AccessibilityAction::Click | AccessibilityAction::Select
+        ) {
+            self.group.set_selected(&self.value);
+            true
+        } else {
+            false
+        }
     }
 }
 
