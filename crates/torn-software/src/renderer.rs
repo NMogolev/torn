@@ -35,6 +35,7 @@ impl SoftwareRenderer {
     ///
     /// Returns [`RenderError::InvalidScaleFactor`] for a non-finite or
     /// non-positive scale factor, and other errors for invalid commands.
+    #[allow(clippy::too_many_lines)]
     pub fn render_with_scale_factor(
         &self,
         display_list: &DisplayList,
@@ -92,6 +93,20 @@ impl SoftwareRenderer {
                         scale_factor,
                         *color,
                         Shape::fill(*rect, *radius),
+                    )?;
+                }
+                DisplayCommand::Shadow {
+                    rect,
+                    radius,
+                    blur,
+                    color,
+                } => {
+                    Self::fill_shape(
+                        target,
+                        &state,
+                        scale_factor,
+                        *color,
+                        Shape::shadow(*rect, *radius, *blur),
                     )?;
                 }
                 DisplayCommand::StrokeRect { rect, width, color } => {
@@ -165,13 +180,18 @@ impl SoftwareRenderer {
         validate_rect(shape.rect)?;
         validate_radius(shape.radius)?;
         validate_stroke_width(shape.stroke_width)?;
+        validate_blur(shape.blur)?;
         let inverse = state
             .transform
             .inverse()
             .ok_or(RenderError::SingularTransform)?;
-        let bounds = shape
-            .stroke_width
-            .map_or(shape.rect, |width| expand(shape.rect, width * 0.5));
+        let bounds = if shape.blur > 0.0 {
+            expand(shape.rect, shape.blur)
+        } else {
+            shape
+                .stroke_width
+                .map_or(shape.rect, |width| expand(shape.rect, width * 0.5))
+        };
         let (start_x, start_y, end_x, end_y) =
             physical_bounds(bounds, state.transform, target, scale_factor);
 
@@ -182,12 +202,19 @@ impl SoftwareRenderer {
                     continue;
                 }
                 let local = inverse.transform_point(point);
-                let inside = match shape.stroke_width {
-                    None => contains_rounded_rect(shape.rect, shape.radius, local),
-                    Some(width) => contains_stroke(shape.rect, shape.radius, width, local),
-                };
-                if inside {
-                    blend_pixel(target, x, y, color);
+                if shape.blur > 0.0 {
+                    let coverage = shadow_coverage(shape.rect, shape.radius, shape.blur, local);
+                    if coverage > 0.0 {
+                        blend_pixel(target, x, y, color.with_alpha(color.alpha * coverage));
+                    }
+                } else {
+                    let inside = match shape.stroke_width {
+                        None => contains_rounded_rect(shape.rect, shape.radius, local),
+                        Some(width) => contains_stroke(shape.rect, shape.radius, width, local),
+                    };
+                    if inside {
+                        blend_pixel(target, x, y, color);
+                    }
                 }
             }
         }
@@ -346,6 +373,7 @@ struct Shape {
     rect: Rect,
     radius: f32,
     stroke_width: Option<f32>,
+    blur: f32,
 }
 
 impl Shape {
@@ -354,6 +382,7 @@ impl Shape {
             rect,
             radius,
             stroke_width: None,
+            blur: 0.0,
         }
     }
 
@@ -362,6 +391,16 @@ impl Shape {
             rect,
             radius,
             stroke_width: Some(width),
+            blur: 0.0,
+        }
+    }
+
+    const fn shadow(rect: Rect, radius: f32, blur: f32) -> Self {
+        Self {
+            rect,
+            radius,
+            stroke_width: None,
+            blur,
         }
     }
 }
@@ -432,6 +471,41 @@ fn validate_stroke_width(width: Option<f32>) -> Result<(), RenderError> {
     }
 }
 
+fn validate_blur(blur: f32) -> Result<(), RenderError> {
+    if blur.is_finite() && blur >= 0.0 {
+        Ok(())
+    } else {
+        Err(RenderError::NonFiniteGeometry)
+    }
+}
+
+fn shadow_coverage(rect: Rect, radius: f32, blur: f32, point: Point) -> f32 {
+    let distance = rounded_rect_distance(rect, radius, point);
+    if distance <= 0.0 {
+        return 1.0;
+    }
+    1.0 - smoothstep(0.0, blur, distance)
+}
+
+fn rounded_rect_distance(rect: Rect, radius: f32, point: Point) -> f32 {
+    let half_width = rect.size.width() * 0.5;
+    let half_height = rect.size.height() * 0.5;
+    let radius = radius.max(0.0).min(half_width.min(half_height));
+    let center = Point::new(rect.origin.x + half_width, rect.origin.y + half_height);
+    let offset_x = (point.x - center.x).abs() - (half_width - radius);
+    let offset_y = (point.y - center.y).abs() - (half_height - radius);
+    let outside = offset_x.max(0.0).hypot(offset_y.max(0.0));
+    outside + offset_x.max(offset_y).min(0.0) - radius
+}
+
+fn smoothstep(edge_start: f32, edge_end: f32, value: f32) -> f32 {
+    if edge_end <= edge_start {
+        return if value < edge_start { 0.0 } else { 1.0 };
+    }
+    let t = ((value - edge_start) / (edge_end - edge_start)).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
 fn expand(rect: Rect, amount: f32) -> Rect {
     Rect::new(
         Point::new(rect.origin.x - amount, rect.origin.y - amount),
@@ -476,10 +550,12 @@ fn contains_rounded_rect(rect: Rect, radius: f32, point: Point) -> bool {
     if radius == 0.0 {
         return true;
     }
-    let closest_x = point.x.clamp(rect.origin.x + radius, rect.right() - radius);
-    let closest_y = point
-        .y
-        .clamp(rect.origin.y + radius, rect.bottom() - radius);
+    let left = rect.origin.x + radius;
+    let right = rect.right() - radius;
+    let top = rect.origin.y + radius;
+    let bottom = rect.bottom() - radius;
+    let closest_x = point.x.clamp(left, right.max(left));
+    let closest_y = point.y.clamp(top, bottom.max(top));
     let dx = point.x - closest_x;
     let dy = point.y - closest_y;
     dx * dx + dy * dy <= radius * radius
@@ -704,6 +780,37 @@ mod tests {
         assert_eq!(pixels.get(0, 0), Some(Pixel::TRANSPARENT));
         assert_eq!(pixels.get(1, 1), Some(Pixel::rgba(0, 0, 0, 255)));
         assert_eq!(pixels.get(3, 3), Some(Pixel::rgba(255, 255, 255, 255)));
+    }
+
+    #[test]
+    fn rounded_rect_containment_accepts_unrepresentable_half_widths() {
+        // `origin + radius` can land just past `right - radius` after f32
+        // rounding; the clamp must not panic for shapes that are still valid.
+        let shape = rect(0.1, 0.1, 0.01, 0.01);
+        let radius = 0.005;
+        let point = Point::new(0.105, 0.105);
+
+        assert!(super::contains_rounded_rect(shape, radius, point));
+    }
+
+    #[test]
+    fn renders_soft_shadows_with_a_falloff() {
+        let mut list = DisplayList::new();
+        PaintContext::new(&mut list).draw_shadow(rect(3.0, 3.0, 4.0, 4.0), 1.0, 3.0, Color::BLACK);
+        let mut pixels = PixelBuffer::new(12, 12).expect("small test buffer");
+
+        SoftwareRenderer
+            .render(&list, &mut pixels)
+            .expect("valid shadow display list");
+
+        let inside = pixels.get(5, 5).expect("pixel inside the shadow");
+        assert_eq!(inside.alpha, 255);
+        let edge = pixels.get(1, 5).expect("pixel in the falloff");
+        assert!(edge.alpha > 0 && edge.alpha < 255);
+        assert_eq!(
+            pixels.get(11, 11).expect("pixel outside the shadow"),
+            Pixel::TRANSPARENT
+        );
     }
 
     #[test]

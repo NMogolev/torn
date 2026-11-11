@@ -314,4 +314,8 @@ impl WindowApplication for CustomTitleBar {
             .paint(&mut PaintContext::new(&mut display_list));
         display_list
     }
+
+    fn next_frame_in(&self) -> Option<std::time::Duration> {
+        self.runtime.next_frame_in()
+    }
 }

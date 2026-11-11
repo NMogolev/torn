@@ -12,7 +12,7 @@ pub use font::{
     FontSize, FontStyle, FontWeight, GlyphBitmap,
 };
 pub use image::{RasterImage, RasterImageError};
-pub use paint::PaintContext;
+pub use paint::{PaintContext, PaintTransition};
 pub use text::{
     FontdueTextShaper, GlyphRun, LineMetrics, PositionedGlyph, TextLayout, TextLayoutCacheStats,
     TextShaper, TextStyle,

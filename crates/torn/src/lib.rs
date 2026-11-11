@@ -73,8 +73,9 @@ pub mod platform {
 pub mod render {
     pub use torn_render::{
         DisplayCommand, DisplayList, DisplayListStats, FontError, FontFace, FontdueTextShaper,
-        GlyphBitmap, GlyphRun, LineMetrics, PaintContext, PositionedGlyph, RasterImage,
-        RasterImageError, TextLayout, TextLayoutCacheStats, TextShaper, TextStyle, TextureId,
+        GlyphBitmap, GlyphRun, LineMetrics, PaintContext, PaintTransition, PositionedGlyph,
+        RasterImage, RasterImageError, TextLayout, TextLayoutCacheStats, TextShaper, TextStyle,
+        TextureId,
     };
 }
 
@@ -102,7 +103,9 @@ pub mod browser {
 
 #[cfg(test)]
 mod tests {
-    use super::{Box, Button, Color, Constraints, Size, Text, UiRuntime, render};
+    use super::{
+        Box, Button, Color, Constraints, LightTheme, Size, Text, Theme, UiRuntime, render,
+    };
     use render::{DisplayList, FontdueTextShaper, PaintContext, TextStyle};
 
     #[test]
@@ -118,6 +121,7 @@ mod tests {
             &TextStyle::new(16.0, Color::BLACK),
             None,
         );
+        let padding = LightTheme.control_padding();
         runtime
             .append_child(button, Text::new(label.clone()))
             .expect("button exists");
@@ -128,8 +132,11 @@ mod tests {
                 .layout(Constraints::UNBOUNDED)
                 .expect("widget tree does not panic")
                 .size(),
-            Size::new(label.size().width() + 16.0, label.size().height() + 16.0)
-                .expect("button adds finite padding")
+            Size::new(
+                label.size().width() + padding.left + padding.right,
+                label.size().height() + padding.top + padding.bottom,
+            )
+            .expect("button adds finite padding")
         );
         runtime
             .paint(&mut PaintContext::new(&mut display_list))

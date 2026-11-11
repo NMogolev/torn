@@ -1,5 +1,7 @@
 //! Platform-independent window, event-loop, and framebuffer contracts for Torn.
 
+use std::time::Duration;
+
 use torn_core::{InputEvent, Size};
 use torn_render::DisplayList;
 
@@ -172,6 +174,16 @@ pub trait WindowApplication {
     /// should be produced. The default ignores every request.
     fn accessibility_action(&mut self, _request: &accesskit::ActionRequest) -> bool {
         false
+    }
+
+    /// Returns how long to wait before producing the next animation frame.
+    ///
+    /// Adapters schedule a redraw after this delay and keep requesting frames
+    /// until it returns `None`. Applications with continuous animation, such as
+    /// an FPS counter, should return a frame interval whenever they need to
+    /// paint. The default disables timed redraws.
+    fn next_frame_in(&self) -> Option<Duration> {
+        None
     }
 }
 

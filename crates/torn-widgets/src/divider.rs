@@ -129,7 +129,7 @@ impl Widget for Divider {
             .color
             .or(style.background)
             .or(style.foreground)
-            .unwrap_or_else(|| environment.theme().control_background());
+            .unwrap_or_else(|| environment.theme().border());
         context.fill_rect(bounds, color);
     }
 

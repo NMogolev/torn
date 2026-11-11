@@ -272,6 +272,10 @@ impl WindowApplication for CalculatorApp {
         metrics.paint_micros = stats.last_paint_time().as_micros();
         display_list
     }
+
+    fn next_frame_in(&self) -> Option<std::time::Duration> {
+        self.runtime.next_frame_in()
+    }
 }
 
 struct StudioShell {

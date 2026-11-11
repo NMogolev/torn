@@ -23,6 +23,7 @@ struct VertexInput {
     @location(3) radius: f32,
     @location(4) stroke_width: f32,
     @location(5) color: vec4<f32>,
+    @location(6) blur: f32,
 };
 
 struct VertexOutput {
@@ -32,6 +33,7 @@ struct VertexOutput {
     @location(2) radius: f32,
     @location(3) stroke_width: f32,
     @location(4) color: vec4<f32>,
+    @location(5) blur: f32,
 };
 
 @vertex
@@ -43,6 +45,7 @@ fn vertex(input: VertexInput) -> VertexOutput {
     output.radius = input.radius;
     output.stroke_width = input.stroke_width;
     output.color = input.color;
+    output.blur = input.blur;
     return output;
 }
 
@@ -70,8 +73,13 @@ fn fragment(input: VertexOutput) -> @location(0) vec4<f32> {
     // Signed-distance derivatives express the edge width in screen pixels,
     // so rounded corners stay smooth at every scale factor.
     let antialias_width = max(fwidth(distance), 0.001);
-    let outer_coverage = 1.0 - smoothstep(-antialias_width, antialias_width, distance);
-    var coverage = outer_coverage;
+    var coverage = 1.0 - smoothstep(-antialias_width, antialias_width, distance);
+    if (input.blur > 0.0) {
+        // Shadows stay solid inside the shape and fade over `blur` logical
+        // pixels beyond the edge. The quad is expanded by the same amount in
+        // the vertex stage, so the falloff is never clipped.
+        coverage = 1.0 - smoothstep(0.0, input.blur, distance);
+    }
     if (input.stroke_width > 0.0) {
         let inner_coverage = smoothstep(
             -antialias_width,
@@ -664,6 +672,7 @@ struct ShapeVertex {
     radius: f32,
     stroke_width: f32,
     color: [f32; 4],
+    blur: f32,
 }
 
 #[repr(C)]
@@ -811,17 +820,25 @@ impl PreparedFrame {
                     });
                 }
                 DisplayCommand::FillRect { rect, color } => {
-                    self.add_shape(*rect, 0.0, 0.0, *color)?;
+                    self.add_shape(*rect, 0.0, 0.0, 0.0, *color)?;
                 }
                 DisplayCommand::FillRoundedRect {
                     rect,
                     radius,
                     color,
                 } => {
-                    self.add_shape(*rect, *radius, 0.0, *color)?;
+                    self.add_shape(*rect, *radius, 0.0, 0.0, *color)?;
+                }
+                DisplayCommand::Shadow {
+                    rect,
+                    radius,
+                    blur,
+                    color,
+                } => {
+                    self.add_shape(*rect, *radius, 0.0, *blur, *color)?;
                 }
                 DisplayCommand::StrokeRect { rect, width, color } => {
-                    self.add_shape(*rect, 0.0, *width, *color)?;
+                    self.add_shape(*rect, 0.0, *width, 0.0, *color)?;
                 }
                 DisplayCommand::StrokeRoundedRect {
                     rect,
@@ -829,7 +846,7 @@ impl PreparedFrame {
                     width,
                     color,
                 } => {
-                    self.add_shape(*rect, *radius, *width, *color)?;
+                    self.add_shape(*rect, *radius, *width, 0.0, *color)?;
                 }
                 DisplayCommand::DrawText { layout, origin } => {
                     self.add_text(layout, *origin)?;
@@ -856,11 +873,13 @@ impl PreparedFrame {
         rect: Rect,
         radius: f32,
         stroke_width: f32,
+        blur: f32,
         color: Color,
     ) -> Result<(), GpuRendererError> {
         validate_rect(rect)?;
         validate_radius(radius)?;
         validate_stroke_width(stroke_width)?;
+        validate_blur(blur)?;
         validate_color(color)?;
         if rect.size.width() == 0.0
             || rect.size.height() == 0.0
@@ -894,6 +913,13 @@ impl PreparedFrame {
             return Err(GpuRendererError::NonFiniteGeometry);
         }
         let size = [rect.size.width(), rect.size.height()];
+        // The quad grows by `blur` on every side, while `local_position` stays
+        // relative to the original shape so the fragment shader evaluates the
+        // same rounded box and only the falloff changes.
+        let quad_size = [
+            rect.size.width() + blur * 2.0,
+            rect.size.height() + blur * 2.0,
+        ];
         for (x, y) in [
             (0.0, 0.0),
             (1.0, 0.0),
@@ -902,7 +928,7 @@ impl PreparedFrame {
             (1.0, 0.0),
             (1.0, 1.0),
         ] {
-            let local = Point::new(x * size[0], y * size[1]);
+            let local = Point::new(x * quad_size[0] - blur, y * quad_size[1] - blur);
             let point = self
                 .state
                 .transform
@@ -914,6 +940,7 @@ impl PreparedFrame {
                 radius,
                 stroke_width,
                 color: [color.red, color.green, color.blue, color.alpha],
+                blur,
             });
         }
         let end = start
@@ -1232,6 +1259,7 @@ fn create_shape_pipeline(
                     3 => Float32,
                     4 => Float32,
                     5 => Float32x4,
+                    6 => Float32,
                 ],
             }],
         },
@@ -1380,6 +1408,12 @@ fn validate_radius(radius: f32) -> Result<(), GpuRendererError> {
 
 fn validate_stroke_width(width: f32) -> Result<(), GpuRendererError> {
     (width.is_finite() && width >= 0.0)
+        .then_some(())
+        .ok_or(GpuRendererError::NonFiniteGeometry)
+}
+
+fn validate_blur(blur: f32) -> Result<(), GpuRendererError> {
+    (blur.is_finite() && blur >= 0.0)
         .then_some(())
         .ok_or(GpuRendererError::NonFiniteGeometry)
 }

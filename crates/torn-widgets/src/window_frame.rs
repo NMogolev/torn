@@ -165,7 +165,7 @@ impl Widget for WindowFrame {
         let background = self
             .background
             .or(style.background)
-            .unwrap_or_else(|| environment.theme().background());
+            .unwrap_or_else(|| environment.theme().surface());
         if radius > 0.0 {
             context.fill_rounded_rect(bounds, radius, background);
         } else {

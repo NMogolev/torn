@@ -232,7 +232,7 @@ impl Widget for Alert {
             .unwrap_or_else(|| theme.corner_radius());
         let background = style
             .background
-            .unwrap_or_else(|| blend(theme.background(), tone, 0.12));
+            .unwrap_or_else(|| blend(theme.raised_surface(), tone, 0.12));
         context.fill_rounded_rect(bounds, radius, background);
         let border = style
             .border

@@ -201,22 +201,19 @@ impl Widget for Button {
         style: &TssStyle,
     ) {
         let theme = environment.theme();
-        let local = if self.pressed && self.pointer_inside {
-            self.style.pressed_background
-        } else if self.pointer_inside {
-            self.style.hover_background
-        } else {
-            self.style.background
-        };
-        let background = local.or(style.background).unwrap_or_else(|| {
-            if self.pressed && self.pointer_inside {
-                theme.control_pressed_background()
-            } else if self.pointer_inside {
-                theme.control_hover_background()
-            } else {
-                theme.control_background()
-            }
-        });
+        let styled_idle = self.style.background.or(style.background);
+        let idle = styled_idle.unwrap_or_else(|| theme.control_background());
+        let hover = self
+            .style
+            .hover_background
+            .or(styled_idle)
+            .unwrap_or_else(|| theme.control_hover_background());
+        let pressed = self
+            .style
+            .pressed_background
+            .or(styled_idle)
+            .unwrap_or_else(|| theme.control_pressed_background());
+        let background = context.transition().control_color(idle, hover, pressed);
         let radius = self
             .style
             .surface
@@ -372,6 +369,34 @@ mod tests {
     }
 
     #[test]
+    fn blends_hover_color_over_the_transition_duration() {
+        let mut runtime =
+            UiRuntime::with_environment(Button::new(), torn_ui::UiEnvironment::new(ButtonTheme));
+        runtime
+            .layout(
+                Constraints::tight(Size::new(20.0, 20.0).expect("valid button size"))
+                    .expect("valid constraints"),
+            )
+            .expect("button layout succeeds");
+        let _ = runtime.dispatch_event(&pointer_move(Point::new(10.0, 10.0)));
+        runtime.advance_animations(ButtonTheme.animation_duration() / 2);
+        let mut list_mid = DisplayList::new();
+        runtime
+            .paint(&mut torn_render::PaintContext::new(&mut list_mid))
+            .expect("button paint succeeds");
+
+        let color = fill_color(&list_mid);
+        let expected = ButtonTheme
+            .control_background()
+            .mix(ButtonTheme.control_hover_background(), 0.5);
+        assert!((color.red - expected.red).abs() < 0.01);
+        assert!((color.green - expected.green).abs() < 0.01);
+        assert!((color.blue - expected.blue).abs() < 0.01);
+        assert_ne!(color, ButtonTheme.control_background());
+        assert_ne!(color, ButtonTheme.control_hover_background());
+    }
+
+    #[test]
     fn resolves_normal_and_pressed_backgrounds_from_the_runtime_theme() {
         let mut runtime =
             UiRuntime::with_environment(Button::new(), torn_ui::UiEnvironment::new(ButtonTheme));
@@ -396,6 +421,7 @@ mod tests {
             modifiers: Modifiers::NONE,
         });
         let _ = runtime.dispatch_event(&event);
+        runtime.settle_animations();
         let mut pressed_list = DisplayList::new();
         runtime
             .paint(&mut torn_render::PaintContext::new(&mut pressed_list))
@@ -450,6 +476,7 @@ mod tests {
             )
             .expect("button layout succeeds");
         let _ = runtime.dispatch_event(&pointer_move(Point::ZERO));
+        runtime.settle_animations();
         let mut hover_list = DisplayList::new();
         runtime
             .paint(&mut torn_render::PaintContext::new(&mut hover_list))
@@ -464,6 +491,7 @@ mod tests {
             buttons: PointerButtons::NONE,
             modifiers: Modifiers::NONE,
         }));
+        runtime.settle_animations();
         let mut normal_list = DisplayList::new();
         runtime
             .paint(&mut torn_render::PaintContext::new(&mut normal_list))
@@ -471,6 +499,7 @@ mod tests {
         assert_eq!(fill_color(&normal_list), normal);
 
         let _ = runtime.dispatch_event(&pointer_event(Point::ZERO, true));
+        runtime.settle_animations();
         let mut pressed_list = DisplayList::new();
         runtime
             .paint(&mut torn_render::PaintContext::new(&mut pressed_list))
@@ -594,17 +623,23 @@ mod tests {
     }
 
     fn fill_color(list: &DisplayList) -> Color {
-        let [DisplayCommand::FillRoundedRect { color, .. }] = list.commands() else {
-            panic!("button should record one fill command");
-        };
-        *color
+        list.commands()
+            .iter()
+            .find_map(|command| match command {
+                DisplayCommand::FillRoundedRect { color, .. } => Some(*color),
+                _ => None,
+            })
+            .expect("button should record a rounded fill command")
     }
 
     fn fill_radius(list: &DisplayList) -> f32 {
-        let [DisplayCommand::FillRoundedRect { radius, .. }] = list.commands() else {
-            panic!("button should record one rounded fill command");
-        };
-        *radius
+        list.commands()
+            .iter()
+            .find_map(|command| match command {
+                DisplayCommand::FillRoundedRect { radius, .. } => Some(*radius),
+                _ => None,
+            })
+            .expect("button should record a rounded fill command")
     }
 
     fn pointer_move(position: Point) -> InputEvent {

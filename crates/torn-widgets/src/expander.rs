@@ -193,18 +193,11 @@ impl Widget for Expander {
                 self.header_height.min(bounds.size.height()),
             ),
         );
-        let background = style
-            .background
-            .unwrap_or_else(|| theme.control_background());
+        let background = style.background.unwrap_or_else(|| theme.raised_surface());
         context.fill_rounded_rect(header, radius, background);
-        let border = style.border.unwrap_or_else(|| {
-            Border::new(
-                1.0,
-                theme
-                    .muted_foreground()
-                    .with_alpha(theme.muted_foreground().alpha * 0.35),
-            )
-        });
+        let border = style
+            .border
+            .unwrap_or_else(|| Border::new(1.0, theme.border()));
         context.stroke_rounded_rect(header, radius, border.width, border.color);
 
         let icon_color = style.foreground_or(theme.foreground());

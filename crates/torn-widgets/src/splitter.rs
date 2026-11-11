@@ -148,7 +148,14 @@ impl Widget for Splitter {
                 self.thickness,
             ),
         };
-        context.fill_rect(divider, style.accent_or(environment.theme().accent()));
+        let color = if self.dragging.is_some() {
+            style.accent_or(environment.theme().accent())
+        } else {
+            style
+                .foreground
+                .unwrap_or_else(|| environment.theme().border())
+        };
+        context.fill_rect(divider, color);
     }
 
     fn handle_event(&mut self, context: &mut EventContext<'_>, event: &InputEvent) -> EventStatus {

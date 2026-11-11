@@ -5,12 +5,95 @@ use crate::{DisplayCommand, DisplayList, RasterImage, TextLayout, TextureId};
 /// A recording interface that appends paint operations to a [`DisplayList`].
 pub struct PaintContext<'a> {
     display_list: &'a mut DisplayList,
+    transition: PaintTransition,
+}
+
+/// Eased interaction progress supplied to a widget during paint.
+///
+/// The runtime advances these values as the pointer hovers, presses, or focuses
+/// a control, and widgets blend their idle, hover, pressed, and focused colors
+/// with them. Values are already normalized to `0.0..=1.0` and use a smooth
+/// ease-in-out curve, so widgets can mix colors directly.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct PaintTransition {
+    hover: f32,
+    press: f32,
+    focus: f32,
+}
+
+impl PaintTransition {
+    /// No interaction progress; all values are zero.
+    pub const NONE: Self = Self {
+        hover: 0.0,
+        press: 0.0,
+        focus: 0.0,
+    };
+
+    /// Creates a transition from eased `hover`, `press`, and `focus` values.
+    #[must_use]
+    pub const fn new(hover: f32, press: f32, focus: f32) -> Self {
+        Self {
+            hover,
+            press,
+            focus,
+        }
+    }
+
+    /// Returns the eased hover progress.
+    #[must_use]
+    pub const fn hover(self) -> f32 {
+        self.hover
+    }
+
+    /// Returns the eased press progress.
+    #[must_use]
+    pub const fn press(self) -> f32 {
+        self.press
+    }
+
+    /// Returns the eased focus progress.
+    #[must_use]
+    pub const fn focus(self) -> f32 {
+        self.focus
+    }
+
+    /// Blends an idle color through its hovered and pressed variants.
+    ///
+    /// Hover is applied first, then press, so a pressed control retains its
+    /// hover tint while the press fades in and out.
+    #[must_use]
+    pub fn control_color(self, idle: Color, hover: Color, pressed: Color) -> Color {
+        idle.mix(hover, self.hover).mix(pressed, self.press)
+    }
+
+    /// Blends `idle` toward `focused` by the focus progress.
+    #[must_use]
+    pub fn focus_color(self, idle: Color, focused: Color) -> Color {
+        idle.mix(focused, self.focus)
+    }
 }
 
 impl<'a> PaintContext<'a> {
     /// Creates a context that records into `display_list`.
     pub fn new(display_list: &'a mut DisplayList) -> Self {
-        Self { display_list }
+        Self {
+            display_list,
+            transition: PaintTransition::NONE,
+        }
+    }
+
+    /// Replaces the interaction progress applied by widgets.
+    ///
+    /// `torn_ui::UiRuntime` sets this before painting every node. Custom paint
+    /// drivers can use it to preview or force a visual state.
+    pub fn set_transition(&mut self, transition: PaintTransition) {
+        self.transition = transition;
+    }
+
+    /// Returns the interaction progress for the widget currently being painted.
+    #[must_use]
+    pub const fn transition(&self) -> PaintTransition {
+        self.transition
     }
 
     /// Returns the number of commands recorded in the target display list.
@@ -35,6 +118,24 @@ impl<'a> PaintContext<'a> {
         self.display_list.push(DisplayCommand::FillRoundedRect {
             rect,
             radius,
+            color,
+        });
+    }
+
+    /// Records a soft drop shadow cast by a rounded rectangle.
+    ///
+    /// `elevation` is the shadow's visual height in logical pixels. It drives
+    /// both the downward offset and the width of the soft falloff. Widgets draw
+    /// the shadow before the surface it belongs to.
+    pub fn draw_shadow(&mut self, rect: Rect, radius: f32, elevation: f32, color: Color) {
+        if !elevation.is_finite() || elevation <= 0.0 || color.alpha <= 0.0 {
+            return;
+        }
+        let offset = elevation * 0.35;
+        self.display_list.push(DisplayCommand::Shadow {
+            rect: Rect::new(Point::new(rect.origin.x, rect.origin.y + offset), rect.size),
+            radius,
+            blur: elevation,
             color,
         });
     }
@@ -146,7 +247,7 @@ impl<'a> PaintContext<'a> {
 mod tests {
     use torn_core::{Affine, Color, Point, Rect, Size};
 
-    use crate::{DisplayCommand, DisplayList, PaintContext, TextureId};
+    use crate::{DisplayCommand, DisplayList, PaintContext, PaintTransition, TextureId};
 
     fn size(width: f32, height: f32) -> Size {
         Size::new(width, height).expect("valid test size")
@@ -172,6 +273,43 @@ mod tests {
                 DisplayCommand::Restore,
             ]
         );
+    }
+
+    #[test]
+    fn records_shadows_with_a_soft_falloff() {
+        let rect = Rect::new(Point::new(2.0, 4.0), size(10.0, 6.0));
+        let mut display_list = DisplayList::new();
+
+        PaintContext::new(&mut display_list).draw_shadow(rect, 3.0, 4.0, Color::BLACK);
+
+        let [
+            DisplayCommand::Shadow {
+                rect: shadow,
+                radius,
+                blur,
+                color,
+            },
+        ] = display_list.commands()
+        else {
+            panic!("expected one shadow command");
+        };
+        assert!((*radius - 3.0).abs() < f32::EPSILON);
+        assert!((*blur - 4.0).abs() < f32::EPSILON);
+        assert_eq!(*color, Color::BLACK);
+        assert!((shadow.origin.y - rect.origin.y - 1.4).abs() < 0.001);
+    }
+
+    #[test]
+    fn ignores_empty_shadows() {
+        let rect = Rect::new(Point::ZERO, size(10.0, 6.0));
+        let mut display_list = DisplayList::new();
+        let mut paint = PaintContext::new(&mut display_list);
+
+        paint.draw_shadow(rect, 3.0, 0.0, Color::BLACK);
+        paint.draw_shadow(rect, 3.0, 4.0, Color::TRANSPARENT);
+        paint.draw_shadow(rect, 3.0, f32::NAN, Color::BLACK);
+
+        assert!(display_list.is_empty());
     }
 
     #[test]
@@ -215,5 +353,31 @@ mod tests {
                 },
             ]
         ));
+    }
+
+    #[test]
+    fn blends_control_colors_through_hover_and_press() {
+        let idle = Color::rgb(0.0, 0.0, 0.0);
+        let hover = Color::rgb(0.5, 0.5, 0.5);
+        let pressed = Color::rgb(1.0, 1.0, 1.0);
+        let transition = PaintTransition::new(1.0, 0.5, 0.0);
+
+        let color = transition.control_color(idle, hover, pressed);
+
+        assert!((color.red - 0.75).abs() < 0.001);
+        assert_eq!(transition.focus_color(idle, pressed), idle);
+    }
+
+    #[test]
+    fn paint_context_starts_without_transition_progress() {
+        let mut display_list = DisplayList::new();
+        let mut paint = PaintContext::new(&mut display_list);
+        assert_eq!(paint.transition(), PaintTransition::NONE);
+
+        paint.set_transition(PaintTransition::new(0.25, 0.5, 0.75));
+
+        assert!((paint.transition().hover() - 0.25).abs() < f32::EPSILON);
+        assert!((paint.transition().press() - 0.5).abs() < f32::EPSILON);
+        assert!((paint.transition().focus() - 0.75).abs() < f32::EPSILON);
     }
 }

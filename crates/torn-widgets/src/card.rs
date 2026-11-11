@@ -6,8 +6,6 @@ use torn_ui::{
 };
 
 const DEFAULT_ELEVATION: f32 = 6.0;
-const SHADOW_LAYERS: [(f32, f32, f32); 3] =
-    [(0.60, 0.50, 0.10), (0.35, 0.30, 0.16), (0.15, 0.12, 0.24)];
 
 /// Locally overridable visual properties for a [`Card`].
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -174,36 +172,14 @@ impl Widget for Card {
             .or(style.corner_radius)
             .unwrap_or_else(|| theme.corner_radius());
         let elevation = self.style.elevation;
-        if elevation > 0.0 {
-            let shadow = self
-                .style
-                .shadow_color
-                .unwrap_or(Color::rgba(0.0, 0.0, 0.0, 0.55));
-            for (spread, offset, alpha) in SHADOW_LAYERS {
-                let spread = elevation * spread;
-                let shadow_bounds = Rect::new(
-                    Point::new(
-                        bounds.origin.x - spread,
-                        bounds.origin.y - spread + elevation * offset,
-                    ),
-                    size(
-                        bounds.size.width() + spread * 2.0,
-                        bounds.size.height() + spread * 2.0,
-                    ),
-                );
-                context.fill_rounded_rect(
-                    shadow_bounds,
-                    radius + spread,
-                    Color::rgba(shadow.red, shadow.green, shadow.blue, shadow.alpha * alpha),
-                );
-            }
-        }
+        let shadow = self.style.shadow_color.unwrap_or_else(|| theme.shadow());
+        context.draw_shadow(bounds, radius, elevation, shadow);
         let background = self
             .style
             .surface
             .background
             .or(style.background)
-            .unwrap_or_else(|| theme.control_background());
+            .unwrap_or_else(|| theme.raised_surface());
         context.fill_rounded_rect(bounds, radius, background);
         if let Some(border) = self.style.surface.border.or(style.border) {
             context.stroke_rounded_rect(bounds, radius, border.width, border.color);
@@ -238,7 +214,8 @@ mod tests {
             .expect("card paint succeeds");
 
         let commands = display_list.commands();
-        assert_eq!(commands.len(), 4);
+        assert_eq!(commands.len(), 2);
+        assert!(matches!(commands[0], DisplayCommand::Shadow { .. }));
         assert!(matches!(
             commands.last(),
             Some(DisplayCommand::FillRoundedRect { .. })

@@ -220,14 +220,22 @@ impl Widget for Dropdown {
         let text_style = TextStyle::new_with_font(font, foreground);
         let padding = style.padding_or(default_padding());
         let header = Rect::new(bounds.origin, size(bounds.size.width(), self.header_height));
+        let transition = context.transition();
+        let accent = style.accent_or(theme.accent());
         context.fill_rounded_rect(
             header,
             radius,
-            style.background_or(theme.control_background()),
+            style.background.unwrap_or_else(|| {
+                transition.control_color(
+                    theme.control_background(),
+                    theme.control_hover_background(),
+                    theme.control_pressed_background(),
+                )
+            }),
         );
-        let border = style
-            .border
-            .unwrap_or_else(|| torn_ui::Border::new(1.0, theme.control_background()));
+        let border = style.border.unwrap_or_else(|| {
+            torn_ui::Border::new(1.0, transition.focus_color(theme.border(), accent))
+        });
         context.stroke_rounded_rect(header, radius, border.width, border.color);
         if let Some(option) = self.selected_option() {
             let text = environment.text_shaper().layout(
@@ -256,6 +264,14 @@ impl Widget for Dropdown {
             return;
         }
         context.with_clip(bounds, |context| {
+            let popup = Rect::new(
+                Point::new(bounds.origin.x, bounds.origin.y + self.header_height),
+                size(
+                    bounds.size.width(),
+                    (bounds.size.height() - self.header_height).max(0.0),
+                ),
+            );
+            context.fill_rect(popup, theme.raised_surface());
             for (index, option) in self.options.iter().enumerate() {
                 let row = Rect::new(
                     Point::new(
@@ -266,12 +282,10 @@ impl Widget for Dropdown {
                     ),
                     size(bounds.size.width(), self.row_height),
                 );
-                let background = if self.selected == Some(index) {
-                    style.accent_or(theme.control_pressed_background())
-                } else {
-                    style.background_or(theme.background())
-                };
-                context.fill_rect(row, background);
+                if self.selected == Some(index) {
+                    context.fill_rect(row, style.background.unwrap_or_else(|| theme.selection()));
+                    context.fill_rect(Rect::new(row.origin, size(3.0, row.size.height())), accent);
+                }
                 let text = environment.text_shaper().layout(
                     option,
                     &text_style,

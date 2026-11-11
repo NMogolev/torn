@@ -17,6 +17,8 @@ pub struct DisplayListStats {
     pub strokes: usize,
     /// Number of [`DisplayCommand::StrokeRoundedRect`] operations.
     pub rounded_strokes: usize,
+    /// Number of [`DisplayCommand::Shadow`] operations.
+    pub shadows: usize,
     /// Number of [`DisplayCommand::DrawText`] operations.
     pub text_runs: usize,
     /// Number of [`DisplayCommand::DrawImage`] operations.
@@ -37,6 +39,7 @@ impl DisplayListStats {
             + self.rounded_fills
             + self.strokes
             + self.rounded_strokes
+            + self.shadows
             + self.text_runs
             + self.images
             + self.textures
@@ -88,6 +91,7 @@ impl DisplayList {
                 DisplayCommand::FillRoundedRect { .. } => stats.rounded_fills += 1,
                 DisplayCommand::StrokeRect { .. } => stats.strokes += 1,
                 DisplayCommand::StrokeRoundedRect { .. } => stats.rounded_strokes += 1,
+                DisplayCommand::Shadow { .. } => stats.shadows += 1,
                 DisplayCommand::DrawText { .. } => stats.text_runs += 1,
                 DisplayCommand::DrawImage { .. } => stats.images += 1,
                 DisplayCommand::DrawTexture { .. } => stats.textures += 1,
@@ -140,12 +144,24 @@ fn command_bounds(command: &DisplayCommand) -> Option<Rect> {
         | DisplayCommand::DrawTexture {
             destination: rect, ..
         } => Some(*rect),
+        DisplayCommand::Shadow { rect, blur, .. } => Some(inflate(*rect, *blur)),
         DisplayCommand::DrawText { layout, origin } => Some(Rect::new(*origin, layout.size())),
         DisplayCommand::Save
         | DisplayCommand::Restore
         | DisplayCommand::Transform { .. }
         | DisplayCommand::PopClip => None,
     }
+}
+
+fn inflate(rect: Rect, amount: f32) -> Rect {
+    Rect::new(
+        Point::new(rect.origin.x - amount, rect.origin.y - amount),
+        torn_core::Size::new(
+            rect.size.width() + amount * 2.0,
+            rect.size.height() + amount * 2.0,
+        )
+        .expect("inflating a finite rectangle stays valid"),
+    )
 }
 
 /// One backend-neutral paint operation.
@@ -194,6 +210,22 @@ pub enum DisplayCommand {
         /// Border width in logical pixels.
         width: f32,
         /// Unpremultiplied sRGBA source color.
+        color: Color,
+    },
+    /// Paints a soft drop shadow behind a rounded rectangle.
+    ///
+    /// The shape at `rect` is filled fully, then fades to transparent over
+    /// `blur` logical pixels beyond its edge. Backends render this with an
+    /// analytic blur rather than by compositing many stacked rectangles, so one
+    /// shadow command stays cheap enough for hover states and popups.
+    Shadow {
+        /// Bounds of the solid part of the shadow in logical pixels.
+        rect: Rect,
+        /// Radius of every corner in logical pixels.
+        radius: f32,
+        /// Width of the soft falloff outside `rect`, in logical pixels.
+        blur: f32,
+        /// Unpremultiplied sRGBA shadow color.
         color: Color,
     },
     /// Restricts all subsequent paint operations to the supplied rectangle.

@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use torn_core::{Color, Insets};
 use torn_render::{Font, FontStyle, FontWeight};
 
@@ -15,6 +17,59 @@ pub trait Theme {
 
     /// Highlight color for focused and selected controls.
     fn accent(&self) -> Color;
+
+    /// Main surface color for panels, cards, popups, and input fields.
+    ///
+    /// The default preserves the single-surface appearance of older custom
+    /// themes. Modern themes usually return a slightly different tone from
+    /// [`Self::background`].
+    fn surface(&self) -> Color {
+        self.background()
+    }
+
+    /// Surface color raised above [`Self::surface`], such as a card or menu.
+    fn raised_surface(&self) -> Color {
+        self.control_background()
+    }
+
+    /// Default outline color for dividers, inputs, and grouped surfaces.
+    ///
+    /// The default is a translucent foreground tint, so it follows both light
+    /// and dark custom palettes without requiring another theme value.
+    fn border(&self) -> Color {
+        let foreground = self.foreground();
+        Color::rgba(
+            foreground.red,
+            foreground.green,
+            foreground.blue,
+            foreground.alpha * 0.16,
+        )
+    }
+
+    /// Color of the keyboard focus ring painted around the focused control.
+    fn focus_ring(&self) -> Color {
+        self.accent()
+    }
+
+    /// Tint used for a soft drop shadow below elevated surfaces.
+    fn shadow(&self) -> Color {
+        Color::rgba(0.0, 0.0, 0.0, 0.45)
+    }
+
+    /// Text and icon color placed on top of an [`Self::accent`] fill.
+    fn accent_foreground(&self) -> Color {
+        Color::WHITE
+    }
+
+    /// Background tint behind selected text or rows.
+    fn selection(&self) -> Color {
+        self.accent().with_alpha(0.24)
+    }
+
+    /// Foreground color for disabled text and icons.
+    fn disabled_foreground(&self) -> Color {
+        self.muted_foreground()
+    }
 
     /// Foreground color for secondary labels and hints.
     ///
@@ -136,6 +191,15 @@ pub trait Theme {
 
     /// Default corner radius for controls, in logical pixels.
     fn corner_radius(&self) -> f32;
+
+    /// Duration of hover, press, and focus color transitions.
+    ///
+    /// Return [`Duration::ZERO`] to switch interactions instantly for this
+    /// theme. Applications can also disable animation globally through
+    /// [`crate::UiEnvironment::set_animations_enabled`].
+    fn animation_duration(&self) -> Duration {
+        Duration::from_millis(140)
+    }
 }
 
 /// Built-in dark color theme.
@@ -144,51 +208,87 @@ pub struct DarkTheme;
 
 impl Theme for DarkTheme {
     fn background(&self) -> Color {
-        Color::rgba8(30, 30, 30, 255)
+        Color::rgba8(15, 17, 23, 255)
+    }
+
+    fn surface(&self) -> Color {
+        Color::rgba8(22, 26, 35, 255)
+    }
+
+    fn raised_surface(&self) -> Color {
+        Color::rgba8(28, 34, 48, 255)
     }
 
     fn foreground(&self) -> Color {
-        Color::rgba8(230, 230, 230, 255)
+        Color::rgba8(231, 235, 243, 255)
     }
 
     fn accent(&self) -> Color {
-        Color::rgba8(0, 122, 204, 255)
+        Color::rgba8(124, 156, 255, 255)
+    }
+
+    fn accent_foreground(&self) -> Color {
+        Color::rgba8(11, 16, 32, 255)
     }
 
     fn control_background(&self) -> Color {
-        Color::rgba8(60, 60, 60, 255)
+        Color::rgba8(34, 42, 57, 255)
     }
 
     fn control_pressed_background(&self) -> Color {
-        Color::rgba8(80, 80, 80, 255)
+        Color::rgba8(55, 66, 90, 255)
     }
 
     fn control_hover_background(&self) -> Color {
-        Color::rgba8(70, 70, 70, 255)
+        Color::rgba8(43, 52, 70, 255)
+    }
+
+    fn border(&self) -> Color {
+        Color::rgba8(44, 53, 72, 255)
+    }
+
+    fn focus_ring(&self) -> Color {
+        Color::rgba8(143, 180, 255, 255)
+    }
+
+    fn shadow(&self) -> Color {
+        Color::rgba8(0, 0, 0, 150)
+    }
+
+    fn selection(&self) -> Color {
+        Color::rgba8(124, 156, 255, 64)
     }
 
     fn muted_foreground(&self) -> Color {
-        Color::rgba8(150, 150, 150, 255)
+        Color::rgba8(154, 166, 188, 255)
+    }
+
+    fn disabled_foreground(&self) -> Color {
+        Color::rgba8(110, 121, 140, 255)
     }
 
     fn success(&self) -> Color {
-        Color::rgba8(46, 204, 113, 255)
+        Color::rgba8(74, 222, 128, 255)
     }
 
     fn warning(&self) -> Color {
-        Color::rgba8(241, 196, 15, 255)
+        Color::rgba8(251, 191, 36, 255)
     }
 
     fn danger(&self) -> Color {
-        Color::rgba8(232, 17, 35, 255)
+        Color::rgba8(251, 113, 133, 255)
     }
 
     fn title_bar_background(&self) -> Color {
-        Color::rgba8(24, 24, 24, 255)
+        Color::rgba8(17, 21, 29, 255)
     }
 
     fn title_bar_hover_background(&self) -> Color {
-        Color::rgba8(45, 45, 45, 255)
+        Color::rgba8(32, 40, 56, 255)
+    }
+
+    fn control_padding(&self) -> Insets {
+        Insets::new(7.0, 12.0, 7.0, 12.0)
     }
 
     fn spacing(&self) -> f32 {
@@ -200,7 +300,7 @@ impl Theme for DarkTheme {
     }
 
     fn corner_radius(&self) -> f32 {
-        4.0
+        8.0
     }
 }
 
@@ -210,51 +310,87 @@ pub struct LightTheme;
 
 impl Theme for LightTheme {
     fn background(&self) -> Color {
-        Color::rgba8(250, 250, 250, 255)
+        Color::rgba8(246, 247, 251, 255)
+    }
+
+    fn surface(&self) -> Color {
+        Color::rgba8(255, 255, 255, 255)
+    }
+
+    fn raised_surface(&self) -> Color {
+        Color::rgba8(255, 255, 255, 255)
     }
 
     fn foreground(&self) -> Color {
-        Color::rgba8(30, 30, 30, 255)
+        Color::rgba8(27, 31, 39, 255)
     }
 
     fn accent(&self) -> Color {
-        Color::rgba8(0, 103, 192, 255)
+        Color::rgba8(37, 99, 235, 255)
+    }
+
+    fn accent_foreground(&self) -> Color {
+        Color::WHITE
     }
 
     fn control_background(&self) -> Color {
-        Color::rgba8(235, 235, 235, 255)
+        Color::rgba8(238, 241, 246, 255)
     }
 
     fn control_pressed_background(&self) -> Color {
-        Color::rgba8(210, 210, 210, 255)
+        Color::rgba8(216, 223, 234, 255)
     }
 
     fn control_hover_background(&self) -> Color {
-        Color::rgba8(225, 225, 225, 255)
+        Color::rgba8(228, 233, 242, 255)
+    }
+
+    fn border(&self) -> Color {
+        Color::rgba8(213, 219, 230, 255)
+    }
+
+    fn focus_ring(&self) -> Color {
+        Color::rgba8(59, 130, 246, 255)
+    }
+
+    fn shadow(&self) -> Color {
+        Color::rgba8(22, 30, 50, 56)
+    }
+
+    fn selection(&self) -> Color {
+        Color::rgba8(37, 99, 235, 64)
     }
 
     fn muted_foreground(&self) -> Color {
-        Color::rgba8(100, 100, 100, 255)
+        Color::rgba8(98, 107, 122, 255)
+    }
+
+    fn disabled_foreground(&self) -> Color {
+        Color::rgba8(150, 158, 170, 255)
     }
 
     fn success(&self) -> Color {
-        Color::rgba8(39, 174, 96, 255)
+        Color::rgba8(22, 163, 74, 255)
     }
 
     fn warning(&self) -> Color {
-        Color::rgba8(230, 126, 34, 255)
+        Color::rgba8(217, 119, 6, 255)
     }
 
     fn danger(&self) -> Color {
-        Color::rgba8(196, 43, 28, 255)
+        Color::rgba8(220, 38, 38, 255)
     }
 
     fn title_bar_background(&self) -> Color {
-        Color::rgba8(240, 240, 240, 255)
+        Color::rgba8(241, 243, 248, 255)
     }
 
     fn title_bar_hover_background(&self) -> Color {
-        Color::rgba8(220, 220, 220, 255)
+        Color::rgba8(227, 232, 241, 255)
+    }
+
+    fn control_padding(&self) -> Insets {
+        Insets::new(7.0, 12.0, 7.0, 12.0)
     }
 
     fn spacing(&self) -> f32 {
@@ -266,7 +402,7 @@ impl Theme for LightTheme {
     }
 
     fn corner_radius(&self) -> f32 {
-        4.0
+        8.0
     }
 }
 
@@ -329,6 +465,62 @@ impl Theme for SystemTheme {
         match self.appearance {
             SystemAppearance::Light => LightTheme.accent(),
             SystemAppearance::Dark => DarkTheme.accent(),
+        }
+    }
+
+    fn surface(&self) -> Color {
+        match self.appearance {
+            SystemAppearance::Light => LightTheme.surface(),
+            SystemAppearance::Dark => DarkTheme.surface(),
+        }
+    }
+
+    fn raised_surface(&self) -> Color {
+        match self.appearance {
+            SystemAppearance::Light => LightTheme.raised_surface(),
+            SystemAppearance::Dark => DarkTheme.raised_surface(),
+        }
+    }
+
+    fn border(&self) -> Color {
+        match self.appearance {
+            SystemAppearance::Light => LightTheme.border(),
+            SystemAppearance::Dark => DarkTheme.border(),
+        }
+    }
+
+    fn focus_ring(&self) -> Color {
+        match self.appearance {
+            SystemAppearance::Light => LightTheme.focus_ring(),
+            SystemAppearance::Dark => DarkTheme.focus_ring(),
+        }
+    }
+
+    fn shadow(&self) -> Color {
+        match self.appearance {
+            SystemAppearance::Light => LightTheme.shadow(),
+            SystemAppearance::Dark => DarkTheme.shadow(),
+        }
+    }
+
+    fn accent_foreground(&self) -> Color {
+        match self.appearance {
+            SystemAppearance::Light => LightTheme.accent_foreground(),
+            SystemAppearance::Dark => DarkTheme.accent_foreground(),
+        }
+    }
+
+    fn selection(&self) -> Color {
+        match self.appearance {
+            SystemAppearance::Light => LightTheme.selection(),
+            SystemAppearance::Dark => DarkTheme.selection(),
+        }
+    }
+
+    fn disabled_foreground(&self) -> Color {
+        match self.appearance {
+            SystemAppearance::Light => LightTheme.disabled_foreground(),
+            SystemAppearance::Dark => DarkTheme.disabled_foreground(),
         }
     }
 
@@ -440,7 +632,11 @@ mod tests {
     #[test]
     fn built_in_palettes_have_distinct_surfaces() {
         assert_ne!(DarkTheme.background(), LightTheme.background());
-        assert_eq!(DarkTheme.foreground(), Color::rgba8(230, 230, 230, 255));
+        assert_ne!(DarkTheme.surface(), DarkTheme.background());
+        assert_ne!(LightTheme.surface(), LightTheme.background());
+        assert_eq!(DarkTheme.foreground(), Color::rgba8(231, 235, 243, 255));
+        assert_eq!(DarkTheme.accent_foreground(), Color::rgba8(11, 16, 32, 255));
+        assert!(LightTheme.shadow().alpha < DarkTheme.shadow().alpha);
     }
 
     #[test]
@@ -454,8 +650,15 @@ mod tests {
     }
 
     #[test]
-    fn default_button_values_preserve_the_legacy_geometry() {
-        assert_eq!(LightTheme.control_padding(), Insets::all(8.0));
-        assert_eq!(DarkTheme.control_padding(), Insets::all(8.0));
+    fn built_in_controls_use_comfortable_padding_and_corners() {
+        assert_eq!(
+            LightTheme.control_padding(),
+            Insets::new(7.0, 12.0, 7.0, 12.0)
+        );
+        assert_eq!(
+            DarkTheme.control_padding(),
+            Insets::new(7.0, 12.0, 7.0, 12.0)
+        );
+        assert!((DarkTheme.corner_radius() - 8.0).abs() < f32::EPSILON);
     }
 }

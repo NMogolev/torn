@@ -188,24 +188,26 @@ impl Widget for TabBar {
         style: &TssStyle,
     ) {
         let theme = environment.theme();
-        let background = style.background.unwrap_or_else(|| theme.background());
+        let background = style.background.unwrap_or_else(|| theme.surface());
         let accent = style.accent.unwrap_or_else(|| theme.accent());
         let foreground = style.foreground_or(theme.foreground());
+        let muted = theme.muted_foreground();
         let font = environment.font_for(style);
-        let text_style = TextStyle::new_with_font(font, foreground);
         context.fill_rect(bounds, background);
-        if let Some(border) = style.border {
-            context.stroke_rect(bounds, border.width, border.color);
-        }
+        let divider = style
+            .border
+            .unwrap_or_else(|| torn_ui::Border::new(1.0, theme.border()));
         context.with_clip(bounds, |context| {
             for (index, (tab, tab_bounds)) in self.tabs.iter().zip(&self.tab_bounds).enumerate() {
                 let tab_bounds = offset_rect(*tab_bounds, bounds.origin);
-                let color = if self.selected == Some(index) {
-                    accent
-                } else {
-                    theme.control_background()
-                };
-                context.fill_rect(tab_bounds, color);
+                let selected = self.selected == Some(index);
+                if selected {
+                    context.fill_rect(tab_bounds, theme.raised_surface());
+                }
+                let text_style = TextStyle::new_with_font(
+                    font.clone(),
+                    if selected { foreground } else { muted },
+                );
                 let text = environment.text_shaper().layout(
                     tab,
                     &text_style,
@@ -218,8 +220,28 @@ impl Widget for TabBar {
                         tab_bounds.origin.y + VERTICAL_TEXT_OFFSET,
                     ),
                 );
+                if selected {
+                    let underline = Rect::new(
+                        Point::new(
+                            tab_bounds.origin.x + 2.0,
+                            tab_bounds.origin.y + tab_bounds.size.height() - 3.0,
+                        ),
+                        size((tab_bounds.size.width() - 4.0).max(0.0), 3.0),
+                    );
+                    context.fill_rounded_rect(underline, 1.5, accent);
+                }
             }
         });
+        context.fill_rect(
+            Rect::new(
+                Point::new(
+                    bounds.origin.x,
+                    bounds.origin.y + bounds.size.height() - divider.width,
+                ),
+                size(bounds.size.width(), divider.width),
+            ),
+            divider.color,
+        );
     }
 
     fn handle_event(&mut self, context: &mut EventContext<'_>, event: &InputEvent) -> EventStatus {

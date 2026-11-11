@@ -6,11 +6,11 @@
 use std::{cell::RefCell, rc::Rc};
 
 use torn::{
-    Align, Alignment, Border, Box as TornBox, Button, Checkbox, ChildLayout, Color, Column,
-    Constraints, DockArea, DockAxis, Dropdown, Image, Insets, LayoutContext, LayoutNode,
-    LayoutResult, ListView, MenuBar, Padding, PanelId, Point, ProgressBar, RadioButton, RadioGroup,
-    Rect, Row, ScrollView, Size, SizedBox, Slider, SplitAxis, Splitter, Stack, Subscription,
-    TabBar, Text, TextField, Toolbar, UiEnvironment, UiRuntime, Widget, WorkspaceLayout,
+    Align, Alignment, Border, Button, Card, Checkbox, ChildLayout, Color, Column, Constraints,
+    DockArea, DockAxis, Dropdown, Image, Insets, LayoutContext, LayoutNode, LayoutResult, ListView,
+    MenuBar, PanelId, Point, ProgressBar, RadioButton, RadioGroup, Rect, Row, ScrollView, Size,
+    SizedBox, Slider, SplitAxis, Splitter, Stack, Subscription, TabBar, Text, TextField, Theme,
+    Toolbar, UiEnvironment, UiRuntime, Widget, WorkspaceLayout,
     platform::{WindowAction, WindowApplication, WindowEvent, WindowOptions},
     render::{DisplayList, FontdueTextShaper, PaintContext, RasterImage, TextStyle},
 };
@@ -32,6 +32,90 @@ const MUTED: Color = Color::rgba(164.0 / 255.0, 178.0 / 255.0, 207.0 / 255.0, 1.
 const TEAL: Color = Color::rgba(46.0 / 255.0, 220.0 / 255.0, 179.0 / 255.0, 1.0);
 const LILAC: Color = Color::rgba(166.0 / 255.0, 135.0 / 255.0, 1.0, 1.0);
 const ORANGE: Color = Color::rgba(1.0, 184.0 / 255.0, 92.0 / 255.0, 1.0);
+const CONTROL: Color = Color::rgba(28.0 / 255.0, 39.0 / 255.0, 68.0 / 255.0, 1.0);
+const CONTROL_HOVER: Color = Color::rgba(41.0 / 255.0, 57.0 / 255.0, 98.0 / 255.0, 1.0);
+const CONTROL_PRESSED: Color = Color::rgba(53.0 / 255.0, 73.0 / 255.0, 124.0 / 255.0, 1.0);
+
+/// Keeps standard widgets in the same deep-navy palette as the hand-painted chrome.
+struct ShowcaseTheme;
+
+impl Theme for ShowcaseTheme {
+    fn background(&self) -> Color {
+        CANVAS
+    }
+
+    fn surface(&self) -> Color {
+        SURFACE
+    }
+
+    fn raised_surface(&self) -> Color {
+        CARD
+    }
+
+    fn foreground(&self) -> Color {
+        TEXT
+    }
+
+    fn accent(&self) -> Color {
+        TEAL
+    }
+
+    fn accent_foreground(&self) -> Color {
+        CANVAS
+    }
+
+    fn control_background(&self) -> Color {
+        CONTROL
+    }
+
+    fn control_hover_background(&self) -> Color {
+        CONTROL_HOVER
+    }
+
+    fn control_pressed_background(&self) -> Color {
+        CONTROL_PRESSED
+    }
+
+    fn border(&self) -> Color {
+        CARD_BORDER
+    }
+
+    fn focus_ring(&self) -> Color {
+        TEAL
+    }
+
+    fn shadow(&self) -> Color {
+        Color::rgba(0.0, 0.0, 0.0, 0.55)
+    }
+
+    fn muted_foreground(&self) -> Color {
+        MUTED
+    }
+
+    fn title_bar_background(&self) -> Color {
+        SURFACE
+    }
+
+    fn title_bar_hover_background(&self) -> Color {
+        CONTROL_HOVER
+    }
+
+    fn control_padding(&self) -> Insets {
+        Insets::new(7.0, 14.0, 7.0, 14.0)
+    }
+
+    fn spacing(&self) -> f32 {
+        8.0
+    }
+
+    fn font_size(&self) -> f32 {
+        14.0
+    }
+
+    fn corner_radius(&self) -> f32 {
+        8.0
+    }
+}
 
 fn main() -> Result<(), torn_platform_winit::RunError> {
     torn_platform_winit::run(StyleShowcase::new())
@@ -46,7 +130,8 @@ struct StyleShowcase {
 impl StyleShowcase {
     fn new() -> Self {
         let size = valid_size(WINDOW_WIDTH, WINDOW_HEIGHT);
-        let mut runtime = UiRuntime::new(ShowcaseShell);
+        let mut runtime =
+            UiRuntime::with_environment(ShowcaseShell, UiEnvironment::new(ShowcaseTheme));
         let root = runtime.root();
         let mut subscriptions = Vec::new();
 
@@ -131,6 +216,10 @@ impl WindowApplication for StyleShowcase {
             .runtime
             .paint(&mut PaintContext::new(&mut display_list));
         display_list
+    }
+
+    fn next_frame_in(&self) -> Option<std::time::Duration> {
+        self.runtime.next_frame_in()
     }
 }
 
@@ -547,21 +636,20 @@ fn append_components_page(
     let page = runtime
         .append_child(tabs, ComponentsPage)
         .expect("tab bar exists");
-    let controls_box = runtime
+    let controls = runtime
         .append_child(
             page,
-            TornBox::new()
+            Card::new()
                 .with_background(CARD)
                 .with_corner_radius(16.0)
-                .with_border(Border::new(1.0, CARD_BORDER)),
+                .with_border(Border::new(1.0, CARD_BORDER))
+                .with_elevation(10.0)
+                .with_padding(Insets::all(18.0)),
         )
         .expect("components page exists");
-    let controls_padding = runtime
-        .append_child(controls_box, Padding::new(Insets::all(18.0)))
-        .expect("controls surface exists");
     let controls = runtime
-        .append_child(controls_padding, ControlsPanel)
-        .expect("controls padding exists");
+        .append_child(controls, ControlsPanel)
+        .expect("controls surface exists");
     append_controls(runtime, subscriptions, controls);
 
     let gallery = runtime
@@ -788,6 +876,7 @@ fn paint_card(
     description: &str,
     accent: Color,
 ) {
+    context.draw_shadow(bounds, 16.0, 10.0, Color::rgba(0.0, 0.0, 0.0, 0.45));
     context.fill_rounded_rect(bounds, 16.0, CARD);
     context.stroke_rounded_rect(bounds, 16.0, 1.0, CARD_BORDER);
     context.fill_rounded_rect(

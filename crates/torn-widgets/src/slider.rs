@@ -145,6 +145,7 @@ impl Widget for Slider {
     ) {
         let theme = environment.theme();
         let accent = style.accent.unwrap_or_else(|| theme.accent());
+        let transition = context.transition();
         let track = track_bounds(bounds.size);
         let track = offset_rect(track, bounds.origin);
         let thumb_center = track.origin.x + track.size.width() * self.value_ratio();
@@ -155,10 +156,12 @@ impl Widget for Slider {
                 track.size.height(),
             ),
         );
-        let thumb_radius = style
+        let base_radius = style
             .corner_radius
             .unwrap_or(THUMB_RADIUS)
             .min(THUMB_RADIUS);
+        let thumb_radius =
+            base_radius * (1.0 + transition.hover() * 0.06 + transition.press() * 0.1);
         let thumb = Rect::new(
             Point::new(
                 thumb_center - thumb_radius,
@@ -173,9 +176,13 @@ impl Widget for Slider {
         context.fill_rounded_rect(
             track,
             track_radius,
-            style
-                .background
-                .unwrap_or_else(|| theme.control_background()),
+            style.background.unwrap_or_else(|| {
+                transition.control_color(
+                    theme.control_background(),
+                    theme.control_hover_background(),
+                    theme.control_pressed_background(),
+                )
+            }),
         );
         if let Some(border) = style.border {
             context.stroke_rounded_rect(track, track_radius, border.width, border.color);
@@ -183,7 +190,16 @@ impl Widget for Slider {
         if filled.size.width() > 0.0 {
             context.fill_rounded_rect(filled, track_radius, accent);
         }
-        context.fill_rounded_rect(thumb, thumb_radius, accent);
+        let thumb_color =
+            transition.control_color(accent, accent.lighten(0.06), accent.darken(0.06));
+        context.draw_shadow(thumb, thumb_radius, 3.0, theme.shadow());
+        context.fill_rounded_rect(thumb, thumb_radius, thumb_color);
+        context.stroke_rounded_rect(
+            thumb,
+            thumb_radius,
+            1.0,
+            theme.accent_foreground().with_alpha(0.35),
+        );
     }
 
     fn handle_event(&mut self, context: &mut EventContext<'_>, event: &InputEvent) -> EventStatus {

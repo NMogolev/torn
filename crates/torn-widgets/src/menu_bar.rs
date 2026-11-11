@@ -92,9 +92,7 @@ impl Widget for MenuBar {
     ) {
         let theme = environment.theme();
         let radius = style.corner_radius.unwrap_or(0.0);
-        let background = style
-            .background
-            .unwrap_or_else(|| theme.control_background());
+        let background = style.background.unwrap_or_else(|| theme.surface());
         if radius > 0.0 {
             context.fill_rounded_rect(bounds, radius, background);
         } else {
@@ -106,6 +104,18 @@ impl Widget for MenuBar {
             } else {
                 context.stroke_rect(bounds, border.width, border.color);
             }
+        } else {
+            let border = theme.border();
+            context.fill_rect(
+                Rect::new(
+                    Point::new(
+                        bounds.origin.x,
+                        bounds.origin.y + bounds.size.height() - 1.0,
+                    ),
+                    size(bounds.size.width(), 1.0),
+                ),
+                border,
+            );
         }
         let font = environment.font_for(style);
         let foreground = style.foreground_or(theme.foreground());

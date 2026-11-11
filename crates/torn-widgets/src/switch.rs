@@ -159,13 +159,21 @@ impl Widget for Switch {
         let unchecked_color = self
             .off_color
             .or(style.background)
-            .unwrap_or_else(|| theme.control_background());
+            .unwrap_or_else(|| theme.border());
         let track = if self.checked {
             checked_color
         } else {
             unchecked_color
         };
-        context.fill_rounded_rect(bounds, radius, track);
+        let hover_track = track.lighten(0.08);
+        let pressed_track = track.lighten(0.16);
+        context.fill_rounded_rect(
+            bounds,
+            radius,
+            context
+                .transition()
+                .control_color(track, hover_track, pressed_track),
+        );
         if let Some(border) = style.border {
             context.stroke_rounded_rect(bounds, radius, border.width, border.color);
         }
@@ -181,6 +189,7 @@ impl Widget for Switch {
             size(knob_diameter, knob_diameter),
         );
         let knob_color = self.knob_color.or(style.foreground).unwrap_or(Color::WHITE);
+        context.draw_shadow(knob, knob_diameter / 2.0, 2.0, theme.shadow());
         context.fill_rounded_rect(knob, knob_diameter / 2.0, knob_color);
     }
 

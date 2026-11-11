@@ -101,7 +101,7 @@ impl Widget for Toolbar {
         let radius = style.corner_radius.unwrap_or(0.0);
         let background = style
             .background
-            .unwrap_or_else(|| environment.theme().control_background());
+            .unwrap_or_else(|| environment.theme().surface());
         if radius > 0.0 {
             context.fill_rounded_rect(bounds, radius, background);
         } else {

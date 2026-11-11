@@ -182,6 +182,9 @@ where
     ) {
         let indicator = indicator_bounds(bounds);
         let theme = environment.theme();
+        let accent = style.accent.unwrap_or_else(|| theme.accent());
+        let selected = self.is_selected();
+        let transition = context.transition();
         let radius = style
             .corner_radius
             .unwrap_or(CONTROL_SIZE / 2.0)
@@ -189,18 +192,29 @@ where
         context.fill_rounded_rect(
             indicator,
             radius,
-            style.background.unwrap_or_else(|| theme.background()),
+            style.background.unwrap_or_else(|| {
+                transition.control_color(
+                    theme.surface(),
+                    theme.control_hover_background(),
+                    theme.control_pressed_background(),
+                )
+            }),
         );
-        let border = style
-            .border
-            .unwrap_or_else(|| Border::new(1.0, theme.control_background()));
+        let border = style.border.unwrap_or_else(|| {
+            let color = if selected {
+                transition.control_color(accent, accent.lighten(0.08), accent.darken(0.08))
+            } else {
+                transition.control_color(theme.border(), accent.mix(theme.border(), 0.45), accent)
+            };
+            Border::new(1.0, color)
+        });
         context.stroke_rounded_rect(indicator, radius, border.width, border.color);
-        if self.is_selected() {
+        if selected {
             let dot = indicator.inset(torn_core::Insets::all(DOT_INSET));
             context.fill_rounded_rect(
                 dot,
                 dot.size.width() / 2.0,
-                style.accent.unwrap_or_else(|| theme.accent()),
+                transition.control_color(accent, accent.lighten(0.08), accent.darken(0.08)),
             );
         }
     }

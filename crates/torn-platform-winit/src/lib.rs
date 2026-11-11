@@ -4,7 +4,7 @@
 //! Torn's coordinate system logical and renders display lists directly with
 //! `wgpu` to the native surface.
 
-use std::{error::Error, fmt, sync::Arc};
+use std::{error::Error, fmt, sync::Arc, time::Instant};
 
 use torn_core::{
     Clipboard, InputEvent, Key, KeyCode, KeyEvent, Modifiers, NamedKey, Point, PointerButton,
@@ -17,8 +17,11 @@ use torn_wgpu::{GpuError, GpuRenderer, RenderStatus};
 use winit::{
     application::ApplicationHandler,
     dpi::{LogicalPosition, LogicalSize, PhysicalSize},
-    event::{ElementState, Ime, MouseButton, MouseScrollDelta, WindowEvent as WinitWindowEvent},
-    event_loop::{ActiveEventLoop, EventLoop, EventLoopProxy},
+    event::{
+        ElementState, Ime, MouseButton, MouseScrollDelta, StartCause,
+        WindowEvent as WinitWindowEvent,
+    },
+    event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy},
     keyboard::{Key as WinitKey, NamedKey as WinitNamedKey, PhysicalKey},
     window::{Fullscreen, ResizeDirection, Window, WindowId},
 };
@@ -143,6 +146,7 @@ struct Adapter {
     cursor: Point,
     buttons: PointerButtons,
     modifiers: Modifiers,
+    animation_deadline: Option<Instant>,
 }
 
 impl Adapter {
@@ -167,6 +171,7 @@ impl Adapter {
             cursor: Point::ZERO,
             buttons: PointerButtons::NONE,
             modifiers: Modifiers::NONE,
+            animation_deadline: None,
         }
     }
 
@@ -179,6 +184,20 @@ impl Adapter {
     fn request_render(&mut self) {
         self.needs_render = true;
         self.request_redraw();
+    }
+
+    fn schedule_animation(&mut self, event_loop: &ActiveEventLoop) {
+        if self.window.is_none() {
+            return;
+        }
+        let Some(delay) = self.application.next_frame_in() else {
+            self.animation_deadline = None;
+            event_loop.set_control_flow(ControlFlow::Wait);
+            return;
+        };
+        let deadline = Instant::now() + delay;
+        self.animation_deadline = Some(deadline);
+        event_loop.set_control_flow(ControlFlow::WaitUntil(deadline));
     }
 
     fn apply_action(&mut self, event_loop: &ActiveEventLoop, action: WindowAction) {
@@ -295,6 +314,7 @@ impl Adapter {
         if refresh_accessibility {
             self.refresh_accessibility();
         }
+        self.schedule_animation(event_loop);
     }
 
     fn refresh_accessibility(&mut self) {
@@ -407,6 +427,7 @@ impl Adapter {
             }
             Err(_) => event_loop.exit(),
         }
+        self.schedule_animation(event_loop);
     }
 
     fn render_display_list(&mut self) -> Result<RenderStatus, RunError> {
@@ -422,6 +443,15 @@ impl Adapter {
 }
 
 impl ApplicationHandler<UserEvent> for Adapter {
+    fn new_events(&mut self, event_loop: &ActiveEventLoop, cause: StartCause) {
+        if matches!(cause, StartCause::ResumeTimeReached { .. })
+            && self.animation_deadline.take().is_some()
+        {
+            event_loop.set_control_flow(ControlFlow::Wait);
+            self.request_redraw();
+        }
+    }
+
     fn user_event(&mut self, _event_loop: &ActiveEventLoop, event: UserEvent) {
         let UserEvent::Accessibility(event) = event;
         self.handle_accessibility_event(event);

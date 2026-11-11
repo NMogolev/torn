@@ -1,4 +1,4 @@
-use std::{fmt, str::FromStr};
+use std::{fmt, str::FromStr, time::Duration};
 
 use torn_core::{Color, Insets};
 use torn_render::{DEFAULT_DPI, FontFamily, FontSize, FontStyle, FontWeight};
@@ -512,6 +512,47 @@ impl<T: Theme> Theme for TssTheme<T> {
         self.root.accent.unwrap_or_else(|| self.fallback.accent())
     }
 
+    fn surface(&self) -> Color {
+        self.root
+            .background
+            .unwrap_or_else(|| self.fallback.surface())
+    }
+
+    fn raised_surface(&self) -> Color {
+        self.fallback.raised_surface()
+    }
+
+    fn border(&self) -> Color {
+        self.root
+            .border
+            .map_or_else(|| self.fallback.border(), |border| border.color)
+    }
+
+    fn focus_ring(&self) -> Color {
+        self.root
+            .accent
+            .unwrap_or_else(|| self.fallback.focus_ring())
+    }
+
+    fn shadow(&self) -> Color {
+        self.fallback.shadow()
+    }
+
+    fn accent_foreground(&self) -> Color {
+        self.fallback.accent_foreground()
+    }
+
+    fn selection(&self) -> Color {
+        self.root.accent.map_or_else(
+            || self.fallback.selection(),
+            |accent| accent.with_alpha(0.24),
+        )
+    }
+
+    fn disabled_foreground(&self) -> Color {
+        self.fallback.disabled_foreground()
+    }
+
     fn control_background(&self) -> Color {
         self.fallback.control_background()
     }
@@ -563,6 +604,10 @@ impl<T: Theme> Theme for TssTheme<T> {
         self.root
             .corner_radius
             .unwrap_or_else(|| self.fallback.corner_radius())
+    }
+
+    fn animation_duration(&self) -> Duration {
+        self.fallback.animation_duration()
     }
 }
 

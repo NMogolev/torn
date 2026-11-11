@@ -286,15 +286,10 @@ impl Widget for TextField {
         let radius = style.corner_radius_or(theme.corner_radius());
         let foreground = style.foreground_or(theme.foreground());
         let accent = style.accent_or(theme.accent());
-        context.fill_rounded_rect(bounds, radius, style.background_or(theme.background()));
+        let transition = context.transition();
+        context.fill_rounded_rect(bounds, radius, style.background_or(theme.surface()));
         let border = style.border.map_or_else(
-            || {
-                if self.focused {
-                    accent
-                } else {
-                    theme.control_background()
-                }
-            },
+            || transition.focus_color(theme.border(), accent),
             |border| border.color,
         );
         let border_width = style.border.map_or(BORDER_WIDTH, |border| border.width);
@@ -315,7 +310,7 @@ impl Widget for TextField {
                             Point::new(rect.origin.x + origin.x, rect.origin.y + origin.y),
                             rect.size,
                         ),
-                        accent.with_alpha(0.28),
+                        theme.selection(),
                     );
                 }
             }

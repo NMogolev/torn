@@ -20,6 +20,7 @@ pub struct UiEnvironment {
     text_shaper: Box<dyn TextShaper>,
     text_shaper_generation: u64,
     locale: String,
+    animations_enabled: bool,
 }
 
 impl UiEnvironment {
@@ -37,6 +38,7 @@ impl UiEnvironment {
             text_shaper: Box::new(FontdueTextShaper::ubuntu_light()),
             text_shaper_generation: 0,
             locale: "und".to_owned(),
+            animations_enabled: true,
         }
     }
 
@@ -244,6 +246,21 @@ impl UiEnvironment {
     /// Updates the locale requested by the application.
     pub fn set_locale(&mut self, locale: impl Into<String>) {
         self.locale = locale.into();
+    }
+
+    /// Returns whether hover, press, and focus transitions are animated.
+    #[must_use]
+    pub const fn animations_enabled(&self) -> bool {
+        self.animations_enabled
+    }
+
+    /// Enables or disables interaction animations.
+    ///
+    /// Applications can set this to `false` to honor a reduced-motion
+    /// preference. Disabling animation makes every transition snap directly to
+    /// its target state on the next frame.
+    pub const fn set_animations_enabled(&mut self, enabled: bool) {
+        self.animations_enabled = enabled;
     }
 }
 

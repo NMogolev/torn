@@ -1,4 +1,4 @@
-use torn_core::{Color, Constraints, InputEvent, Key, NamedKey, Point, PointerButton, Rect, Size};
+use torn_core::{Constraints, InputEvent, Key, NamedKey, Point, PointerButton, Rect, Size};
 use torn_render::PaintContext;
 use torn_ui::{
     Accessibility, AccessibilityAction, AccessibilityActions, AccessibilityRole,
@@ -128,20 +128,25 @@ impl Widget for Checkbox {
         let indicator = indicator_bounds(bounds);
         let theme = environment.theme();
         let accent = style.accent.unwrap_or_else(|| theme.accent());
-        let background = style.background.unwrap_or(if self.checked {
-            accent
-        } else {
-            theme.background()
+        let transition = context.transition();
+        let background = style.background.unwrap_or_else(|| {
+            if self.checked {
+                transition.control_color(accent, accent.lighten(0.08), accent.darken(0.08))
+            } else {
+                transition.control_color(
+                    theme.surface(),
+                    theme.control_hover_background(),
+                    theme.control_pressed_background(),
+                )
+            }
         });
         let border = style.border.unwrap_or_else(|| {
-            Border::new(
-                1.0,
-                if self.checked {
-                    accent
-                } else {
-                    theme.control_background()
-                },
-            )
+            let color = if self.checked {
+                accent
+            } else {
+                transition.control_color(theme.border(), accent.mix(theme.border(), 0.45), accent)
+            };
+            Border::new(1.0, color)
         });
         let radius = style
             .corner_radius
@@ -152,7 +157,9 @@ impl Widget for Checkbox {
         if self.checked {
             context.fill_rect(
                 indicator.inset(torn_core::Insets::all(MARK_INSET)),
-                style.foreground.unwrap_or(Color::WHITE),
+                style
+                    .foreground
+                    .unwrap_or_else(|| theme.accent_foreground()),
             );
         }
     }

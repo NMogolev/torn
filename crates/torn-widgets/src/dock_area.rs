@@ -191,7 +191,7 @@ impl Widget for DockArea {
     ) {
         let theme = environment.theme();
         let radius = style.corner_radius.unwrap_or(0.0);
-        let background = style.background_or(theme.background());
+        let background = style.background_or(theme.surface());
         if radius == 0.0 {
             context.fill_rect(bounds, background);
         } else {
@@ -204,21 +204,32 @@ impl Widget for DockArea {
                 context.stroke_rounded_rect(bounds, radius, border.width, border.color);
             }
         }
-        let splitter_color = theme.control_background();
+        let splitter_color = theme.border();
         for splitter in &self.splitters {
             context.fill_rect(offset_rect(splitter.bounds, bounds.origin), splitter_color);
         }
         let foreground = style.foreground_or(theme.foreground());
+        let muted = theme.muted_foreground();
+        let accent = style.accent_or(theme.accent());
         let font = environment.font_for(style);
-        let text_style = TextStyle::new_with_font(font, foreground);
         for tab in &self.tabs {
-            let color = if tab.active {
-                style.accent_or(theme.accent())
-            } else {
-                theme.control_background()
-            };
             let tab_bounds = offset_rect(tab.bounds, bounds.origin);
-            context.fill_rect(tab_bounds, color);
+            if tab.active {
+                context.fill_rect(tab_bounds, theme.raised_surface());
+                context.fill_rect(
+                    Rect::new(
+                        Point::new(
+                            tab_bounds.origin.x,
+                            tab_bounds.origin.y + tab_bounds.size.height() - 2.0,
+                        ),
+                        Size::new(tab_bounds.size.width(), 2.0)
+                            .expect("dock tab underline has finite size"),
+                    ),
+                    accent,
+                );
+            }
+            let text_style =
+                TextStyle::new_with_font(font.clone(), if tab.active { foreground } else { muted });
             let label = match &tab.item {
                 DockItem::Panel(id) => id.as_str(),
                 DockItem::Document(id) => id.as_str(),
@@ -693,16 +704,20 @@ mod tests {
             [
                 DisplayCommand::FillRect { color, .. },
                 DisplayCommand::FillRect { color: splitter, .. },
-                DisplayCommand::FillRect { color: first_tab, .. },
                 DisplayCommand::DrawText { .. },
-                DisplayCommand::FillRect { color: active_tab, .. },
+                DisplayCommand::FillRect {
+                    color: active_tab, ..
+                },
+                DisplayCommand::FillRect {
+                    color: underline, ..
+                },
                 DisplayCommand::DrawText { .. },
                 DisplayCommand::FillRect { color: left, .. },
                 DisplayCommand::FillRect { color: active, .. },
-            ] if *color == LightTheme.background()
-                && *splitter == LightTheme.control_background()
-                && *first_tab == LightTheme.control_background()
-                && *active_tab == LightTheme.accent()
+            ] if *color == LightTheme.surface()
+                && *splitter == LightTheme.border()
+                && *active_tab == LightTheme.raised_surface()
+                && *underline == LightTheme.accent()
                 && *left == Color::rgba8(10, 20, 30, 255)
                 && *active == Color::rgba8(70, 80, 90, 255)
         ));

@@ -10,9 +10,11 @@ use std::{
 
 use torn_core::{
     Clipboard, Constraints, Diagnostic, DiagnosticReporter, FocusChanged, InputEvent, Key,
-    Modifiers, NamedKey, Point, PointerId, Rect, WidgetId,
+    Modifiers, NamedKey, Point, PointerId, Rect, Size, WidgetId,
 };
-use torn_render::{DisplayList, DisplayListStats, PaintContext, TextLayoutCacheStats};
+use torn_render::{
+    DisplayList, DisplayListStats, PaintContext, PaintTransition, TextLayoutCacheStats,
+};
 
 use crate::{
     AccessibilityAction, AccessibilityActions, AccessibilityRole, AccessibilityState, EventContext,
@@ -22,6 +24,10 @@ use crate::{
 use event::{EventEffects, FocusRequest};
 
 const MAX_RETAINED_DIAGNOSTICS: usize = 256;
+const FOCUS_RING_WIDTH: f32 = 2.0;
+const FOCUS_RING_GAP: f32 = 2.0;
+const ANIMATION_FRAME_INTERVAL: Duration = Duration::from_millis(16);
+const TRANSITION_EPSILON: f32 = 0.000_1;
 
 /// Per-node invalidation state maintained by [`UiRuntime`].
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -237,6 +243,7 @@ pub struct UiRuntime {
     pointer_capture: HashMap<PointerId, WidgetId>,
     hovered: HashMap<PointerId, WidgetId>,
     focused: Option<WidgetId>,
+    pressed: Option<WidgetId>,
     commands: Vec<KeyboardCommand>,
     window_commands: Vec<WindowCommand>,
     redraw_requested: bool,
@@ -244,6 +251,8 @@ pub struct UiRuntime {
     clipboard: Rc<RefCell<Box<dyn Clipboard>>>,
     stats: FrameDiagnostics,
     pending_damage: Option<Rect>,
+    last_animation_tick: Instant,
+    animating: bool,
 }
 
 struct ArenaSlot {
@@ -262,6 +271,62 @@ struct Node {
     tab_index: Option<i32>,
     style_target: StyleTarget,
     style: TssStyle,
+    transition: NodeTransition,
+}
+
+/// Per-node interaction progress in linear `0.0..=1.0` space.
+///
+/// Values are advanced toward the runtime's hover, press, and focus targets.
+/// [`NodeTransition::eased`] converts them to the smooth curve exposed to
+/// widgets during paint.
+#[derive(Clone, Copy, Debug, Default)]
+struct NodeTransition {
+    hover: f32,
+    press: f32,
+    focus: f32,
+}
+
+impl NodeTransition {
+    fn eased(self) -> PaintTransition {
+        PaintTransition::new(
+            smoothstep(self.hover),
+            smoothstep(self.press),
+            smoothstep(self.focus),
+        )
+    }
+
+    fn is_animating(self, targets: (f32, f32, f32)) -> bool {
+        (self.hover - targets.0).abs() > TRANSITION_EPSILON
+            || (self.press - targets.1).abs() > TRANSITION_EPSILON
+            || (self.focus - targets.2).abs() > TRANSITION_EPSILON
+    }
+}
+
+fn smoothstep(value: f32) -> f32 {
+    let value = value.clamp(0.0, 1.0);
+    value * value * (3.0 - 2.0 * value)
+}
+
+// Exact comparisons are intentional: current values are only ever assigned from
+// these exact targets or from clamped arithmetic, so equality marks a settled
+// transition without accumulating a tolerance band.
+#[allow(clippy::float_cmp)]
+fn approach(current: &mut f32, target: f32, step: f32) -> bool {
+    if *current == target {
+        return false;
+    }
+    let next = if step >= 1.0 {
+        target
+    } else if *current < target {
+        (*current + step).min(target)
+    } else {
+        (*current - step).max(target)
+    };
+    if next == *current {
+        return false;
+    }
+    *current = next;
+    true
 }
 
 /// Why a [`UiRuntime`] operation could not be completed.
@@ -311,6 +376,7 @@ impl UiRuntime {
             pointer_capture: HashMap::new(),
             hovered: HashMap::new(),
             focused: None,
+            pressed: None,
             commands: Vec::new(),
             window_commands: Vec::new(),
             redraw_requested: true,
@@ -318,6 +384,8 @@ impl UiRuntime {
             clipboard: Rc::new(RefCell::new(Box::new(torn_core::MemoryClipboard::new()))),
             stats: RuntimeStats::default(),
             pending_damage: None,
+            last_animation_tick: Instant::now(),
+            animating: false,
         };
         runtime.root = runtime.insert_node(Box::new(root), None);
         runtime
@@ -366,6 +434,112 @@ impl UiRuntime {
                 node.dirty.paint = true;
             }
         }
+    }
+
+    /// Advances hover, press, and focus transitions by `delta`.
+    ///
+    /// [`Self::paint`] calls this automatically with the wall-clock time since
+    /// the previous frame. Call it directly to drive deterministic animation in
+    /// tests or custom render loops.
+    pub fn advance_animations(&mut self, delta: Duration) {
+        self.advance_animations_with(delta, false);
+    }
+
+    /// Immediately completes every pending interaction transition.
+    ///
+    /// This is useful for tests, screenshots, and applications that switch to a
+    /// reduced-motion mode while a transition is in flight.
+    pub fn settle_animations(&mut self) {
+        self.advance_animations_with(Duration::ZERO, true);
+    }
+
+    /// Returns how long to wait before painting the next animation frame.
+    ///
+    /// Platform adapters should schedule a redraw after this delay when it is
+    /// `Some`. The result becomes `None` once every transition has settled.
+    /// When animation is disabled while a transition is in flight, this returns
+    /// `Some(Duration::ZERO)` so the next paint can snap it to its target.
+    #[must_use]
+    pub fn next_frame_in(&self) -> Option<Duration> {
+        if !self.animating {
+            return None;
+        }
+        let animating = self.nodes.iter().enumerate().any(|(index, slot)| {
+            let Some(node) = &slot.node else {
+                return false;
+            };
+            let Ok(index) = u32::try_from(index) else {
+                return false;
+            };
+            let id = WidgetId::new(index, slot.generation);
+            node.transition.is_animating(self.transition_targets(id))
+        });
+        if !animating {
+            return None;
+        }
+        let duration = self.environment.theme().animation_duration();
+        if !self.environment.animations_enabled() || duration.is_zero() {
+            // Schedule one frame so the next paint snaps every transition to
+            // its target instead of leaving a half-faded control on screen.
+            return Some(Duration::ZERO);
+        }
+        Some(ANIMATION_FRAME_INTERVAL)
+    }
+
+    fn begin_animation(&mut self) {
+        if !self.animating {
+            self.last_animation_tick = Instant::now();
+            self.animating = true;
+        }
+    }
+
+    fn transition_targets(&self, id: WidgetId) -> (f32, f32, f32) {
+        let hover = self.hovered.values().any(|hovered| *hovered == id);
+        let press = self.pressed == Some(id);
+        let focus = self.focused == Some(id);
+        (
+            if hover { 1.0 } else { 0.0 },
+            if press { 1.0 } else { 0.0 },
+            if focus { 1.0 } else { 0.0 },
+        )
+    }
+
+    fn advance_animations_with(&mut self, delta: Duration, settle: bool) {
+        let duration = self.environment.theme().animation_duration();
+        let immediate = settle || !self.environment.animations_enabled() || duration.is_zero();
+        let step = if immediate {
+            1.0
+        } else {
+            (delta.as_secs_f32() / duration.as_secs_f32()).clamp(0.0, 1.0)
+        };
+        if step == 0.0 {
+            return;
+        }
+        let hovered: Vec<WidgetId> = self.hovered.values().copied().collect();
+        let focused = self.focused;
+        let pressed = self.pressed;
+        let mut changed = false;
+        for (index, slot) in self.nodes.iter_mut().enumerate() {
+            let Some(node) = &mut slot.node else {
+                continue;
+            };
+            let Ok(index) = u32::try_from(index) else {
+                continue;
+            };
+            let id = WidgetId::new(index, slot.generation);
+            let hover = if hovered.contains(&id) { 1.0 } else { 0.0 };
+            let press = if pressed == Some(id) { 1.0 } else { 0.0 };
+            let focus = if focused == Some(id) { 1.0 } else { 0.0 };
+            changed |= approach(&mut node.transition.hover, hover, step);
+            changed |= approach(&mut node.transition.press, press, step);
+            changed |= approach(&mut node.transition.focus, focus, step);
+        }
+        if changed {
+            self.mark_full_damage();
+            self.cached_display_list = None;
+            self.redraw_requested = true;
+        }
+        self.animating = step < 1.0 && changed;
     }
 
     fn mark_full_damage(&mut self) {
@@ -755,6 +929,12 @@ impl UiRuntime {
         if self.layout.is_none() {
             return Ok(());
         }
+        let now = Instant::now();
+        let delta = now.saturating_duration_since(self.last_animation_tick);
+        self.last_animation_tick = now;
+        if self.animating {
+            self.advance_animations(delta);
+        }
         let command_count_before = context.command_count();
         let started = Instant::now();
         if let Some(cached) = &self.cached_display_list {
@@ -775,7 +955,9 @@ impl UiRuntime {
         let mut cached = DisplayList::new();
         let result = match catch_unwind(AssertUnwindSafe(|| {
             self.style_tree();
-            self.paint_node(self.root, &mut PaintContext::new(&mut cached));
+            let mut paint = PaintContext::new(&mut cached);
+            self.paint_node(self.root, &mut paint);
+            self.paint_focus_ring(&mut paint);
         })) {
             Ok(()) => {
                 context.append_display_list(&cached);
@@ -886,6 +1068,8 @@ impl UiRuntime {
             let _ = self.dispatch_synthetic_pointer(target, &event);
         }
         self.pointer_capture.clear();
+        self.pressed = None;
+        self.begin_animation();
 
         let hovered: Vec<_> = self.hovered.drain().collect();
         for (pointer_id, target) in hovered {
@@ -905,6 +1089,7 @@ impl UiRuntime {
         let Some(target) = self.hovered.remove(&pointer.pointer_id) else {
             return EventStatus::Ignored;
         };
+        self.begin_animation();
         self.dispatch_synthetic_pointer(target, &InputEvent::PointerLeave(pointer.clone()))
     }
 
@@ -1049,6 +1234,7 @@ impl UiRuntime {
         if !node.visible {
             return;
         }
+        context.set_transition(node.transition.eased());
         node.widget
             .as_ref()
             .expect("widget is present outside layout call")
@@ -1069,6 +1255,54 @@ impl UiRuntime {
                 self.paint_node(*child, context);
             }
         }
+    }
+
+    /// Paints the standard keyboard focus ring around the focused control.
+    ///
+    /// The ring belongs to the runtime rather than each widget so custom
+    /// controls gain an accessible, theme-aware focus indicator for free. It is
+    /// recorded after the tree and is therefore never covered by descendants.
+    fn paint_focus_ring(&self, context: &mut PaintContext<'_>) {
+        let Some(id) = self.focused else {
+            return;
+        };
+        let Some(node) = self.node(id) else {
+            return;
+        };
+        if !node.visible || node.bounds.size.width() <= 0.0 || node.bounds.size.height() <= 0.0 {
+            return;
+        }
+        let Some(widget) = node.widget.as_ref() else {
+            return;
+        };
+        if !widget.accepts_focus() {
+            return;
+        }
+        let progress = node.transition.eased().focus();
+        if progress <= TRANSITION_EPSILON {
+            return;
+        }
+        let bounds = node.bounds;
+        let gap = FOCUS_RING_GAP + (1.0 - progress) * 3.0;
+        let ring = Rect::new(
+            Point::new(bounds.origin.x - gap, bounds.origin.y - gap),
+            Size::new(
+                bounds.size.width() + gap * 2.0,
+                bounds.size.height() + gap * 2.0,
+            )
+            .expect("focus ring inflation stays finite"),
+        );
+        let radius = node
+            .style
+            .corner_radius
+            .unwrap_or_else(|| self.environment.theme().corner_radius());
+        let color = self.environment.theme().focus_ring();
+        context.stroke_rounded_rect(
+            ring,
+            radius + gap,
+            FOCUS_RING_WIDTH * (0.5 + progress * 0.5),
+            color.with_alpha(color.alpha * progress),
+        );
     }
 
     fn select_target(&self, event: &InputEvent) -> Option<WidgetId> {
@@ -1097,6 +1331,7 @@ impl UiRuntime {
         if previous == next {
             return;
         }
+        self.begin_animation();
         // Hover is a style state even for widgets that do not request a redraw
         // themselves, so the runtime always schedules the next frame.
         self.redraw_requested = true;
@@ -1308,6 +1543,18 @@ impl UiRuntime {
             effects.pointer_capture.remove(&pointer_id);
         }
         self.pointer_capture = effects.pointer_capture;
+        let previous_pressed = self.pressed;
+        match event {
+            InputEvent::PointerDown(_) => {
+                self.pressed = pointer_id(event)
+                    .and_then(|pointer| self.pointer_capture.get(&pointer).copied());
+            }
+            InputEvent::PointerUp(_) | InputEvent::PointerCancel(_) => self.pressed = None,
+            _ => {}
+        }
+        if self.pressed != previous_pressed {
+            self.begin_animation();
+        }
         self.redraw_requested |= effects.redraw_requested;
         self.window_commands.append(&mut effects.window_commands);
         if effects.layout_requested {
@@ -1332,7 +1579,12 @@ impl UiRuntime {
         }
         let previous = self.focused;
         self.focused = requested;
-        self.redraw_requested = true;
+        if previous == requested {
+            self.redraw_requested = true;
+        } else {
+            self.begin_animation();
+            self.invalidate_paint();
+        }
         for target in previous.into_iter().chain(requested) {
             let mut focus_effects = EventEffects {
                 propagation_stopped: false,
@@ -1367,6 +1619,7 @@ impl UiRuntime {
             tab_index: None,
             style_target: StyleTarget::empty(),
             style: TssStyle::default(),
+            transition: NodeTransition::default(),
         };
         if let Some(index) = self.free_slots.pop() {
             let slot = &mut self.nodes[usize::try_from(index).expect("u32 fits usize")];
@@ -1502,7 +1755,7 @@ mod tests {
         Color, Constraints, InputEvent, Key, Modifiers, NamedKey, Point, PointerButton,
         PointerButtons, PointerEvent, PointerId, Rect, Size,
     };
-    use torn_render::{DisplayList, PaintContext};
+    use torn_render::{DisplayCommand, DisplayList, PaintContext};
 
     use crate::{
         ChildLayout, EventContext, EventPhase, EventStatus, LayoutContext, LayoutResult,
@@ -1532,6 +1785,10 @@ mod tests {
 
     struct CountingPaintRecorder {
         paints: Rc<Cell<usize>>,
+    }
+
+    struct TransitionRecorder {
+        observed: Rc<RefCell<Vec<(f32, f32, f32)>>>,
     }
 
     impl Widget for EnvironmentRecorder {
@@ -1583,6 +1840,39 @@ mod tests {
         fn paint(&self, context: &mut PaintContext<'_>, _: &UiEnvironment, _: Rect) {
             self.paints.set(self.paints.get() + 1);
             context.fill_rect(Rect::ZERO, Color::BLACK);
+        }
+    }
+
+    impl Widget for TransitionRecorder {
+        fn layout(&mut self, _: &mut LayoutContext<'_>, constraints: Constraints) -> LayoutResult {
+            LayoutResult::new(constraints.constrain(Size::ZERO))
+        }
+
+        fn paint(&self, context: &mut PaintContext<'_>, _: &UiEnvironment, _: Rect) {
+            let transition = context.transition();
+            self.observed.borrow_mut().push((
+                transition.hover(),
+                transition.press(),
+                transition.focus(),
+            ));
+        }
+
+        fn handle_event(
+            &mut self,
+            context: &mut EventContext<'_>,
+            event: &InputEvent,
+        ) -> EventStatus {
+            if context.phase() == EventPhase::Target
+                && let InputEvent::PointerDown(pointer) = event
+            {
+                context.capture_pointer(pointer.pointer_id);
+                context.request_focus();
+            }
+            EventStatus::Handled
+        }
+
+        fn accepts_focus(&self) -> bool {
+            true
         }
     }
 
@@ -1650,6 +1940,16 @@ mod tests {
         } else {
             InputEvent::PointerUp(event)
         }
+    }
+
+    fn pointer_move(position: Point) -> InputEvent {
+        InputEvent::PointerMove(PointerEvent {
+            pointer_id: PointerId(1),
+            position,
+            button: None,
+            buttons: PointerButtons::NONE,
+            modifiers: Modifiers::NONE,
+        })
     }
 
     #[test]
@@ -1968,6 +2268,44 @@ mod tests {
     }
 
     #[test]
+    fn paints_a_focus_ring_outside_the_focused_widget() {
+        let mut runtime = UiRuntime::new(Recorder {
+            size: size(10.0, 10.0),
+            name: "root",
+            events: Rc::new(RefCell::new(Vec::new())),
+            capture_on_down: false,
+            focus_on_down: true,
+        });
+        runtime
+            .layout(Constraints::UNBOUNDED)
+            .expect("layout succeeds");
+        let _ = runtime.dispatch_event(&pointer(Point::new(5.0, 5.0), true));
+        assert_eq!(runtime.focused_widget(), Some(runtime.root()));
+        runtime.settle_animations();
+
+        let mut display_list = DisplayList::new();
+        runtime
+            .paint(&mut PaintContext::new(&mut display_list))
+            .expect("paint succeeds");
+
+        let [
+            DisplayCommand::StrokeRoundedRect {
+                rect,
+                radius,
+                width,
+                color,
+            },
+        ] = display_list.commands()
+        else {
+            panic!("expected exactly one focus ring stroke");
+        };
+        assert_eq!(*rect, Rect::new(Point::new(-2.0, -2.0), size(14.0, 14.0)));
+        assert!((*radius - 10.0).abs() < f32::EPSILON);
+        assert!((*width - 2.0).abs() < f32::EPSILON);
+        assert_eq!(*color, LightTheme.focus_ring());
+    }
+
+    #[test]
     fn tab_and_shift_tab_cycle_focusable_widgets_in_tree_order() {
         let events = Rc::new(RefCell::new(Vec::new()));
         let mut runtime = UiRuntime::new(Row::new());
@@ -2151,5 +2489,94 @@ mod tests {
             runtime.take_diagnostics().len(),
             super::MAX_RETAINED_DIAGNOSTICS
         );
+    }
+
+    #[test]
+    fn advances_hover_press_and_focus_transitions() {
+        let observed = Rc::new(RefCell::new(Vec::new()));
+        let mut runtime = UiRuntime::with_environment(
+            TransitionRecorder {
+                observed: Rc::clone(&observed),
+            },
+            UiEnvironment::new(LightTheme),
+        );
+        runtime
+            .layout(Constraints::tight(size(20.0, 20.0)).expect("valid constraints"))
+            .expect("layout succeeds");
+        let duration = LightTheme.animation_duration();
+
+        let _ = runtime.dispatch_event(&pointer_move(Point::new(5.0, 5.0)));
+        assert!(runtime.next_frame_in().is_some());
+        runtime.advance_animations(duration / 2);
+        runtime
+            .paint(&mut PaintContext::new(&mut DisplayList::new()))
+            .expect("paint succeeds");
+
+        let (hover, press, focus) = observed.borrow().last().copied().expect("painted once");
+        assert!((hover - 0.5).abs() < 0.05, "hover progress was {hover}");
+        assert!((press - 0.0).abs() < f32::EPSILON);
+        assert!((focus - 0.0).abs() < f32::EPSILON);
+
+        let _ = runtime.dispatch_event(&pointer(Point::new(5.0, 5.0), true));
+        runtime.advance_animations(duration);
+        runtime
+            .paint(&mut PaintContext::new(&mut DisplayList::new()))
+            .expect("paint succeeds");
+
+        let (hover, press, focus) = observed.borrow().last().copied().expect("painted twice");
+        assert!((hover - 1.0).abs() < f32::EPSILON);
+        assert!((press - 1.0).abs() < f32::EPSILON);
+        assert!((focus - 1.0).abs() < f32::EPSILON);
+        assert!(runtime.next_frame_in().is_none());
+    }
+
+    #[test]
+    fn settle_animations_completes_transitions_immediately() {
+        let observed = Rc::new(RefCell::new(Vec::new()));
+        let mut runtime = UiRuntime::with_environment(
+            TransitionRecorder {
+                observed: Rc::clone(&observed),
+            },
+            UiEnvironment::new(LightTheme),
+        );
+        runtime
+            .layout(Constraints::tight(size(20.0, 20.0)).expect("valid constraints"))
+            .expect("layout succeeds");
+        let _ = runtime.dispatch_event(&pointer_move(Point::new(5.0, 5.0)));
+        assert!(runtime.next_frame_in().is_some());
+
+        runtime.settle_animations();
+        assert!(runtime.next_frame_in().is_none());
+        runtime
+            .paint(&mut PaintContext::new(&mut DisplayList::new()))
+            .expect("paint succeeds");
+
+        let (hover, _, _) = observed.borrow().last().copied().expect("painted once");
+        assert!((hover - 1.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn disabling_animations_snaps_transitions_and_stops_frame_scheduling() {
+        let observed = Rc::new(RefCell::new(Vec::new()));
+        let mut runtime = UiRuntime::with_environment(
+            TransitionRecorder {
+                observed: Rc::clone(&observed),
+            },
+            UiEnvironment::new(LightTheme),
+        );
+        runtime
+            .layout(Constraints::tight(size(20.0, 20.0)).expect("valid constraints"))
+            .expect("layout succeeds");
+        let _ = runtime.dispatch_event(&pointer_move(Point::new(5.0, 5.0)));
+        runtime.environment_mut().set_animations_enabled(false);
+        assert_eq!(runtime.next_frame_in(), Some(std::time::Duration::ZERO));
+
+        runtime
+            .paint(&mut PaintContext::new(&mut DisplayList::new()))
+            .expect("paint succeeds");
+
+        let (hover, _, _) = observed.borrow().last().copied().expect("painted once");
+        assert!((hover - 1.0).abs() < f32::EPSILON);
+        assert!(runtime.next_frame_in().is_none());
     }
 }
