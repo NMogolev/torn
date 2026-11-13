@@ -32,8 +32,8 @@ pub use torn_widgets::{
 };
 pub use torn_workspace::{
     DockAxis, DocumentId, DocumentPresentation, FloatingDocument, FloatingPanel, LayoutNode,
-    PanelId, SplitPlacement, WorkspaceBounds, WorkspaceError, WorkspaceLayout,
-    WorkspaceSerializationError,
+    MIN_VISIBLE_FLOATING_EXTENT, PanelId, SplitPlacement, WorkspaceBounds, WorkspaceError,
+    WorkspaceLayout, WorkspaceSerializationError,
 };
 
 /// Platform-independent native-window contracts.

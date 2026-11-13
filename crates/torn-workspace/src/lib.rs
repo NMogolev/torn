@@ -15,6 +15,12 @@ pub const WORKSPACE_LAYOUT_VERSION: u32 = 1;
 const MIN_SPLIT_RATIO: f32 = 0.1;
 const MAX_SPLIT_RATIO: f32 = 0.9;
 
+/// Default logical-pixel extent of a floating window kept inside a work area.
+///
+/// This is the minimum part of a floating panel or free-form document that
+/// [`WorkspaceLayout::clamp_floating_bounds`] keeps visible in each axis.
+pub const MIN_VISIBLE_FLOATING_EXTENT: f32 = 32.0;
+
 /// Stable application-defined identifier of a tool panel.
 #[cfg_attr(feature = "serde", derive(Deserialize, Serialize))]
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -248,7 +254,10 @@ pub enum LayoutNode {
         /// Selected document ID, if one exists.
         active: Option<DocumentId>,
     },
-    /// An intentional unoccupied location in the dock tree.
+    /// An unoccupied location in the dock tree.
+    ///
+    /// Empty split branches and empty tab groups collapse during
+    /// normalization, so this is mainly useful as an explicit empty root.
     Empty,
 }
 
@@ -354,16 +363,8 @@ impl WorkspaceLayout {
     /// # Errors
     ///
     /// Returns an error for an unsupported format version or an invalid layout.
-    pub fn restore(&mut self, mut candidate: Self) -> Result<(), WorkspaceError> {
-        if candidate.version > WORKSPACE_LAYOUT_VERSION {
-            return Err(WorkspaceError::UnsupportedVersion(candidate.version));
-        }
-        if candidate.version < WORKSPACE_LAYOUT_VERSION {
-            return Err(WorkspaceError::MigrationRequired(candidate.version));
-        }
-        candidate.normalize();
-        candidate.validate()?;
-        *self = candidate;
+    pub fn restore(&mut self, candidate: Self) -> Result<(), WorkspaceError> {
+        *self = migrate_layout(candidate)?;
         Ok(())
     }
 
@@ -445,6 +446,100 @@ impl WorkspaceLayout {
                 z_order: next_z_order(&candidate.floating),
             });
             Ok(())
+        })
+    }
+
+    /// Moves a floating panel to a new logical position.
+    ///
+    /// The panel keeps its current size. Use
+    /// [`Self::resize_floating_panel`] to change the extent.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`WorkspaceError::PanelNotFloating`] if `panel` is not floating,
+    /// or [`WorkspaceError::InvalidBounds`] if a coordinate is not finite.
+    pub fn move_floating_panel(
+        &mut self,
+        panel: &PanelId,
+        x: f32,
+        y: f32,
+    ) -> Result<(), WorkspaceError> {
+        self.apply_transaction(|candidate| {
+            let index = candidate
+                .floating
+                .iter()
+                .position(|item| &item.id == panel)
+                .ok_or_else(|| WorkspaceError::PanelNotFloating(panel.clone()))?;
+            let current = candidate.floating[index].bounds;
+            candidate.floating[index].bounds =
+                WorkspaceBounds::new(x, y, current.width, current.height)?;
+            Ok(())
+        })
+    }
+
+    /// Resizes a floating panel while keeping its logical origin.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`WorkspaceError::PanelNotFloating`] if `panel` is not floating,
+    /// or [`WorkspaceError::InvalidBounds`] if an extent is negative or
+    /// non-finite.
+    pub fn resize_floating_panel(
+        &mut self,
+        panel: &PanelId,
+        width: f32,
+        height: f32,
+    ) -> Result<(), WorkspaceError> {
+        self.apply_transaction(|candidate| {
+            let index = candidate
+                .floating
+                .iter()
+                .position(|item| &item.id == panel)
+                .ok_or_else(|| WorkspaceError::PanelNotFloating(panel.clone()))?;
+            let current = candidate.floating[index].bounds;
+            candidate.floating[index].bounds =
+                WorkspaceBounds::new(current.x, current.y, width, height)?;
+            Ok(())
+        })
+    }
+
+    /// Raises a floating panel above every other floating panel.
+    ///
+    /// Z-orders are normalized after every transaction, so the counter stays
+    /// dense and the stacking order is always unambiguous.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`WorkspaceError::PanelNotFloating`] if `panel` is not floating.
+    pub fn bring_panel_to_front(&mut self, panel: &PanelId) -> Result<(), WorkspaceError> {
+        self.apply_transaction(|candidate| {
+            let index = candidate
+                .floating
+                .iter()
+                .position(|item| &item.id == panel)
+                .ok_or_else(|| WorkspaceError::PanelNotFloating(panel.clone()))?;
+            bring_index_to_front(&mut candidate.floating, index);
+            Ok(())
+        })
+    }
+
+    /// Permanently removes a panel from every part of the layout.
+    ///
+    /// This is the panel lifecycle counterpart to [`Self::close_document`].
+    /// The ID is freed from docked, floating, and hidden storage. If the panel
+    /// was the active tab, the next tab (or the previous one at the end) becomes
+    /// active.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`WorkspaceError::PanelNotFound`] if `panel` is not placed in
+    /// the layout.
+    pub fn remove_panel(&mut self, panel: &PanelId) -> Result<(), WorkspaceError> {
+        self.apply_transaction(|candidate| {
+            candidate
+                .detach_panel(panel)
+                .then_some(())
+                .ok_or_else(|| WorkspaceError::PanelNotFound(panel.clone()))
         })
     }
 
@@ -554,6 +649,102 @@ impl WorkspaceLayout {
         })
     }
 
+    /// Moves a free-form document window to a new logical position.
+    ///
+    /// The document keeps its current size. Use
+    /// [`Self::resize_floating_document`] to change the extent.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`WorkspaceError::DocumentNotFloating`] if `document` is not
+    /// free-form, or [`WorkspaceError::InvalidBounds`] if a coordinate is not
+    /// finite.
+    pub fn move_floating_document(
+        &mut self,
+        document: &DocumentId,
+        x: f32,
+        y: f32,
+    ) -> Result<(), WorkspaceError> {
+        self.apply_transaction(|candidate| {
+            let index = candidate
+                .freeform_documents
+                .iter()
+                .position(|item| &item.id == document)
+                .ok_or_else(|| WorkspaceError::DocumentNotFloating(document.clone()))?;
+            let current = candidate.freeform_documents[index].bounds;
+            candidate.freeform_documents[index].bounds =
+                WorkspaceBounds::new(x, y, current.width, current.height)?;
+            Ok(())
+        })
+    }
+
+    /// Resizes a free-form document window while keeping its logical origin.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`WorkspaceError::DocumentNotFloating`] if `document` is not
+    /// free-form, or [`WorkspaceError::InvalidBounds`] if an extent is negative
+    /// or non-finite.
+    pub fn resize_floating_document(
+        &mut self,
+        document: &DocumentId,
+        width: f32,
+        height: f32,
+    ) -> Result<(), WorkspaceError> {
+        self.apply_transaction(|candidate| {
+            let index = candidate
+                .freeform_documents
+                .iter()
+                .position(|item| &item.id == document)
+                .ok_or_else(|| WorkspaceError::DocumentNotFloating(document.clone()))?;
+            let current = candidate.freeform_documents[index].bounds;
+            candidate.freeform_documents[index].bounds =
+                WorkspaceBounds::new(current.x, current.y, width, height)?;
+            Ok(())
+        })
+    }
+
+    /// Raises a free-form document above every other free-form document.
+    ///
+    /// Z-orders are normalized after every transaction, so the counter stays
+    /// dense and the stacking order is always unambiguous.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`WorkspaceError::DocumentNotFloating`] if `document` is not
+    /// free-form.
+    pub fn bring_document_to_front(&mut self, document: &DocumentId) -> Result<(), WorkspaceError> {
+        self.apply_transaction(|candidate| {
+            let index = candidate
+                .freeform_documents
+                .iter()
+                .position(|item| &item.id == document)
+                .ok_or_else(|| WorkspaceError::DocumentNotFloating(document.clone()))?;
+            bring_index_to_front(&mut candidate.freeform_documents, index);
+            Ok(())
+        })
+    }
+
+    /// Permanently closes a document, whether docked or free-form.
+    ///
+    /// The ID is freed from both the central document area and free-form
+    /// storage. Closing the active document selects the next tab, or the
+    /// previous tab when the closed document was last.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`WorkspaceError::DocumentNotFound`] if `document` is not placed
+    /// in the layout.
+    pub fn close_document(&mut self, document: &DocumentId) -> Result<(), WorkspaceError> {
+        self.apply_transaction(|candidate| {
+            let docked = detach_document(&mut candidate.root, document);
+            let freeform = take_document(&mut candidate.freeform_documents, document);
+            (docked || freeform)
+                .then_some(())
+                .ok_or_else(|| WorkspaceError::DocumentNotFound(document.clone()))
+        })
+    }
+
     /// Selects a document in the central document area or raises a free-form one.
     ///
     /// # Errors
@@ -574,6 +765,58 @@ impl WorkspaceLayout {
                 return Ok(());
             }
             Err(WorkspaceError::DocumentNotFound(document.clone()))
+        })
+    }
+
+    /// Clamps all floating windows to `work_area` after a monitor change.
+    ///
+    /// The platform adapter owns monitor discovery, DPI conversion, and
+    /// disconnected-monitor handling. It calls this method with the current
+    /// monitor work area. Window sizes are preserved, but every window is moved
+    /// until at least [`MIN_VISIBLE_FLOATING_EXTENT`] logical pixels of its
+    /// width and height remain inside the work area. The guaranteed extent is
+    /// reduced automatically when a window is smaller than the default.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`WorkspaceError::InvalidBounds`] when `work_area` is not a
+    /// finite, non-negative rectangle.
+    pub fn clamp_floating_bounds(
+        &mut self,
+        work_area: WorkspaceBounds,
+    ) -> Result<(), WorkspaceError> {
+        self.clamp_floating_bounds_with_min_visible(work_area, MIN_VISIBLE_FLOATING_EXTENT)
+    }
+
+    /// Clamps all floating windows using an explicit minimum visible extent.
+    ///
+    /// A `min_visible_extent` of zero permits windows to remain fully outside
+    /// the work area; use [`Self::clamp_floating_bounds`] for the normal restore
+    /// path.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`WorkspaceError::InvalidBounds`] when `work_area` is not a
+    /// finite, non-negative rectangle, or
+    /// [`WorkspaceError::InvalidVisibleExtent`] when `min_visible_extent` is
+    /// negative or non-finite.
+    pub fn clamp_floating_bounds_with_min_visible(
+        &mut self,
+        work_area: WorkspaceBounds,
+        min_visible_extent: f32,
+    ) -> Result<(), WorkspaceError> {
+        work_area.ensure_valid()?;
+        if !min_visible_extent.is_finite() || min_visible_extent < 0.0 {
+            return Err(WorkspaceError::InvalidVisibleExtent);
+        }
+        self.apply_transaction(|candidate| {
+            for item in &mut candidate.floating {
+                item.bounds = clamp_bounds(item.bounds, work_area, min_visible_extent);
+            }
+            for item in &mut candidate.freeform_documents {
+                item.bounds = clamp_bounds(item.bounds, work_area, min_visible_extent);
+            }
+            Ok(())
         })
     }
 
@@ -607,6 +850,8 @@ impl WorkspaceLayout {
 
     fn normalize(&mut self) {
         normalize_node(&mut self.root);
+        normalize_z_order(&mut self.floating);
+        normalize_z_order(&mut self.freeform_documents);
     }
 
     fn apply_transaction(
@@ -615,6 +860,7 @@ impl WorkspaceLayout {
     ) -> Result<(), WorkspaceError> {
         let mut candidate = self.clone();
         operation(&mut candidate)?;
+        candidate.normalize();
         candidate.validate()?;
         *self = candidate;
         Ok(())
@@ -644,23 +890,9 @@ impl WorkspaceLayout {
     /// Returns an error for malformed JSON, unsupported versions, or invalid layouts.
     #[cfg(feature = "serde")]
     pub fn from_json(json: &str) -> Result<Self, WorkspaceSerializationError> {
-        let mut layout: Self =
+        let layout: Self =
             serde_json::from_str(json).map_err(WorkspaceSerializationError::Decode)?;
-        if layout.version > WORKSPACE_LAYOUT_VERSION {
-            return Err(WorkspaceSerializationError::Workspace(
-                WorkspaceError::UnsupportedVersion(layout.version),
-            ));
-        }
-        if layout.version < WORKSPACE_LAYOUT_VERSION {
-            return Err(WorkspaceSerializationError::Workspace(
-                WorkspaceError::MigrationRequired(layout.version),
-            ));
-        }
-        layout.normalize();
-        layout
-            .validate()
-            .map_err(WorkspaceSerializationError::Workspace)?;
-        Ok(layout)
+        migrate_layout(layout).map_err(WorkspaceSerializationError::Workspace)
     }
 }
 
@@ -673,10 +905,14 @@ pub enum WorkspaceError {
     DuplicateDocument(DocumentId),
     /// A dock operation referred to a panel that is not in the docked tree.
     PanelNotFound(PanelId),
+    /// A floating operation referred to a panel that is not floating.
+    PanelNotFloating(PanelId),
     /// A show operation referred to a panel that is not hidden.
     PanelNotHidden(PanelId),
     /// A document operation referred to an unknown document.
     DocumentNotFound(DocumentId),
+    /// A floating operation referred to a document that is not free-form.
+    DocumentNotFloating(DocumentId),
     /// The layout has no central document area.
     DocumentsAreaNotFound,
     /// The layout contains more than one central document area.
@@ -685,6 +921,8 @@ pub enum WorkspaceError {
     InvalidSplitRatio,
     /// A floating item's bounds are not finite or have a negative extent.
     InvalidBounds,
+    /// The requested minimum visible extent is negative or non-finite.
+    InvalidVisibleExtent,
     /// A move attempted to use the same panel as both source and target.
     SameSourceAndTarget,
     /// The input uses an on-disk format newer than this crate supports.
@@ -701,8 +939,12 @@ impl fmt::Display for WorkspaceError {
                 write!(formatter, "document `{id}` appears more than once")
             }
             Self::PanelNotFound(id) => write!(formatter, "panel `{id}` was not found"),
+            Self::PanelNotFloating(id) => write!(formatter, "panel `{id}` is not floating"),
             Self::PanelNotHidden(id) => write!(formatter, "panel `{id}` is not hidden"),
             Self::DocumentNotFound(id) => write!(formatter, "document `{id}` was not found"),
+            Self::DocumentNotFloating(id) => {
+                write!(formatter, "document `{id}` is not free-form")
+            }
             Self::DocumentsAreaNotFound => formatter.write_str("layout has no document area"),
             Self::MultipleDocumentAreas => {
                 formatter.write_str("layout has more than one document area")
@@ -712,6 +954,9 @@ impl fmt::Display for WorkspaceError {
             }
             Self::InvalidBounds => {
                 formatter.write_str("floating bounds must be finite and non-negative")
+            }
+            Self::InvalidVisibleExtent => {
+                formatter.write_str("minimum visible extent must be finite and non-negative")
             }
             Self::SameSourceAndTarget => {
                 formatter.write_str("source panel and target panel must differ")
@@ -763,6 +1008,20 @@ impl std::error::Error for WorkspaceSerializationError {
     }
 }
 
+fn migrate_layout(mut layout: WorkspaceLayout) -> Result<WorkspaceLayout, WorkspaceError> {
+    if layout.version > WORKSPACE_LAYOUT_VERSION {
+        return Err(WorkspaceError::UnsupportedVersion(layout.version));
+    }
+    if layout.version < WORKSPACE_LAYOUT_VERSION {
+        // Version 1 is the oldest format. Future format versions add explicit
+        // upgrade steps here before normalization and validation.
+        return Err(WorkspaceError::MigrationRequired(layout.version));
+    }
+    layout.normalize();
+    layout.validate()?;
+    Ok(layout)
+}
+
 fn normalize_ratio(ratio: f32) -> f32 {
     if ratio.is_finite() {
         ratio.clamp(MIN_SPLIT_RATIO, MAX_SPLIT_RATIO)
@@ -772,7 +1031,8 @@ fn normalize_ratio(ratio: f32) -> f32 {
 }
 
 fn normalize_node(node: &mut LayoutNode) {
-    match node {
+    let mut current = std::mem::replace(node, LayoutNode::Empty);
+    match &mut current {
         LayoutNode::Split {
             ratio,
             first,
@@ -782,8 +1042,27 @@ fn normalize_node(node: &mut LayoutNode) {
             *ratio = normalize_ratio(*ratio);
             normalize_node(first);
             normalize_node(second);
+            if matches!(first.as_ref(), LayoutNode::Empty) {
+                *node = std::mem::replace(second.as_mut(), LayoutNode::Empty);
+                return;
+            }
+            if matches!(second.as_ref(), LayoutNode::Empty) {
+                *node = std::mem::replace(first.as_mut(), LayoutNode::Empty);
+                return;
+            }
         }
         LayoutNode::Tabs { items, active } => {
+            match items.as_slice() {
+                [] => {
+                    *node = LayoutNode::Empty;
+                    return;
+                }
+                [id] => {
+                    *node = LayoutNode::Panel { id: id.clone() };
+                    return;
+                }
+                _ => {}
+            }
             if active.as_ref().is_none_or(|id| !items.contains(id)) {
                 *active = items.first().cloned();
             }
@@ -795,6 +1074,7 @@ fn normalize_node(node: &mut LayoutNode) {
         }
         LayoutNode::Panel { .. } | LayoutNode::Empty => {}
     }
+    *node = current;
 }
 
 fn validate_node(
@@ -927,48 +1207,23 @@ fn tab_with_panel(node: &mut LayoutNode, target: &PanelId, panel: PanelId) -> bo
 fn detach_panel_from_node(node: &mut LayoutNode, panel: &PanelId) -> bool {
     match node {
         LayoutNode::Split { first, second, .. } => {
-            let removed =
-                detach_panel_from_node(first, panel) || detach_panel_from_node(second, panel);
-            if removed {
-                collapse_split(node);
-            }
-            removed
+            detach_panel_from_node(first, panel) || detach_panel_from_node(second, panel)
         }
         LayoutNode::Tabs { items, active } => {
-            let removed = take_id(items, panel);
-            if removed {
-                if active.as_ref() == Some(panel) {
-                    *active = items.first().cloned();
-                }
-                match items.as_slice() {
-                    [] => *node = LayoutNode::Empty,
-                    [id] => *node = LayoutNode::Panel { id: id.clone() },
-                    _ => {}
-                }
+            let Some(index) = items.iter().position(|id| id == panel) else {
+                return false;
+            };
+            items.remove(index);
+            if active.as_ref() == Some(panel) {
+                *active = items.get(index).or_else(|| items.last()).cloned();
             }
-            removed
+            true
         }
         LayoutNode::Panel { id } if id == panel => {
             *node = LayoutNode::Empty;
             true
         }
         LayoutNode::Panel { .. } | LayoutNode::Documents { .. } | LayoutNode::Empty => false,
-    }
-}
-
-fn collapse_split(node: &mut LayoutNode) {
-    let LayoutNode::Split { first, second, .. } = node else {
-        return;
-    };
-    let replacement = if matches!(first.as_ref(), LayoutNode::Empty) {
-        Some(std::mem::replace(second, Box::new(LayoutNode::Empty)))
-    } else if matches!(second.as_ref(), LayoutNode::Empty) {
-        Some(std::mem::replace(first, Box::new(LayoutNode::Empty)))
-    } else {
-        None
-    };
-    if let Some(replacement) = replacement {
-        *node = *replacement;
     }
 }
 
@@ -1047,7 +1302,7 @@ fn detach_document(node: &mut LayoutNode, document: &DocumentId) -> bool {
             };
             items.remove(index);
             if active.as_ref() == Some(document) {
-                *active = items.first().cloned();
+                *active = items.get(index).or_else(|| items.last()).cloned();
             }
             true
         }
@@ -1093,6 +1348,25 @@ fn activate_document(node: &mut LayoutNode, document: &DocumentId) -> bool {
     }
 }
 
+fn clamp_bounds(
+    bounds: WorkspaceBounds,
+    work_area: WorkspaceBounds,
+    min_visible: f32,
+) -> WorkspaceBounds {
+    let visible_width = min_visible.min(bounds.width).min(work_area.width);
+    let visible_height = min_visible.min(bounds.height).min(work_area.height);
+    let lower_x = work_area.x + visible_width - bounds.width;
+    let upper_x = work_area.x + work_area.width - visible_width;
+    let lower_y = work_area.y + visible_height - bounds.height;
+    let upper_y = work_area.y + work_area.height - visible_height;
+    WorkspaceBounds {
+        x: bounds.x.clamp(lower_x.min(upper_x), lower_x.max(upper_x)),
+        y: bounds.y.clamp(lower_y.min(upper_y), lower_y.max(upper_y)),
+        width: bounds.width,
+        height: bounds.height,
+    }
+}
+
 fn next_z_order<T>(items: &[T]) -> u32
 where
     T: ZOrdered,
@@ -1105,19 +1379,56 @@ where
         .saturating_add(1)
 }
 
+fn normalize_z_order<T>(items: &mut [T])
+where
+    T: ZOrdered,
+{
+    let mut order = (0..items.len()).collect::<Vec<_>>();
+    order.sort_by_key(|&index| items[index].z_order());
+    for (rank, index) in order.into_iter().enumerate() {
+        items[index].set_z_order(u32::try_from(rank + 1).unwrap_or(u32::MAX));
+    }
+}
+
+fn bring_index_to_front<T>(items: &mut [T], index: usize)
+where
+    T: ZOrdered,
+{
+    if index >= items.len() {
+        return;
+    }
+    let mut order = (0..items.len())
+        .filter(|&item| item != index)
+        .collect::<Vec<_>>();
+    order.sort_by_key(|&item| items[item].z_order());
+    order.push(index);
+    for (rank, item) in order.into_iter().enumerate() {
+        items[item].set_z_order(u32::try_from(rank + 1).unwrap_or(u32::MAX));
+    }
+}
+
 trait ZOrdered {
     fn z_order(&self) -> u32;
+    fn set_z_order(&mut self, z_order: u32);
 }
 
 impl ZOrdered for FloatingPanel {
     fn z_order(&self) -> u32 {
         self.z_order
     }
+
+    fn set_z_order(&mut self, z_order: u32) {
+        self.z_order = z_order;
+    }
 }
 
 impl ZOrdered for FloatingDocument {
     fn z_order(&self) -> u32 {
         self.z_order
+    }
+
+    fn set_z_order(&mut self, z_order: u32) {
+        self.z_order = z_order;
     }
 }
 
@@ -1279,5 +1590,371 @@ mod tests {
 
         assert_eq!(restored, layout);
         assert!(json.contains("unknown"));
+    }
+
+    #[test]
+    fn floating_panels_move_resize_and_raise_with_dense_z_order() {
+        let first = panel("first");
+        let second = panel("second");
+        let third = panel("third");
+        let mut layout = WorkspaceLayout::new(LayoutNode::tabs(vec![
+            first.clone(),
+            second.clone(),
+            third.clone(),
+        ]))
+        .expect("initial layout is valid");
+
+        for id in [&first, &second, &third] {
+            layout
+                .float_panel(id, bounds())
+                .expect("can float a docked panel");
+        }
+        layout
+            .bring_panel_to_front(&first)
+            .expect("can raise a floating panel");
+
+        let z_order = |id: &PanelId| {
+            layout
+                .floating()
+                .iter()
+                .find(|item| &item.id == id)
+                .expect("panel is floating")
+                .z_order
+        };
+        assert_eq!(z_order(&second), 1);
+        assert_eq!(z_order(&third), 2);
+        assert_eq!(z_order(&first), 3);
+
+        layout
+            .move_floating_panel(&first, 40.0, 50.0)
+            .expect("can move a floating panel");
+        let moved = layout
+            .floating()
+            .iter()
+            .find(|item| item.id == first)
+            .expect("panel is floating");
+        assert_eq!(
+            moved.bounds,
+            WorkspaceBounds::new(40.0, 50.0, 300.0, 200.0).unwrap()
+        );
+
+        layout
+            .resize_floating_panel(&first, 500.0, 250.0)
+            .expect("can resize a floating panel");
+        let resized = layout
+            .floating()
+            .iter()
+            .find(|item| item.id == first)
+            .expect("panel is floating");
+        assert_eq!(
+            resized.bounds,
+            WorkspaceBounds::new(40.0, 50.0, 500.0, 250.0).unwrap()
+        );
+        assert!(layout.validate().is_ok());
+    }
+
+    #[test]
+    fn freeform_documents_move_resize_and_raise_with_dense_z_order() {
+        let first = document("first");
+        let second = document("second");
+        let mut layout =
+            WorkspaceLayout::new(LayoutNode::documents(vec![first.clone(), second.clone()]))
+                .expect("initial layout is valid");
+
+        layout
+            .float_document(&first, bounds())
+            .expect("can float a document");
+        layout
+            .float_document(&second, bounds())
+            .expect("can float a document");
+        layout
+            .bring_document_to_front(&first)
+            .expect("can raise a free-form document");
+
+        let z_order = |id: &DocumentId| {
+            layout
+                .freeform_documents()
+                .iter()
+                .find(|item| &item.id == id)
+                .expect("document is free-form")
+                .z_order
+        };
+        assert_eq!(z_order(&second), 1);
+        assert_eq!(z_order(&first), 2);
+
+        layout
+            .move_floating_document(&first, 70.0, 80.0)
+            .expect("can move a free-form document");
+        layout
+            .resize_floating_document(&first, 640.0, 480.0)
+            .expect("can resize a free-form document");
+        let moved = layout
+            .freeform_documents()
+            .iter()
+            .find(|item| item.id == first)
+            .expect("document is free-form");
+        assert_eq!(
+            moved.bounds,
+            WorkspaceBounds::new(70.0, 80.0, 640.0, 480.0).unwrap()
+        );
+        assert!(layout.validate().is_ok());
+    }
+
+    #[test]
+    fn floating_operations_reject_items_that_are_not_floating() {
+        let docked = panel("docked");
+        let docked_document = document("docked-document");
+        let mut layout = WorkspaceLayout::new(LayoutNode::split(
+            DockAxis::Horizontal,
+            0.5,
+            LayoutNode::Panel { id: docked.clone() },
+            LayoutNode::documents(vec![docked_document.clone()]),
+        ))
+        .expect("initial layout is valid");
+
+        assert_eq!(
+            layout.move_floating_panel(&docked, 0.0, 0.0),
+            Err(WorkspaceError::PanelNotFloating(docked.clone()))
+        );
+        assert_eq!(
+            layout.bring_panel_to_front(&docked),
+            Err(WorkspaceError::PanelNotFloating(docked))
+        );
+        assert_eq!(
+            layout.move_floating_document(&docked_document, 0.0, 0.0),
+            Err(WorkspaceError::DocumentNotFloating(docked_document.clone()))
+        );
+        assert_eq!(
+            layout.bring_document_to_front(&docked_document),
+            Err(WorkspaceError::DocumentNotFloating(docked_document))
+        );
+    }
+
+    #[test]
+    fn removing_panels_collapses_the_tree_and_selects_a_neighbor() {
+        let first = panel("first");
+        let second = panel("second");
+        let third = panel("third");
+        let docked = panel("docked");
+        let mut layout = WorkspaceLayout::new(LayoutNode::split(
+            DockAxis::Horizontal,
+            0.5,
+            LayoutNode::tabs(vec![first.clone(), second.clone(), third.clone()]),
+            LayoutNode::Panel { id: docked.clone() },
+        ))
+        .expect("initial layout is valid");
+        layout
+            .activate_panel(&second)
+            .expect("second tab is docked");
+
+        layout
+            .remove_panel(&second)
+            .expect("can remove a docked panel");
+        assert!(
+            matches!(layout.root(), LayoutNode::Split { first: branch, .. } if matches!(branch.as_ref(), LayoutNode::Tabs { items, active: Some(active) } if items == &vec![first.clone(), third.clone()] && active == &third))
+        );
+
+        layout
+            .remove_panel(&third)
+            .expect("can remove another docked panel");
+        assert!(
+            matches!(layout.root(), LayoutNode::Split { first: branch, .. } if matches!(branch.as_ref(), LayoutNode::Panel { id } if id == &first))
+        );
+
+        layout
+            .remove_panel(&first)
+            .expect("can remove the last panel in a split branch");
+        assert_eq!(layout.root(), &LayoutNode::Panel { id: docked });
+        assert!(layout.validate().is_ok());
+    }
+
+    #[test]
+    fn removing_panels_frees_floating_and_hidden_storage() {
+        let floating = panel("floating");
+        let hidden = panel("hidden");
+        let mut layout =
+            WorkspaceLayout::new(LayoutNode::tabs(vec![floating.clone(), hidden.clone()]))
+                .expect("initial layout is valid");
+        layout
+            .float_panel(&floating, bounds())
+            .expect("can float a panel");
+        layout.hide_panel(&hidden).expect("can hide a panel");
+
+        layout
+            .remove_panel(&floating)
+            .expect("can remove a floating panel");
+        layout
+            .remove_panel(&hidden)
+            .expect("can remove a hidden panel");
+
+        assert_eq!(layout.root(), &LayoutNode::Empty);
+        assert!(layout.floating().is_empty());
+        assert!(layout.hidden().is_empty());
+        assert!(layout.validate().is_ok());
+    }
+
+    #[test]
+    fn closing_documents_frees_both_areas_and_selects_a_neighbor() {
+        let first = document("first");
+        let second = document("second");
+        let third = document("third");
+        let mut layout = WorkspaceLayout::new(LayoutNode::documents(vec![
+            first.clone(),
+            second.clone(),
+            third.clone(),
+        ]))
+        .expect("initial layout is valid");
+        layout
+            .activate_document(&second)
+            .expect("second document is docked");
+
+        layout
+            .close_document(&second)
+            .expect("can close the active document");
+        assert!(
+            matches!(layout.root(), LayoutNode::Documents { items, active: Some(active), .. } if items == &vec![first.clone(), third.clone()] && active == &third)
+        );
+
+        layout
+            .close_document(&third)
+            .expect("can close the last document");
+        assert!(
+            matches!(layout.root(), LayoutNode::Documents { items, active: Some(active), .. } if items == &vec![first.clone()] && active == &first)
+        );
+
+        layout
+            .close_document(&first)
+            .expect("can close the final document");
+        assert!(
+            matches!(layout.root(), LayoutNode::Documents { items, active: None, .. } if items.is_empty())
+        );
+
+        let freeform = document("freeform");
+        layout
+            .float_document(&freeform, bounds())
+            .expect_err("no docked document remains to float");
+        let mut layout = WorkspaceLayout::new(LayoutNode::documents(vec![freeform.clone()]))
+            .expect("initial layout is valid");
+        layout
+            .float_document(&freeform, bounds())
+            .expect("can float a document");
+        layout
+            .close_document(&freeform)
+            .expect("can close a free-form document");
+        assert!(layout.freeform_documents().is_empty());
+        assert!(
+            matches!(layout.root(), LayoutNode::Documents { items, active: None, .. } if items.is_empty())
+        );
+    }
+
+    #[test]
+    fn normalization_collapses_empty_tabs_and_empty_split_branches() {
+        let only = panel("only");
+        let layout = WorkspaceLayout::new(LayoutNode::tabs(Vec::new()))
+            .expect("an empty tab group becomes an empty root");
+        assert_eq!(layout.root(), &LayoutNode::Empty);
+
+        let layout = WorkspaceLayout::new(LayoutNode::tabs(vec![only.clone()]))
+            .expect("a one-item tab group becomes a panel");
+        assert_eq!(layout.root(), &LayoutNode::Panel { id: only.clone() });
+
+        let layout = WorkspaceLayout::new(LayoutNode::split(
+            DockAxis::Vertical,
+            0.5,
+            LayoutNode::Empty,
+            LayoutNode::Panel { id: only.clone() },
+        ))
+        .expect("an empty split branch collapses");
+        assert_eq!(layout.root(), &LayoutNode::Panel { id: only });
+    }
+
+    #[test]
+    fn clamping_floating_bounds_keeps_a_minimum_visible_extent() {
+        let floating = panel("floating");
+        let freeform = document("freeform");
+        let mut layout = WorkspaceLayout::new(LayoutNode::split(
+            DockAxis::Horizontal,
+            0.5,
+            LayoutNode::Panel {
+                id: floating.clone(),
+            },
+            LayoutNode::documents(vec![freeform.clone()]),
+        ))
+        .expect("initial layout is valid");
+        layout
+            .float_panel(
+                &floating,
+                WorkspaceBounds::new(-900.0, -900.0, 300.0, 200.0).unwrap(),
+            )
+            .expect("can float a panel");
+        layout
+            .float_document(
+                &freeform,
+                WorkspaceBounds::new(5_000.0, 5_000.0, 5_000.0, 5_000.0).unwrap(),
+            )
+            .expect("can float a document");
+
+        layout
+            .clamp_floating_bounds(WorkspaceBounds::new(0.0, 0.0, 1_000.0, 800.0).unwrap())
+            .expect("can clamp floating bounds");
+
+        let panel_bounds = layout.floating()[0].bounds;
+        assert_eq!(
+            panel_bounds,
+            WorkspaceBounds::new(-268.0, -168.0, 300.0, 200.0).unwrap()
+        );
+        assert!((panel_bounds.x() + panel_bounds.width() - 32.0).abs() < f32::EPSILON);
+        assert!((panel_bounds.y() + panel_bounds.height() - 32.0).abs() < f32::EPSILON);
+
+        let document_bounds = layout.freeform_documents()[0].bounds;
+        assert_eq!(
+            document_bounds,
+            WorkspaceBounds::new(968.0, 768.0, 5_000.0, 5_000.0).unwrap()
+        );
+        assert!((document_bounds.x() - 968.0).abs() < f32::EPSILON);
+        assert!((document_bounds.y() - 768.0).abs() < f32::EPSILON);
+        assert!(layout.validate().is_ok());
+    }
+
+    #[test]
+    fn clamping_floating_bounds_rejects_an_invalid_visible_extent() {
+        let mut layout = WorkspaceLayout::new(LayoutNode::Empty).expect("empty layout is valid");
+        assert_eq!(
+            layout.clamp_floating_bounds_with_min_visible(
+                WorkspaceBounds::new(0.0, 0.0, 100.0, 100.0).unwrap(),
+                -1.0,
+            ),
+            Err(WorkspaceError::InvalidVisibleExtent)
+        );
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn json_restore_uses_the_migration_hook_for_version_checks() {
+        use super::WorkspaceSerializationError;
+
+        let layout =
+            WorkspaceLayout::new(LayoutNode::Panel { id: panel("panel") }).expect("valid layout");
+        let mut value: serde_json::Value =
+            serde_json::from_str(&layout.to_json().expect("JSON encoding succeeds"))
+                .expect("valid JSON value");
+
+        value["version"] = serde_json::json!(0);
+        let old = serde_json::to_string(&value).expect("JSON encoding succeeds");
+        assert!(matches!(
+            WorkspaceLayout::from_json(&old),
+            Err(WorkspaceSerializationError::Workspace(
+                WorkspaceError::MigrationRequired(0)
+            ))
+        ));
+
+        value["version"] = serde_json::json!(2);
+        let future = serde_json::to_string(&value).expect("JSON encoding succeeds");
+        assert!(matches!(
+            WorkspaceLayout::from_json(&future),
+            Err(WorkspaceSerializationError::Workspace(
+                WorkspaceError::UnsupportedVersion(2)
+            ))
+        ));
     }
 }
