@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 
-use paleo::{AudioCodec, Event, Media, VideoCodec};
+use paleo::{AudioCodec, Event, Media, VideoCodec, VideoExtraDataKind};
 
 fn ffmpeg() -> Option<std::ffi::OsString> {
     std::env::var_os("TORN_FFMPEG").or_else(|| {
@@ -146,6 +146,18 @@ fn check_audio_video_containers(ffmpeg: &std::ffi::OsString, directory: &Path) {
         let video = info.video().expect("a video track is selected");
         assert_eq!(video.codec(), VideoCodec::H264);
         assert_eq!((video.width(), video.height()), (320, 240));
+        let avc = video
+            .avc_decoder_config()
+            .expect("the container carries an avcC record");
+        assert!(avc.len() > 6, "{}: avcC is not empty", path.display());
+        assert!(
+            video
+                .extra_data()
+                .iter()
+                .any(|extra| extra.kind() == VideoExtraDataKind::AvcDecoderConfig),
+            "{}: the record kind is reported",
+            path.display()
+        );
         let audio = info.audio().expect("an audio track is selected");
         assert_eq!(audio.codec(), AudioCodec::Aac);
         assert_eq!(audio.channels(), 1);

@@ -12,6 +12,8 @@ use std::time::Duration;
 
 use symphonia::core::codecs::CodecParameters;
 use symphonia::core::codecs::audio::{AudioCodecParameters, AudioDecoder, AudioDecoderOptions};
+use symphonia::core::codecs::video::VideoExtraDataId;
+use symphonia::core::codecs::video::well_known::extra_data as extra_data_ids;
 use symphonia::core::formats::probe::Hint;
 use symphonia::core::formats::{
     FormatOptions, FormatReader, SeekMode, SeekTo, Track, TrackFlags, TrackType,
@@ -23,7 +25,7 @@ use symphonia::core::units::{Time, TimeBase, Timestamp};
 use crate::audio::AudioBuffer;
 use crate::codec::{AudioCodec, VideoCodec};
 use crate::error::{Error, Result};
-use crate::video::VideoPacket;
+use crate::video::{VideoExtraData, VideoExtraDataKind, VideoPacket};
 
 /// Consecutive undecodable audio packets tolerated before playback fails.
 const MAX_DECODE_FAILURES: u32 = 64;
@@ -92,12 +94,13 @@ impl AudioTrackInfo {
 }
 
 /// Metadata for the selected video track.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct VideoTrackInfo {
     codec: VideoCodec,
     width: u32,
     height: u32,
     frame_rate: Option<f64>,
+    extra_data: Vec<VideoExtraData>,
 }
 
 impl VideoTrackInfo {
@@ -123,6 +126,24 @@ impl VideoTrackInfo {
     #[must_use]
     pub const fn frame_rate(&self) -> Option<f64> {
         self.frame_rate
+    }
+
+    /// Returns the codec configuration records carried by the container.
+    ///
+    /// A decoder backend needs these before the first packet, for example the
+    /// `avcC` record that carries H.264 SPS/PPS and the NAL length size.
+    #[must_use]
+    pub fn extra_data(&self) -> &[VideoExtraData] {
+        &self.extra_data
+    }
+
+    /// Returns the H.264 `AVCDecoderConfigurationRecord`, when present.
+    #[must_use]
+    pub fn avc_decoder_config(&self) -> Option<&[u8]> {
+        self.extra_data
+            .iter()
+            .find(|extra| extra.kind() == VideoExtraDataKind::AvcDecoderConfig)
+            .map(VideoExtraData::data)
     }
 }
 
@@ -402,12 +423,35 @@ fn video_info(track: &Track) -> Option<VideoTrackInfo> {
         .map(|(frames, time)| f64::from(frames) * time.as_secs_f64().recip())
         .filter(|rate| rate.is_finite() && *rate > 0.0);
 
+    let extra_data = params
+        .extra_data
+        .iter()
+        .map(|extra| VideoExtraData::new(extra_data_kind(extra.id), extra.data.clone()))
+        .collect();
+
     Some(VideoTrackInfo {
         codec: VideoCodec::from_id(params.codec),
         width,
         height,
         frame_rate,
+        extra_data,
     })
+}
+
+fn extra_data_kind(id: VideoExtraDataId) -> VideoExtraDataKind {
+    if id == extra_data_ids::VIDEO_EXTRA_DATA_ID_AVC_DECODER_CONFIG {
+        VideoExtraDataKind::AvcDecoderConfig
+    } else if id == extra_data_ids::VIDEO_EXTRA_DATA_ID_HEVC_DECODER_CONFIG {
+        VideoExtraDataKind::HevcDecoderConfig
+    } else if id == extra_data_ids::VIDEO_EXTRA_DATA_ID_VP9_DECODER_CONFIG {
+        VideoExtraDataKind::Vp9DecoderConfig
+    } else if id == extra_data_ids::VIDEO_EXTRA_DATA_ID_AV1_DECODER_CONFIG {
+        VideoExtraDataKind::Av1DecoderConfig
+    } else if id == extra_data_ids::VIDEO_EXTRA_DATA_ID_DOLBY_VISION_CONFIG {
+        VideoExtraDataKind::DolbyVisionConfig
+    } else {
+        VideoExtraDataKind::Other
+    }
 }
 
 fn media_duration(reader: &dyn FormatReader) -> Option<Duration> {

@@ -44,4 +44,4 @@ pub use audio::AudioBuffer;
 pub use codec::{AudioCodec, VideoCodec};
 pub use error::{Error, Result};
 pub use media::{AudioTrackInfo, Event, Media, MediaInfo, VideoTrackInfo};
-pub use video::VideoPacket;
+pub use video::{VideoExtraData, VideoExtraDataKind, VideoPacket};

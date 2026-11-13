@@ -1525,6 +1525,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "paleo-h264"
+version = "0.1.0"
+dependencies = [
+ "paleo",
+ "rusty_h264-common",
+ "rusty_h264-decoder",
+]
+
+[[package]]
 name = "parking_lot"
 version = "0.12.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1854,6 +1863,36 @@ name = "rustversion"
 version = "1.0.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf54715a573b99ac80df0bc206da022bcd442c974952c7b9720069370852e21f"
+
+[[package]]
+name = "rusty_h264-common"
+version = "0.17.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e580674b3f5bc31557bacfad50aff5cef898867c55c707f50c4d100814477429"
+dependencies = [
+ "bytemuck",
+ "once_cell",
+ "portable-atomic",
+ "wide",
+]
+
+[[package]]
+name = "rusty_h264-decoder"
+version = "0.17.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "094423de82effaf636b119c9f4dc05c9137a54322c39b144a1776069740df87f"
+dependencies = [
+ "rusty_h264-common",
+]
+
+[[package]]
+name = "safe_arch"
+version = "0.7.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "96b02de82ddbe1b636e6170c21be622223aea188ef2e139be0a5b219ec215323"
+dependencies = [
+ "bytemuck",
+]
 
 [[package]]
 name = "same-file"
@@ -2994,6 +3033,16 @@ dependencies = [
  "log",
  "raw-window-handle",
  "web-sys",
+]
+
+[[package]]
+name = "wide"
+version = "0.7.33"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0ce5da8ecb62bcd8ec8b7ea19f69a51275e91299be594ea5cc6ef7819e16cd03"
+dependencies = [
+ "bytemuck",
+ "safe_arch",
 ]
 
 [[package]]
