@@ -194,7 +194,7 @@ impl Widget for Spinner {
 
         for index in 0..count {
             let angle = TAU * usize_to_f32(index) / count_f32;
-            let transform = Affine::translate(center.x, center.y).then(Affine::rotate(angle));
+            let transform = Affine::rotate(angle).then(Affine::translate(center.x, center.y));
             let segment = Rect::new(
                 Point::new(-thickness / 2.0, -ring_radius),
                 size(thickness, segment_length),
@@ -271,6 +271,55 @@ mod tests {
             .filter(|command| matches!(command, DisplayCommand::FillRoundedRect { .. }))
             .count();
         assert_eq!(fills, 5);
+    }
+
+    #[test]
+    fn segments_orbit_the_spinner_center() {
+        let diameter = 24.0;
+        let mut runtime = UiRuntime::new(Spinner::new().with_diameter(diameter).with_segments(8));
+        let mut display_list = DisplayList::new();
+        runtime
+            .layout(Constraints::tight(size(diameter, diameter)).expect("valid constraints"))
+            .expect("spinner layout succeeds");
+        runtime
+            .paint(&mut PaintContext::new(&mut display_list))
+            .expect("spinner paint succeeds");
+
+        let center = Point::new(diameter / 2.0, diameter / 2.0);
+        let mut transform = Affine::IDENTITY;
+        let mut saved = Vec::new();
+        let mut offsets = Vec::new();
+        for command in display_list.commands() {
+            match command {
+                DisplayCommand::Save => saved.push(transform),
+                DisplayCommand::Restore => {
+                    transform = saved.pop().expect("spinner balances save and restore");
+                }
+                DisplayCommand::Transform { transform: next } => {
+                    transform = transform.then(*next);
+                }
+                DisplayCommand::FillRoundedRect { rect, .. } => {
+                    let segment_center = transform.transform_point(Point::new(
+                        rect.origin.x + rect.size.width() / 2.0,
+                        rect.origin.y + rect.size.height() / 2.0,
+                    ));
+                    let dx = f64::from(segment_center.x - center.x);
+                    let dy = f64::from(segment_center.y - center.y);
+                    offsets.push(dx.hypot(dy));
+                }
+                _ => {}
+            }
+        }
+
+        assert_eq!(offsets.len(), 8);
+        let expected = offsets[0];
+        assert!(expected > 0.0 && expected < f64::from(diameter / 2.0));
+        for offset in offsets {
+            assert!(
+                (offset - expected).abs() < 0.001,
+                "every segment must sit on the same orbit, got {offset} and {expected}"
+            );
+        }
     }
 
     #[test]

@@ -394,10 +394,14 @@ impl Adapter {
             }
             WinitWindowEvent::KeyboardInput { event, .. } => {
                 if event.state == ElementState::Pressed {
-                    InputEvent::KeyDown(key_event(&event, self.modifiers))
-                } else {
-                    InputEvent::KeyUp(key_event(&event, self.modifiers))
+                    let key = key_event(&event, self.modifiers);
+                    self.dispatch(event_loop, WindowEvent::Input(InputEvent::KeyDown(key)));
+                    if let Some(text) = text_input(event.text.as_deref(), self.modifiers) {
+                        self.dispatch(event_loop, WindowEvent::Input(InputEvent::TextInput(text)));
+                    }
+                    return true;
                 }
+                InputEvent::KeyUp(key_event(&event, self.modifiers))
             }
             WinitWindowEvent::Ime(ime) => match ime_input(ime) {
                 Some(input) => input,
@@ -633,6 +637,30 @@ fn ime_input(ime: Ime) -> Option<InputEvent> {
     })
 }
 
+/// Converts the text produced by a key press into text-input content.
+///
+/// `winit` reports the text produced by a key press in
+/// [`winit::event::KeyEvent::text`]. Normal typing — including non-Latin
+/// keyboard layouts such as Cyrillic — arrives through this field when no IME
+/// is composing. IME composition is delivered separately through [`Ime`].
+///
+/// Control characters (`Enter`, `Tab`, `Backspace`, ...) are removed so they
+/// keep their key semantics, and text is ignored while Ctrl or Meta is held so
+/// keyboard shortcuts are not inserted as characters.
+fn text_input(text: Option<&str>, modifiers: Modifiers) -> Option<String> {
+    if modifiers.contains(Modifiers::CONTROL) || modifiers.contains(Modifiers::META) {
+        return None;
+    }
+    let text = text?;
+    let mut result = String::with_capacity(text.len());
+    for character in text.chars() {
+        if !character.is_control() {
+            result.push(character);
+        }
+    }
+    (!result.is_empty()).then_some(result)
+}
+
 fn resize_direction(direction: WindowResizeDirection) -> ResizeDirection {
     match direction {
         WindowResizeDirection::North => ResizeDirection::North,
@@ -728,9 +756,41 @@ fn named_key(key: WinitNamedKey) -> Option<NamedKey> {
 
 #[cfg(test)]
 mod tests {
-    use super::{pointer_button, pointer_input, update_pointer_buttons};
+    use super::{pointer_button, pointer_input, text_input, update_pointer_buttons};
     use torn_core::{InputEvent, Modifiers, Point, PointerButton, PointerButtons};
     use winit::event::{ElementState, MouseButton};
+
+    #[test]
+    fn key_text_is_forwarded_for_typing_in_any_layout() {
+        assert_eq!(text_input(Some("a"), Modifiers::NONE), Some("a".to_owned()));
+        assert_eq!(
+            text_input(Some("Наберите что-нибудь"), Modifiers::NONE),
+            Some("Наберите что-нибудь".to_owned())
+        );
+        assert_eq!(
+            text_input(Some("日"), Modifiers::SHIFT),
+            Some("日".to_owned())
+        );
+    }
+
+    #[test]
+    fn control_characters_are_not_inserted_as_text() {
+        for text in ["\r", "\t", "\u{7f}", "\u{1b}", "\r\n"] {
+            assert_eq!(text_input(Some(text), Modifiers::NONE), None, "{text:?}");
+        }
+        assert_eq!(text_input(None, Modifiers::NONE), None);
+        assert_eq!(text_input(Some(""), Modifiers::NONE), None);
+    }
+
+    #[test]
+    fn shortcut_modifiers_do_not_insert_text() {
+        assert_eq!(text_input(Some("a"), Modifiers::CONTROL), None);
+        assert_eq!(text_input(Some("a"), Modifiers::META), None);
+        assert_eq!(
+            text_input(Some("a"), Modifiers::CONTROL | Modifiers::SHIFT),
+            None
+        );
+    }
 
     #[test]
     fn pointer_button_state_is_preserved_across_move_and_release() {
