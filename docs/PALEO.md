@@ -16,8 +16,8 @@ file ──► Symphonia demuxer ──┬──► Symphonia audio decoder ─�
 ```
 
 Paleo lives in `crates/paleo`. The H.264 backend lives in `crates/paleo-h264`.
-The `MediaSession` contract and the widgets that present frames live in
-`torn-widgets`; see [MEDIA.md](MEDIA.md).
+The `MediaSession` contract, the `PaleoSession` adapter, and the widgets that
+present frames live in `torn-widgets`; see [MEDIA.md](MEDIA.md).
 
 ## Why not one framework
 
@@ -119,6 +119,14 @@ loop {
 media.seek(Duration::from_secs(10))?;
 ```
 
+`Media::open_with(path, MediaSelection::VideoOnly)` selects only the video
+track, which is useful for a video session that cannot decode or output audio.
+`Media::open` selects the default audio and video tracks.
+
+`seek` is valid after end-of-stream. Symphonia 0.6's ISO/MP4 reader cannot
+resume once its atom iterator has reached EOF, so `Media` reopens the source in
+that case; the cost is one probe and no re-decoding.
+
 `AudioBuffer` contains interleaved `f32` samples normalized to `-1.0..=1.0`,
 with the presentation timestamp, sample rate, and channel count of the block.
 `VideoPacket` contains the compressed payload and both timestamps; it carries no
@@ -153,7 +161,9 @@ copy for every frame.
 
 - parses the `avcC` record for SPS/PPS and the NAL length size, and converts
   length-prefixed packets to Annex-B access units, prepending parameter sets at
-  every IDR;
+  every IDR. A packet is accepted as Annex-B only when it does not form a
+  consistent sequence of length-prefixed NAL units, so a four-byte length such
+  as `00 00 01 b0` is not mistaken for a three-byte start code;
 - decodes with one streaming `rusty_h264_decoder::Decoder`, with no packet
   queue and no whole-GOP buffering;
 - reorders B-pictures by `PicOrderCnt` with a bounded window
@@ -176,7 +186,8 @@ written against its streaming API.
   `paleo-h264/tests/decode.rs`. They generate AAC, MP3, FLAC, Vorbis,
   MP4/H.264, and Matroska fixtures with a real FFmpeg, then check track
   selection, audio decoding, packet timestamps, A/V seek, and H.264
-  frame-for-frame agreement with FFmpeg's decode, including a strict B-pyramid.
+  frame-for-frame agreement with FFmpeg's decode, including a strict B-pyramid
+  and a 160×90 clip whose NAL prefixes resemble start codes.
   The H.264 comparison allows a mean per-channel difference below 1 after
   matching FFmpeg's nearest-neighbour chroma upsampling.
 
@@ -202,9 +213,7 @@ Streams with a deeper reorder pattern can raise the depth explicitly.
 
 Roadmap:
 
-1. `PaleoSession` in `torn-widgets` implementing `MediaSession`, keeping
-   `FfmpegSession` as the fallback.
-2. Audio output device plus an audio-mastered `MediaClock`.
-3. AV1 (decode) and VP8/VP9 (decode/encode) backends as separate crates.
-4. Opus and HE-AAC decoder backends; HEVC once a mature pure-Rust decoder
+1. Audio output device plus an audio-mastered `MediaClock`.
+2. AV1 (decode) and VP8/VP9 (decode/encode) backends as separate crates.
+3. Opus and HE-AAC decoder backends; HEVC once a mature pure-Rust decoder
    exists.

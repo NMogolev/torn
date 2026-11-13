@@ -19,6 +19,7 @@ mod list_view;
 mod media;
 mod menu_bar;
 mod padding;
+mod paleo_session;
 mod progress_bar;
 mod radio_button;
 mod scroll_view;
@@ -64,6 +65,7 @@ pub use media::{
 };
 pub use menu_bar::MenuBar;
 pub use padding::Padding;
+pub use paleo_session::PaleoSession;
 pub use progress_bar::ProgressBar;
 pub use radio_button::{RadioButton, RadioGroup};
 pub use scroll_view::{ScrollAxis, ScrollView};

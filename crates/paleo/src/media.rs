@@ -7,7 +7,7 @@
 
 use std::fs::File;
 use std::io::ErrorKind;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use symphonia::core::codecs::CodecParameters;
@@ -29,6 +29,20 @@ use crate::video::{VideoExtraData, VideoExtraDataKind, VideoPacket};
 
 /// Consecutive undecodable audio packets tolerated before playback fails.
 const MAX_DECODE_FAILURES: u32 = 64;
+
+/// Which tracks [`Media`] prepares when a file is opened.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum MediaSelection {
+    /// Select the default audio and video tracks.
+    #[default]
+    Default,
+    /// Select only the default video track.
+    ///
+    /// Audio packets are skipped and no audio decoder is created. This lets a
+    /// video session play files whose audio codec has no decoder, and it avoids
+    /// paying for audio decoding when no output device exists yet.
+    VideoOnly,
+}
 
 /// Everything a caller needs to configure playback without decoding.
 #[derive(Clone, Debug)]
@@ -164,6 +178,8 @@ pub enum Event {
 /// decoder state, and one returned [`AudioBuffer`] or [`VideoPacket`] per call.
 pub struct Media {
     reader: Box<dyn FormatReader>,
+    path: PathBuf,
+    selection: MediaSelection,
     info: MediaInfo,
     audio_track: Option<u32>,
     video_track: Option<u32>,
@@ -187,6 +203,20 @@ impl Media {
     /// when the container cannot be probed or parsed, and
     /// [`Error::UnsupportedCodec`] when the selected audio codec has no decoder.
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
+        Self::open_with(path, MediaSelection::Default)
+    }
+
+    /// Opens `path`, preparing only the tracks in `selection`.
+    ///
+    /// [`MediaSelection::VideoOnly`] skips audio entirely, so a video file with
+    /// an unsupported audio track still opens.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as [`Self::open`]. With
+    /// [`MediaSelection::Default`] an unsupported audio codec is an error; with
+    /// [`MediaSelection::VideoOnly`] it is not.
+    pub fn open_with(path: impl AsRef<Path>, selection: MediaSelection) -> Result<Self> {
         let path = path.as_ref();
         let file = File::open(path)?;
         let source = MediaSourceStream::new(Box::new(file), MediaSourceStreamOptions::default());
@@ -210,7 +240,10 @@ impl Media {
         let duration = media_duration(reader.as_ref());
         let tracks = reader.tracks().to_vec();
 
-        let audio_track = select_track(&tracks, TrackType::Audio);
+        let audio_track = match selection {
+            MediaSelection::Default => select_track(&tracks, TrackType::Audio),
+            MediaSelection::VideoOnly => None,
+        };
         let video_track = select_track(&tracks, TrackType::Video);
 
         let (audio, decoder) = match audio_track
@@ -257,6 +290,8 @@ impl Media {
 
         Ok(Self {
             reader,
+            path: path.to_path_buf(),
+            selection,
             info,
             audio_track: audio_track.map(|track| track.id),
             video_track: video_track.map(|track| track.id),
@@ -352,11 +387,24 @@ impl Media {
     /// indexes may start earlier. The audio decoder is reset, so any buffered
     /// samples from before the seek are discarded.
     ///
+    /// Seeking is valid after [`Event::EndOfStream`](crate::Event::EndOfStream).
+    /// Symphonia 0.6's ISO/MP4 reader cannot resume once it has reached the end
+    /// of the stream, so the source is reopened in that case.
+    ///
     /// # Errors
     ///
     /// Returns [`Error::Seek`] when the position cannot be represented or the
     /// container refuses the seek, and [`Error::Io`] when the source fails.
     pub fn seek(&mut self, position: Duration) -> Result<()> {
+        if self.ended {
+            // Symphonia's isomp4 reader loses its pending atom at end of
+            // stream and then cannot read sample data again. Reopening restores
+            // a usable reader; the cost is one probe and no re-decoding.
+            let path = self.path.clone();
+            let selection = self.selection;
+            *self = Self::open_with(path, selection)?;
+        }
+
         let Some(track_id) = self.seek_track else {
             return Ok(());
         };

@@ -12,6 +12,8 @@ workspace = true
 
 [dependencies]
 image = { version = "0.25", default-features = false, features = ["gif"] }
+paleo = { path = "../paleo" }
+paleo-h264 = { path = "../paleo-h264" }
 torn-core = { path = "../torn-core" }
 torn-render = { path = "../torn-render" }
 torn-ui = { path = "../torn-ui" }

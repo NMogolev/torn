@@ -3,8 +3,9 @@
 Media support in Torn is split into three layers: a timing and scheduling
 contract, a decode/playback session behind that contract, and widgets that only
 present frames and forward user intent. This document defines the contract and
-the current `FFmpeg` command-line backend. It is the reference to read before
-adding audio, streaming, or a new decoder.
+the two current backends: the out-of-process `FFmpeg` command-line backend and
+the in-process Paleo/H.264 backend. It is the reference to read before adding
+audio, streaming, or a new decoder.
 
 ## Layers
 
@@ -148,6 +149,36 @@ Known limits:
 These are backend limits, not contract limits. A new backend implements
 `MediaSession`; widget code does not change.
 
+## Paleo backend
+
+`PaleoSession` (in `torn-widgets`) is the in-process backend. It opens a file
+with `paleo::Media`, demuxes video packets with Symphonia, and decodes H.264
+with `paleo_h264::H264Decoder`:
+
+- `Video::open_paleo(path)` is the convenience entry point; `Video::with_session`
+  attaches any other `MediaSession` implementation.
+- Files open video-only, so an audio codec that this build cannot decode does
+  not prevent playback and no audio is decoded before an output device exists.
+- Decoding is synchronous and bounded on the calling thread. Each `update`
+  decodes at most a few packets and keeps a couple of pictures ahead of the
+  playhead instead of building an unbounded queue. There is no worker thread
+  yet, so a large frame can briefly block the UI thread.
+- Seeking resets the decoder and decodes a preview even while paused, so the
+  view can repaint immediately.
+- `PaleoSession` stores the source path and reopens it when seeking after
+  end-of-stream. Symphonia 0.6's ISO/MP4 reader cannot resume once its atom
+  iterator has reached EOF; `paleo::Media` does the same for direct callers.
+- B-pictures are ordered by the decoder's `PicOrderCnt`, because Symphonia 0.6
+  does not implement the ISO/MP4 `ctts` composition offsets. See
+  [PALEO.md](PALEO.md) for the framing and timestamp details.
+
+Known limits:
+
+- H.264 only (4:2:0 frame pictures); AV1, VP8/VP9, and HEVC still need a
+  backend;
+- no audio output, resampling, or audio-mastered clock yet;
+- no hardware decode or zero-copy textures.
+
 ## Adding a backend
 
 1. Probe or negotiate metadata before playback and build a `MediaClock` with the
@@ -167,13 +198,12 @@ value is removing copies and improving seek accuracy, not changing the view API.
 
 The next milestones, in order:
 
-1. An in-process backend: Paleo (`crates/paleo`) already demuxes and decodes
-   audio with Symphonia; the missing piece is a video decoder (H.264 first) and
-   a `PaleoSession` implementing `MediaSession`. See [PALEO.md](PALEO.md).
-2. An audio output device and an audio-mastered clock shared by audio and video.
-3. Explicit buffering, pause-on-underflow, and end-of-stream reporting for
+1. An audio output device and an audio-mastered clock shared by audio and video.
+2. Explicit buffering, pause-on-underflow, and end-of-stream reporting for
    network sources.
-4. Subtitle and metadata tracks.
+3. Subtitle and metadata tracks.
+4. Additional Paleo video backends: AV1, VP8/VP9, and HEVC once a mature
+   pure-Rust decoder exists.
 5. In-process decoding, hardware decode, and GPU external textures without
    changing `Video` or `MediaSession` callers.
 

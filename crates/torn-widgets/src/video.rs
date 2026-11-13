@@ -15,6 +15,7 @@ use crate::image::{fitted_rect, image_size};
 use crate::media::{
     MediaClock, MediaError, MediaFrame, MediaFrameScheduler, MediaMetadata, MediaSession,
 };
+use crate::paleo_session::PaleoSession;
 use crate::video_ffmpeg::{FfmpegConfig, FfmpegSession, VideoError};
 
 const DEFAULT_WIDTH: f32 = 480.0;
@@ -111,6 +112,32 @@ impl Video {
         let mut video = Self::new();
         video.session = Some(Box::new(session));
         Ok(video)
+    }
+
+    /// Opens `path` with the pure-Rust Paleo H.264 backend.
+    ///
+    /// Unlike [`Self::open`], this needs no external executable. It currently
+    /// decodes H.264 only; use [`Self::open`] for containers or codecs that
+    /// Paleo cannot handle yet. Decoding happens on the calling thread in
+    /// bounded steps, and the first picture is ready when this returns.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MediaError`] when the file cannot be opened, has no video
+    /// track, uses a codec other than H.264, or fails to decode.
+    pub fn open_paleo(path: impl AsRef<Path>) -> Result<Self, MediaError> {
+        let session = PaleoSession::open(path.as_ref())?;
+        Ok(Self::new().with_session(session))
+    }
+
+    /// Attaches an externally created [`MediaSession`].
+    ///
+    /// This is the escape hatch for custom decoders and for backends that are
+    /// not built in, such as a future AV1 or hardware session.
+    #[must_use]
+    pub fn with_session(mut self, session: impl MediaSession + 'static) -> Self {
+        self.session = Some(Box::new(session));
+        self
     }
 
     /// Returns the timeline owned by the attached session or by manual mode.

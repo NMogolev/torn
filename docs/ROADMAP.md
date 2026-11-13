@@ -285,7 +285,9 @@ The completed implementation includes:
   `MediaSession` contract with frame-timestamp scheduling and an optional
   `FFmpeg` command-line backend (`ffmpeg`/`ffprobe`) plus app-supplied frames.
   Paleo (`crates/paleo`) is the in-process media layer built from focused
-  crates; see [`PALEO.md`](PALEO.md) for its streaming model and codec matrix.
+  crates, with a pure-Rust H.264 backend (`crates/paleo-h264`) and the
+  `PaleoSession` adapter behind `Video::open_paleo`; see
+  [`PALEO.md`](PALEO.md) for its streaming model and codec matrix.
   See [`MEDIA.md`](MEDIA.md) for the pipeline contract and backend limits.
 
 ### M8 — Accessibility and virtualization

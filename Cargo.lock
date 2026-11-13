@@ -2572,6 +2572,8 @@ name = "torn-widgets"
 version = "0.1.0"
 dependencies = [
  "image",
+ "paleo",
+ "paleo-h264",
  "torn-core",
  "torn-render",
  "torn-ui",

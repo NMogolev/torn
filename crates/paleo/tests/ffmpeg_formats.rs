@@ -200,4 +200,13 @@ fn check_audio_video_containers(ffmpeg: &std::ffi::OsString, directory: &Path) {
     let (buffers, packets) = decode_all(&mut media);
     assert!(!buffers.is_empty());
     assert!(!packets.is_empty());
+
+    // Reaching end-of-stream must not poison the reader: Symphonia's ISO/MP4
+    // atom iterator cannot resume by itself, so Media reopens the source.
+    media
+        .seek(Duration::from_millis(250))
+        .expect("seeking after end-of-stream succeeds");
+    let (buffers, packets) = decode_all(&mut media);
+    assert!(!buffers.is_empty());
+    assert!(!packets.is_empty());
 }
