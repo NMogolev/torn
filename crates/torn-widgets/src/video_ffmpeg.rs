@@ -1,4 +1,4 @@
-//! `FFmpeg` command-line decoding for [`crate::Video`].
+﻿//! `FFmpeg` command-line decoding for [`crate::Video`].
 //!
 //! The backend drives the `ffmpeg` and `ffprobe` executables rather than
 //! linking against `libav*`. That keeps the toolkit free of native build
@@ -18,6 +18,10 @@ use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
 use torn_render::RasterImage;
+
+use crate::media::{
+    MediaClock, MediaError, MediaFrame, MediaMetadata, MediaSession, MediaState, MediaUpdate,
+};
 
 const DEFAULT_FRAME_RATE: u32 = 30;
 const DEFAULT_MAX_DIMENSION: u32 = 1280;
@@ -134,34 +138,6 @@ fn default_ffprobe(ffmpeg: &OsStr) -> OsString {
     path.with_file_name(probe).into_os_string()
 }
 
-/// Metadata read from the media container before decoding starts.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct VideoMetadata {
-    width: u32,
-    height: u32,
-    duration: Duration,
-}
-
-impl VideoMetadata {
-    /// Returns the source video width in pixels.
-    #[must_use]
-    pub const fn width(&self) -> u32 {
-        self.width
-    }
-
-    /// Returns the source video height in pixels.
-    #[must_use]
-    pub const fn height(&self) -> u32 {
-        self.height
-    }
-
-    /// Returns the container duration, or zero when it is unknown.
-    #[must_use]
-    pub const fn duration(&self) -> Duration {
-        self.duration
-    }
-}
-
 /// Why opening or decoding a video failed.
 #[derive(Debug)]
 pub enum VideoError {
@@ -225,7 +201,7 @@ impl std::error::Error for VideoError {
     }
 }
 
-fn probe_metadata(path: &Path, config: &FfmpegConfig) -> Result<VideoMetadata, VideoError> {
+fn probe_metadata(path: &Path, config: &FfmpegConfig) -> Result<MediaMetadata, VideoError> {
     let output = Command::new(&config.ffprobe)
         .args([
             "-v",
@@ -289,7 +265,7 @@ fn check_ffmpeg(config: &FfmpegConfig) -> Result<(), VideoError> {
     }
 }
 
-fn parse_probe_output(text: &str) -> Result<VideoMetadata, VideoError> {
+fn parse_probe_output(text: &str) -> Result<MediaMetadata, VideoError> {
     let mut width = None;
     let mut height = None;
     let mut rotation = 0_i32;
@@ -323,17 +299,9 @@ fn parse_probe_output(text: &str) -> Result<VideoMetadata, VideoError> {
     if rotation.rem_euclid(180) != 0 {
         // FFmpeg applies the display matrix before user filters, so scale and
         // decode using the rotated display dimensions.
-        return Ok(VideoMetadata {
-            width: height,
-            height: width,
-            duration,
-        });
+        return Ok(MediaMetadata::new(height, width, duration));
     }
-    Ok(VideoMetadata {
-        width,
-        height,
-        duration,
-    })
+    Ok(MediaMetadata::new(width, height, duration))
 }
 
 fn scaled_size(width: u32, height: u32, max_dimension: Option<u32>) -> (u32, u32) {
@@ -394,7 +362,7 @@ enum DecoderCommand {
 }
 
 struct Shared {
-    frame: Mutex<Option<RasterImage>>,
+    frame: Mutex<Option<MediaFrame>>,
     eof: AtomicBool,
     error: Mutex<Option<String>>,
     busy: AtomicBool,
@@ -410,13 +378,13 @@ impl Shared {
         }
     }
 
-    fn store_frame(&self, frame: RasterImage) {
+    fn store_frame(&self, frame: MediaFrame) {
         if let Ok(mut slot) = self.frame.lock() {
             *slot = Some(frame);
         }
     }
 
-    fn take_frame(&self) -> Option<RasterImage> {
+    fn take_frame(&self) -> Option<MediaFrame> {
         self.frame.lock().ok().and_then(|mut slot| slot.take())
     }
 
@@ -429,17 +397,21 @@ impl Shared {
     fn take_error(&self) -> Option<String> {
         self.error.lock().ok().and_then(|mut slot| slot.take())
     }
+
+    fn take_eof(&self) -> bool {
+        self.eof.swap(false, Ordering::AcqRel)
+    }
 }
 
-struct Session {
+struct DecodeSession {
     child: Child,
-    frames: Receiver<Result<RasterImage, String>>,
+    frames: Receiver<Result<MediaFrame, String>>,
     eof: Arc<AtomicBool>,
     reader: JoinHandle<()>,
     preview: bool,
 }
 
-impl Session {
+impl DecodeSession {
     fn finished(&self) -> bool {
         self.eof.load(Ordering::Acquire)
     }
@@ -452,20 +424,19 @@ impl Session {
 }
 
 /// A running `FFmpeg` decoder with its own worker thread.
-pub(crate) struct FfmpegDecoder {
+pub(crate) struct FfmpegSession {
+    clock: MediaClock,
+    metadata: MediaMetadata,
     commands: Sender<DecoderCommand>,
     shared: Arc<Shared>,
     worker: Option<JoinHandle<()>>,
 }
 
-impl FfmpegDecoder {
-    pub(crate) fn open(
-        path: &Path,
-        config: FfmpegConfig,
-    ) -> Result<(Self, VideoMetadata), VideoError> {
+impl FfmpegSession {
+    pub(crate) fn open(path: &Path, config: FfmpegConfig) -> Result<Self, VideoError> {
         let metadata = probe_metadata(path, &config)?;
         check_ffmpeg(&config)?;
-        let size = scaled_size(metadata.width, metadata.height, config.max_dimension);
+        let size = scaled_size(metadata.width(), metadata.height(), config.max_dimension);
         let shared = Arc::new(Shared::new());
         let (commands, receiver) = mpsc::channel();
         let thread_shared = Arc::clone(&shared);
@@ -483,49 +454,18 @@ impl FfmpegDecoder {
                 );
             })
             .map_err(VideoError::Io)?;
-        let decoder = Self {
+        let mut clock = MediaClock::new();
+        clock.set_duration(Some(metadata.duration()));
+        clock.seek(Duration::ZERO);
+        let session = Self {
+            clock,
+            metadata,
             commands,
             shared,
             worker: Some(worker),
         };
-        decoder.preview(Duration::ZERO);
-        Ok((decoder, metadata))
-    }
-
-    pub(crate) fn play_at(&self, position: Duration) {
-        self.send(DecoderCommand::PlayAt(position));
-    }
-
-    pub(crate) fn pause(&self) {
-        self.send(DecoderCommand::Pause);
-    }
-
-    pub(crate) fn seek(&self, position: Duration, playing: bool) {
-        self.send(DecoderCommand::Seek { position, playing });
-    }
-
-    pub(crate) fn preview(&self, position: Duration) {
-        self.send(DecoderCommand::Preview(position));
-    }
-
-    pub(crate) fn is_busy(&self) -> bool {
-        self.shared.busy.load(Ordering::Acquire)
-    }
-
-    pub(crate) fn has_pending_frame(&self) -> bool {
-        self.shared.frame.lock().is_ok_and(|slot| slot.is_some())
-    }
-
-    pub(crate) fn take_frame(&self) -> Option<RasterImage> {
-        self.shared.take_frame()
-    }
-
-    pub(crate) fn take_eof(&self) -> bool {
-        self.shared.eof.swap(false, Ordering::AcqRel)
-    }
-
-    pub(crate) fn take_error(&self) -> Option<String> {
-        self.shared.take_error()
+        session.send(DecoderCommand::Preview(Duration::ZERO));
+        Ok(session)
     }
 
     fn send(&self, command: DecoderCommand) {
@@ -541,9 +481,86 @@ impl FfmpegDecoder {
             self.shared.busy.store(false, Ordering::Release);
         }
     }
+
+    fn has_pending_frame(&self) -> bool {
+        self.shared.frame.lock().is_ok_and(|slot| slot.is_some())
+    }
 }
 
-impl Drop for FfmpegDecoder {
+impl MediaSession for FfmpegSession {
+    fn metadata(&self) -> Option<&MediaMetadata> {
+        Some(&self.metadata)
+    }
+
+    fn clock(&self) -> &MediaClock {
+        &self.clock
+    }
+
+    fn clock_mut(&mut self) -> &mut MediaClock {
+        &mut self.clock
+    }
+
+    fn play(&mut self) -> Result<(), MediaError> {
+        if self.clock.is_ended() && !self.metadata.duration().is_zero() {
+            self.clock.seek(Duration::ZERO);
+        }
+        self.clock.play();
+        self.send(DecoderCommand::PlayAt(self.clock.position()));
+        Ok(())
+    }
+
+    fn pause(&mut self) {
+        self.clock.pause();
+        self.send(DecoderCommand::Pause);
+    }
+
+    fn seek(&mut self, position: Duration) -> Result<(), MediaError> {
+        let playing = self.clock.is_playing();
+        self.clock.seek(position);
+        self.send(DecoderCommand::Seek {
+            position: self.clock.position(),
+            playing,
+        });
+        Ok(())
+    }
+
+    fn set_rate(&mut self, rate: f64) {
+        self.clock.set_rate(rate);
+    }
+
+    fn update(&mut self, delta: Duration) -> MediaUpdate {
+        let was_playing = self.clock.is_playing();
+        let mut state_changed = self.clock.advance(delta);
+        if was_playing && self.clock.state() == MediaState::Ended {
+            // Stop decoding as soon as the timeline ends; a looping view will
+            // seek back to zero and start a fresh playback session.
+            self.send(DecoderCommand::Pause);
+            state_changed = true;
+        }
+        let frame = self.shared.take_frame();
+        let error = self.shared.take_error().map(MediaError::new);
+        if error.is_some() {
+            self.clock.fail();
+            state_changed = true;
+        }
+        if self.shared.take_eof() {
+            self.clock.finish();
+            self.send(DecoderCommand::Pause);
+            state_changed = true;
+        }
+        MediaUpdate {
+            frame,
+            error,
+            state_changed,
+        }
+    }
+
+    fn is_active(&self) -> bool {
+        self.shared.busy.load(Ordering::Acquire) || self.has_pending_frame()
+    }
+}
+
+impl Drop for FfmpegSession {
     fn drop(&mut self) {
         let _ = self.commands.send(DecoderCommand::Stop);
         if let Some(worker) = self.worker.take() {
@@ -559,7 +576,7 @@ fn run_decoder(
     config: &FfmpegConfig,
     size: (u32, u32),
 ) {
-    let mut session: Option<Session> = None;
+    let mut session: Option<DecodeSession> = None;
     loop {
         if let Some(active) = session.as_mut() {
             let received = drain_frames(active, shared);
@@ -619,7 +636,7 @@ fn run_decoder(
     shared.busy.store(false, Ordering::Release);
 }
 
-fn drain_frames(session: &mut Session, shared: &Shared) -> bool {
+fn drain_frames(session: &mut DecodeSession, shared: &Shared) -> bool {
     let mut received = false;
     loop {
         match session.frames.try_recv() {
@@ -634,14 +651,14 @@ fn drain_frames(session: &mut Session, shared: &Shared) -> bool {
     received
 }
 
-fn stop_session(session: &mut Option<Session>) {
+fn stop_session(session: &mut Option<DecodeSession>) {
     if let Some(active) = session.take() {
         active.stop();
     }
 }
 
 fn start_or_report(
-    session: &mut Option<Session>,
+    session: &mut Option<DecodeSession>,
     shared: &Shared,
     path: &Path,
     config: &FfmpegConfig,
@@ -668,7 +685,7 @@ fn start_session(
     size: (u32, u32),
     position: Duration,
     preview: bool,
-) -> Result<Session, String> {
+) -> Result<DecodeSession, String> {
     let mut child = frame_command(path, config, size, position)
         .spawn()
         .map_err(|error| {
@@ -687,8 +704,10 @@ fn start_session(
         return Err("ffmpeg did not expose a frame pipe".to_owned());
     };
     let frame_bytes = frame_byte_count(size)?;
-    let (frames, sender_eof, reader) = spawn_frame_reader(stdout, size, frame_bytes);
-    Ok(Session {
+    let frame_duration = Duration::from_secs_f64(1.0 / f64::from(config.frame_rate));
+    let (frames, sender_eof, reader) =
+        spawn_frame_reader(stdout, size, frame_bytes, position, frame_duration);
+    Ok(DecodeSession {
         child,
         frames,
         eof: sender_eof,
@@ -709,8 +728,10 @@ fn spawn_frame_reader(
     mut stdout: impl Read + Send + 'static,
     size: (u32, u32),
     frame_bytes: usize,
+    start: Duration,
+    frame_duration: Duration,
 ) -> (
-    Receiver<Result<RasterImage, String>>,
+    Receiver<Result<MediaFrame, String>>,
     Arc<AtomicBool>,
     JoinHandle<()>,
 ) {
@@ -718,11 +739,15 @@ fn spawn_frame_reader(
     let eof = Arc::new(AtomicBool::new(false));
     let reader_eof = Arc::clone(&eof);
     let reader = thread::spawn(move || {
+        let mut index: u32 = 0;
         loop {
             let mut pixels = vec![0; frame_bytes];
             match stdout.read_exact(&mut pixels) {
                 Ok(()) => match RasterImage::new(size.0, size.1, pixels) {
-                    Ok(frame) => {
+                    Ok(image) => {
+                        let pts = start.saturating_add(frame_duration.saturating_mul(index));
+                        index = index.saturating_add(1);
+                        let frame = MediaFrame::new(image, pts, frame_duration);
                         if sender.send(Ok(frame)).is_err() {
                             break;
                         }

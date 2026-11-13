@@ -12,8 +12,10 @@ use torn_ui::{
 
 use crate::ImageFit;
 use crate::image::{fitted_rect, image_size};
-use crate::media::duration_remainder;
-use crate::video_ffmpeg::{FfmpegConfig, FfmpegDecoder, VideoError, VideoMetadata};
+use crate::media::{
+    MediaClock, MediaError, MediaFrame, MediaFrameScheduler, MediaMetadata, MediaSession,
+};
+use crate::video_ffmpeg::{FfmpegConfig, FfmpegSession, VideoError};
 
 const DEFAULT_WIDTH: f32 = 480.0;
 const DEFAULT_HEIGHT: f32 = 270.0;
@@ -26,18 +28,21 @@ const SEEK_STEP_SECONDS: f32 = 5.0;
 
 /// A video presentation surface with optional `FFmpeg` decoding.
 ///
-/// [`Self::open`] starts the built-in `FFmpeg` command-line backend, which probes
-/// metadata, decodes frames on a worker thread, and keeps the displayed frame
-/// in sync with playback. Applications that already own a decoder can keep
-/// using [`Self::set_frame`] and react to [`Self::play_toggled`] and
-/// [`Self::seek_requested`] instead. While playing, the widget advances its own
-/// position so progress and time labels stay live; externally supplied frames
-/// should arrive at the matching rate.
+/// [`Self::open`] attaches the built-in `FFmpeg` command-line backend as a
+/// [`MediaSession`]: the session probes metadata, decodes frames on a worker
+/// thread, and owns playback timing, while the widget stays a view and control.
+/// A [`MediaFrameScheduler`] presents the frame that matches the current
+/// presentation time and drops frames that are already stale.
+///
+/// Applications that already own a decoder can keep using [`Self::set_frame`]
+/// and react to [`Self::play_toggled`] and [`Self::seek_requested`] instead. In
+/// that manual mode the widget advances a [`MediaClock`] itself so progress and
+/// time labels stay live; externally supplied frames should arrive at the
+/// matching rate.
 pub struct Video {
-    frame: Option<RasterImage>,
-    duration: Duration,
-    position: Duration,
-    playing: bool,
+    clock: MediaClock,
+    session: Option<Box<dyn MediaSession>>,
+    scheduler: MediaFrameScheduler,
     looping: bool,
     controls: bool,
     fit: ImageFit,
@@ -45,9 +50,7 @@ pub struct Video {
     label: Option<String>,
     viewport: Size,
     seeking: Option<PointerId>,
-    decoder: Option<FfmpegDecoder>,
-    metadata: Option<VideoMetadata>,
-    decoder_error: Option<String>,
+    session_error: Option<String>,
     play_toggled: Signal<bool>,
     seek_requested: Signal<Duration>,
 }
@@ -57,10 +60,9 @@ impl Video {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            frame: None,
-            duration: Duration::ZERO,
-            position: Duration::ZERO,
-            playing: false,
+            clock: MediaClock::new(),
+            session: None,
+            scheduler: MediaFrameScheduler::new(),
             looping: false,
             controls: true,
             fit: ImageFit::Contain,
@@ -68,9 +70,7 @@ impl Video {
             label: None,
             viewport: Size::ZERO,
             seeking: None,
-            decoder: None,
-            metadata: None,
-            decoder_error: None,
+            session_error: None,
             play_toggled: Signal::new(),
             seek_requested: Signal::new(),
         }
@@ -80,7 +80,7 @@ impl Video {
     #[must_use]
     pub fn with_frame(frame: RasterImage) -> Self {
         let mut video = Self::new();
-        video.frame = Some(frame);
+        video.set_frame(frame);
         video
     }
 
@@ -88,7 +88,7 @@ impl Video {
     ///
     /// This starts decoding immediately so the first frame can be shown while
     /// playback is paused. Playback, seeking, and looping then stay in sync
-    /// with the decoder until the widget is dropped or [`Self::close_decoder`]
+    /// with the session until the widget is dropped or [`Self::close_decoder`]
     /// is called.
     ///
     /// # Errors
@@ -107,67 +107,80 @@ impl Video {
     /// Returns [`VideoError`] when `ffprobe` or `ffmpeg` cannot be found, the
     /// container is rejected, or the decoded size cannot be represented.
     pub fn open_with(path: impl AsRef<Path>, config: FfmpegConfig) -> Result<Self, VideoError> {
-        let (decoder, metadata) = FfmpegDecoder::open(path.as_ref(), config)?;
+        let session = FfmpegSession::open(path.as_ref(), config)?;
         let mut video = Self::new();
-        video.duration = metadata.duration();
-        video.metadata = Some(metadata);
-        video.decoder = Some(decoder);
+        video.session = Some(Box::new(session));
         Ok(video)
     }
 
-    /// Returns the metadata reported by the built-in decoder.
-    #[must_use]
-    pub const fn metadata(&self) -> Option<VideoMetadata> {
-        self.metadata
+    /// Returns the timeline owned by the attached session or by manual mode.
+    fn timeline(&self) -> &MediaClock {
+        self.session
+            .as_deref()
+            .map_or(&self.clock, |session| session.clock())
     }
 
-    /// Returns whether the built-in `FFmpeg` decoder is attached.
+    /// Returns the metadata reported by the built-in session.
+    #[must_use]
+    pub fn metadata(&self) -> Option<MediaMetadata> {
+        self.session
+            .as_deref()
+            .and_then(|session| session.metadata().copied())
+    }
+
+    /// Returns whether a media session is attached.
     #[must_use]
     pub const fn has_decoder(&self) -> bool {
-        self.decoder.is_some()
+        self.session.is_some()
     }
 
-    /// Returns the most recent decoder error, if any.
+    /// Returns the most recent session error, if any.
     ///
     /// Decoding happens on a worker thread, so start-up and read failures are
     /// reported here rather than by [`Self::open`]. A reported error stops
     /// playback immediately.
     #[must_use]
     pub fn decoder_error(&self) -> Option<&str> {
-        self.decoder_error.as_deref()
+        self.session_error.as_deref()
     }
 
-    /// Stops and releases the built-in decoder while keeping the last frame.
+    /// Stops and releases the built-in session while keeping the last frame.
     pub fn close_decoder(&mut self) {
-        self.decoder = None;
-        self.metadata = None;
-        self.decoder_error = None;
-        self.playing = false;
-        self.position = Duration::ZERO;
+        if let Some(session) = self.session.take() {
+            self.clock = *session.clock();
+        }
+        self.clock.pause();
+        self.session_error = None;
     }
 
-    /// Returns the current frame, if one has been supplied.
+    /// Returns the current frame, if one has been supplied or decoded.
     #[must_use]
-    pub const fn frame(&self) -> Option<&RasterImage> {
-        self.frame.as_ref()
+    pub fn frame(&self) -> Option<&RasterImage> {
+        self.scheduler.current().map(MediaFrame::image)
     }
 
     /// Returns the declared media duration.
     #[must_use]
-    pub const fn duration(&self) -> Duration {
-        self.duration
+    pub fn duration(&self) -> Duration {
+        self.timeline().duration().unwrap_or(Duration::ZERO)
     }
 
     /// Returns the current playback position.
     #[must_use]
-    pub const fn position(&self) -> Duration {
-        self.position
+    pub fn position(&self) -> Duration {
+        self.timeline().position()
     }
 
     /// Returns whether playback is currently running.
     #[must_use]
-    pub const fn is_playing(&self) -> bool {
-        self.playing
+    pub fn is_playing(&self) -> bool {
+        self.timeline().is_playing()
+    }
+
+    /// Returns whether playback reached the end of the media.
+    #[must_use]
+    pub fn is_ended(&self) -> bool {
+        self.timeline().is_ended()
     }
 
     /// Returns whether playback wraps to the start at the end.
@@ -207,93 +220,127 @@ impl Video {
     }
 
     /// Replaces the displayed frame without changing playback state.
+    ///
+    /// In manual mode the frame stays visible until another frame arrives. With
+    /// an attached session the next decoded frame wins.
     pub fn set_frame(&mut self, frame: RasterImage) {
-        self.frame = Some(frame);
+        let position = self.position();
+        self.scheduler
+            .replace(MediaFrame::new(frame, position, Duration::ZERO));
     }
 
     /// Clears the displayed frame.
     pub fn clear_frame(&mut self) {
-        self.frame = None;
+        self.scheduler.clear();
     }
 
     /// Sets the media duration and clamps the current position to it.
     pub fn set_duration(&mut self, duration: Duration) {
-        self.duration = duration;
-        if !duration.is_zero() {
-            self.position = self.position.min(duration);
+        if let Some(session) = self.session.as_mut() {
+            session.clock_mut().set_duration(Some(duration));
+        } else {
+            self.clock.set_duration(Some(duration));
         }
+        self.scheduler.seek(self.position());
     }
 
     /// Sets the playback position, clamping it to `0..=duration`.
     ///
-    /// With an attached decoder this seeks immediately. Seeking while paused
-    /// asks the decoder for a preview frame at the new position.
+    /// With an attached session this seeks immediately. Seeking while paused
+    /// asks the session for a preview frame at the new position.
     pub fn set_position(&mut self, position: Duration) {
-        self.position = if self.duration.is_zero() {
-            position
+        if let Some(session) = self.session.as_mut() {
+            if let Err(error) = session.seek(position) {
+                self.record_error(&error);
+            }
         } else {
-            position.min(self.duration)
-        };
-        if let Some(decoder) = &self.decoder {
-            decoder.seek(self.position, self.playing);
+            self.clock.seek(position);
         }
+        self.scheduler.seek(self.position());
     }
 
     /// Updates playback state without emitting [`Self::play_toggled`].
     pub fn set_playing(&mut self, playing: bool) {
-        if playing && !self.looping && !self.duration.is_zero() && self.position >= self.duration {
-            self.position = Duration::ZERO;
+        if let Some(session) = self.session.as_mut() {
+            if playing {
+                if let Err(error) = session.play() {
+                    self.record_error(&error);
+                }
+            } else {
+                session.pause();
+            }
+        } else {
+            if playing
+                && !self.looping
+                && !self.duration().is_zero()
+                && self.position() >= self.duration()
+            {
+                self.clock.seek(Duration::ZERO);
+            }
+            self.clock.set_playing(playing);
         }
-        self.playing = playing;
-        self.sync_decoder();
     }
 
     /// Starts or pauses playback without emitting [`Self::play_toggled`].
     pub fn toggle_playback(&mut self) {
-        self.set_playing(!self.playing);
+        self.set_playing(!self.is_playing());
     }
 
-    fn sync_decoder(&self) {
-        let Some(decoder) = &self.decoder else {
-            return;
-        };
-        if self.playing {
-            decoder.play_at(self.position);
+    /// Changes the playback rate, clamped by the media clock.
+    pub fn set_rate(&mut self, rate: f64) {
+        if let Some(session) = self.session.as_mut() {
+            session.set_rate(rate);
         } else {
-            decoder.pause();
+            self.clock.set_rate(rate);
         }
     }
 
-    fn poll_decoder(&mut self) -> bool {
-        let Some(decoder) = &self.decoder else {
-            return false;
-        };
+    /// Returns the current playback rate.
+    #[must_use]
+    pub fn rate(&self) -> f64 {
+        self.timeline().rate()
+    }
+
+    fn record_error(&mut self, error: &MediaError) {
+        self.session_error = Some(error.message().to_owned());
+    }
+
+    /// Advances the session or manual clock and presents the matching frame.
+    fn poll(&mut self, delta: Duration) -> bool {
         let mut changed = false;
-        if let Some(frame) = decoder.take_frame() {
-            self.frame = Some(frame);
-            changed = true;
-        }
-        if let Some(error) = decoder.take_error() {
-            self.decoder_error = Some(error);
-            self.playing = false;
-            decoder.pause();
-            changed = true;
-        }
-        if decoder.take_eof() {
-            if self.looping {
-                self.position = Duration::ZERO;
-                if self.playing {
-                    decoder.play_at(Duration::ZERO);
-                } else {
-                    decoder.preview(Duration::ZERO);
-                }
-            } else {
-                if !self.duration.is_zero() {
-                    self.position = self.duration;
-                }
-                self.playing = false;
+        if let Some(session) = self.session.as_mut() {
+            let update = session.update(delta);
+            if let Some(frame) = update.frame {
+                changed |= self.scheduler.push(frame);
             }
-            changed = true;
+            if let Some(error) = update.error {
+                self.session_error = Some(error.message().to_owned());
+                changed = true;
+            }
+            changed |= update.state_changed;
+            let position = session.clock().position();
+            changed |= self.scheduler.present(position);
+            if session.clock().is_ended() {
+                if self.looping {
+                    session.clock_mut().seek(Duration::ZERO);
+                    if let Err(error) = session.play() {
+                        self.session_error = Some(error.message().to_owned());
+                    }
+                    self.scheduler.seek(Duration::ZERO);
+                    changed = true;
+                } else {
+                    changed = true;
+                }
+            }
+        } else {
+            if self.clock.is_playing() {
+                changed |= if self.looping {
+                    self.clock.advance_looping(delta)
+                } else {
+                    self.clock.advance(delta)
+                };
+            }
+            changed |= self.scheduler.present(self.clock.position());
         }
         changed
     }
@@ -355,18 +402,20 @@ impl Video {
     }
 
     fn toggle(&mut self, context: &mut EventContext<'_>) {
-        self.set_playing(!self.playing);
+        self.set_playing(!self.is_playing());
         context.request_redraw();
-        self.play_toggled.emit(&self.playing);
+        let playing = self.is_playing();
+        self.play_toggled.emit(&playing);
     }
 
     fn seek_to(&mut self, position: Duration, context: &mut EventContext<'_>) {
-        let position = if self.duration.is_zero() {
+        let duration = self.duration();
+        let position = if duration.is_zero() {
             position
         } else {
-            position.min(self.duration)
+            position.min(duration)
         };
-        if position == self.position {
+        if position == self.position() {
             return;
         }
         self.set_position(position);
@@ -375,11 +424,12 @@ impl Video {
     }
 
     fn seek_by(&mut self, seconds: f32, context: &mut EventContext<'_>) {
-        let position = self.position.as_secs_f32() + seconds;
-        let position = if self.duration.is_zero() {
+        let position = self.position().as_secs_f32() + seconds;
+        let duration = self.duration();
+        let position = if duration.is_zero() {
             position.max(0.0)
         } else {
-            position.clamp(0.0, self.duration.as_secs_f32())
+            position.clamp(0.0, duration.as_secs_f32())
         };
         self.seek_to(Duration::from_secs_f32(position), context);
     }
@@ -391,7 +441,7 @@ impl Video {
         } else {
             0.0
         };
-        let position = self.duration.mul_f32(ratio);
+        let position = self.duration().mul_f32(ratio);
         self.seek_to(position, context);
     }
 
@@ -402,7 +452,7 @@ impl Video {
         );
         let height = button.size.height() * 0.58;
         let width = height * 0.82;
-        if self.playing {
+        if self.is_playing() {
             let bar = (width * 0.28).max(2.0);
             let gap = (width * 0.18).max(2.0);
             let y = center.y - height / 2.0;
@@ -451,7 +501,7 @@ impl Widget for Video {
 
     fn layout(&mut self, _: &mut LayoutContext<'_>, constraints: Constraints) -> LayoutResult {
         let max = constraints.max();
-        let intrinsic = self.frame.as_ref().map_or(Size::ZERO, image_size);
+        let intrinsic = self.frame().map_or(Size::ZERO, image_size);
         let width = if max.width().is_finite() {
             max.width()
         } else if intrinsic.width() > 0.0 {
@@ -487,7 +537,7 @@ impl Widget for Video {
             .or(style.background)
             .unwrap_or_else(|| environment.theme().background());
         context.fill_rect(bounds, background);
-        if let Some(frame) = &self.frame
+        if let Some(frame) = self.frame()
             && frame.width() > 0
             && frame.height() > 0
             && !bounds.is_empty()
@@ -520,8 +570,8 @@ impl Widget for Video {
             PROGRESS_HEIGHT / 2.0,
             Color::rgba8(255, 255, 255, 70),
         );
-        let ratio = if self.duration > Duration::ZERO {
-            (self.position.as_secs_f32() / self.duration.as_secs_f32()).clamp(0.0, 1.0)
+        let ratio = if self.duration() > Duration::ZERO {
+            (self.position().as_secs_f32() / self.duration().as_secs_f32()).clamp(0.0, 1.0)
         } else {
             0.0
         };
@@ -553,8 +603,8 @@ impl Widget for Video {
         }
         let time = format!(
             "{} / {}",
-            format_time(self.position),
-            format_time(self.duration)
+            format_time(self.position()),
+            format_time(self.duration())
         );
         let layout = environment.text_shaper().layout(
             &time,
@@ -571,48 +621,20 @@ impl Widget for Video {
     }
 
     fn advance_animation(&mut self, delta: Duration, settle: bool) -> bool {
-        let mut changed = self.poll_decoder();
-        if settle {
-            if !self.playing {
-                return changed;
-            }
-            self.position = if self.duration.is_zero() {
-                self.position
-            } else {
-                self.duration
-            };
+        let mut changed = self.poll(if settle { Duration::ZERO } else { delta });
+        if settle && self.is_playing() {
             self.set_playing(false);
-            return true;
+            changed = true;
         }
-        if !self.playing {
-            return changed;
-        }
-        self.position = self.position.saturating_add(delta);
-        if self.decoder.is_some() {
-            // The decoder reports end-of-stream itself; wall-clock overshoot is
-            // harmless because paint clamps the progress ratio.
-            return true;
-        }
-        if self.duration.is_zero() {
-            return changed;
-        }
-        if self.position >= self.duration {
-            if self.looping {
-                self.position = duration_remainder(self.position, self.duration);
-            } else {
-                self.position = self.duration;
-                self.playing = false;
-            }
-        }
-        changed = true;
         changed
     }
 
     fn is_animating(&self) -> bool {
-        if let Some(decoder) = &self.decoder {
-            return self.playing || decoder.is_busy() || decoder.has_pending_frame();
+        if let Some(session) = self.session.as_deref() {
+            return session.clock().is_playing() || session.is_active();
         }
-        self.playing && self.duration > Duration::ZERO && self.position < self.duration
+        let duration = self.clock.duration().unwrap_or(Duration::ZERO);
+        self.clock.is_playing() && !duration.is_zero() && self.clock.position() < duration
     }
 
     fn handle_event(&mut self, context: &mut EventContext<'_>, event: &InputEvent) -> EventStatus {
@@ -663,7 +685,7 @@ impl Widget for Video {
                     EventStatus::Handled
                 }
                 Key::Named(NamedKey::End) => {
-                    self.seek_to(self.duration, context);
+                    self.seek_to(self.duration(), context);
                     EventStatus::Handled
                 }
                 _ => EventStatus::Ignored,
@@ -742,9 +764,82 @@ mod tests {
     use torn_ui::UiRuntime;
 
     use super::*;
+    use crate::media::MediaUpdate;
 
     fn frame() -> RasterImage {
         RasterImage::new(2, 2, vec![255; 16]).expect("valid RGBA image")
+    }
+
+    /// A session with no decoder used to verify that the view only forwards
+    /// transport commands and presents frames scheduled by the contract.
+    struct MockSession {
+        clock: MediaClock,
+        metadata: MediaMetadata,
+        pending: Vec<MediaFrame>,
+    }
+
+    impl MockSession {
+        fn new() -> Self {
+            let mut clock = MediaClock::new();
+            clock.set_duration(Some(Duration::from_secs(2)));
+            clock.seek(Duration::ZERO);
+            Self {
+                clock,
+                metadata: MediaMetadata::new(4, 2, Duration::from_secs(2)),
+                pending: Vec::new(),
+            }
+        }
+    }
+
+    impl MediaSession for MockSession {
+        fn metadata(&self) -> Option<&MediaMetadata> {
+            Some(&self.metadata)
+        }
+
+        fn clock(&self) -> &MediaClock {
+            &self.clock
+        }
+
+        fn clock_mut(&mut self) -> &mut MediaClock {
+            &mut self.clock
+        }
+
+        fn play(&mut self) -> Result<(), MediaError> {
+            self.clock.play();
+            Ok(())
+        }
+
+        fn pause(&mut self) {
+            self.clock.pause();
+        }
+
+        fn seek(&mut self, position: Duration) -> Result<(), MediaError> {
+            self.clock.seek(position);
+            Ok(())
+        }
+
+        fn set_rate(&mut self, rate: f64) {
+            self.clock.set_rate(rate);
+        }
+
+        fn update(&mut self, delta: Duration) -> MediaUpdate {
+            let state_changed = self.clock.advance(delta);
+            let position = self.clock.position();
+            let index = self
+                .pending
+                .iter()
+                .position(|frame| frame.pts() <= position);
+            let frame = index.map(|index| self.pending.remove(index));
+            MediaUpdate {
+                frame,
+                error: None,
+                state_changed,
+            }
+        }
+
+        fn is_active(&self) -> bool {
+            !self.pending.is_empty()
+        }
     }
 
     fn pointer(position: Point, button: Option<PointerButton>) -> PointerEvent {
@@ -872,6 +967,43 @@ mod tests {
         video.set_playing(true);
         assert_eq!(video.position(), Duration::ZERO);
         assert!(video.is_playing());
+    }
+
+    #[test]
+    fn transport_commands_are_forwarded_to_the_session() {
+        let mut video = Video::new();
+        video.session = Some(Box::new(MockSession::new()));
+        assert_eq!(video.metadata().map(|metadata| metadata.width()), Some(4));
+
+        video.set_playing(true);
+        assert!(video.is_playing());
+        video.set_position(Duration::from_secs(1));
+        assert_eq!(video.position(), Duration::from_secs(1));
+        video.set_rate(2.0);
+        assert!((video.rate() - 2.0).abs() < f64::EPSILON);
+        video.set_playing(false);
+        assert!(!video.is_playing());
+
+        video.close_decoder();
+        assert!(!video.has_decoder());
+        assert_eq!(video.position(), Duration::from_secs(1));
+        assert_eq!(video.duration(), Duration::from_secs(2));
+    }
+
+    #[test]
+    fn session_frames_reach_the_view_at_their_presentation_time() {
+        let mut video = Video::new();
+        let mut session = MockSession::new();
+        session.pending.push(MediaFrame::new(
+            RasterImage::new(3, 3, vec![255; 36]).expect("valid RGBA image"),
+            Duration::ZERO,
+            Duration::from_millis(100),
+        ));
+        video.session = Some(Box::new(session));
+
+        assert!(video.advance_animation(Duration::ZERO, false));
+        assert_eq!(video.frame().map(RasterImage::width), Some(3));
+        assert!(!video.is_animating());
     }
 
     #[test]

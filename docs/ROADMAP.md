@@ -281,8 +281,10 @@ The completed implementation includes:
 - data-driven `VirtualList`/`VirtualTable` controls with stable-key row caching,
   keyboard navigation, and a shared selection model;
 - media widgets: fitted images, a pan/zoom image viewer, GIF playback through the
-  `image` decoder, and a `Video` presenter with an optional `FFmpeg`
-  command-line backend (`ffmpeg`/`ffprobe`) plus app-supplied frames.
+  `image` decoder, and a `Video` presenter backed by a `MediaClock` /
+  `MediaSession` contract with frame-timestamp scheduling and an optional
+  `FFmpeg` command-line backend (`ffmpeg`/`ffprobe`) plus app-supplied frames.
+  See [`MEDIA.md`](MEDIA.md) for the pipeline contract and backend limits.
 
 ### M8 — Accessibility and virtualization
 

@@ -58,6 +58,10 @@ pub use expander::Expander;
 pub use image::{Image, ImageFit};
 pub use image_viewer::ImageViewer;
 pub use list_view::ListView;
+pub use media::{
+    MediaClock, MediaError, MediaFrame, MediaFrameScheduler, MediaMetadata, MediaSession,
+    MediaState, MediaUpdate, VideoMetadata,
+};
 pub use menu_bar::MenuBar;
 pub use padding::Padding;
 pub use progress_bar::ProgressBar;
@@ -78,7 +82,7 @@ pub use text_field::TextField;
 pub use title_bar::{TitleBar, TitleBarStyle, WindowChromeState, WindowControl};
 pub use toolbar::Toolbar;
 pub use video::Video;
-pub use video_ffmpeg::{FfmpegConfig, VideoError, VideoMetadata};
+pub use video_ffmpeg::{FfmpegConfig, VideoError};
 pub use virtual_list::{
     Column, SelectionMode, SelectionModel, VirtualDataSource, VirtualList, VirtualTable,
     VirtualTableSource,
