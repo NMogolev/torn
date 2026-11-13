@@ -284,6 +284,8 @@ The completed implementation includes:
   `image` decoder, and a `Video` presenter backed by a `MediaClock` /
   `MediaSession` contract with frame-timestamp scheduling and an optional
   `FFmpeg` command-line backend (`ffmpeg`/`ffprobe`) plus app-supplied frames.
+  Paleo (`crates/paleo`) is the in-process media layer built from focused
+  crates; see [`PALEO.md`](PALEO.md) for its streaming model and codec matrix.
   See [`MEDIA.md`](MEDIA.md) for the pipeline contract and backend limits.
 
 ### M8 — Accessibility and virtualization

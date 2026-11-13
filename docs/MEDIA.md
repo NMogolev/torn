@@ -167,11 +167,14 @@ value is removing copies and improving seek accuracy, not changing the view API.
 
 The next milestones, in order:
 
-1. An audio output device and an audio-mastered clock shared by audio and video.
-2. Explicit buffering, pause-on-underflow, and end-of-stream reporting for
+1. An in-process backend: Paleo (`crates/paleo`) already demuxes and decodes
+   audio with Symphonia; the missing piece is a video decoder (H.264 first) and
+   a `PaleoSession` implementing `MediaSession`. See [PALEO.md](PALEO.md).
+2. An audio output device and an audio-mastered clock shared by audio and video.
+3. Explicit buffering, pause-on-underflow, and end-of-stream reporting for
    network sources.
-3. Subtitle and metadata tracks.
-4. In-process decoding, hardware decode, and GPU external textures without
+4. Subtitle and metadata tracks.
+5. In-process decoding, hardware decode, and GPU external textures without
    changing `Video` or `MediaSession` callers.
 
 Until then, documentation and one coherent example product are more valuable

@@ -1,5 +1,6 @@
 [workspace]
 members = [
+    "crates/paleo",
     "crates/torn-core",
     "crates/torn-render",
     "crates/torn-ui",
