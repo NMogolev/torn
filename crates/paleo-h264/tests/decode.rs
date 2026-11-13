@@ -29,25 +29,24 @@ fn ffmpeg() -> Option<std::ffi::OsString> {
 }
 
 fn generate(ffmpeg: &std::ffi::OsString, output: &Path) {
-    generate_with(ffmpeg, output, &["-bf", "2"]);
+    generate_with(ffmpeg, output, "320x240", &["-bf", "2"]);
 }
 
-fn generate_with(ffmpeg: &std::ffi::OsString, output: &Path, extra: &[&str]) {
+fn generate_with(ffmpeg: &std::ffi::OsString, output: &Path, size: &str, extra: &[&str]) {
+    let filter = format!("testsrc2=size={size}:rate=25:duration=2");
     let mut command = Command::new(ffmpeg);
-    command.args([
-        "-hide_banner",
-        "-loglevel",
-        "error",
-        "-y",
-        "-f",
-        "lavfi",
-        "-i",
-        "testsrc2=size=320x240:rate=25:duration=2",
-        "-c:v",
-        "libx264",
-        "-profile:v",
-        "high",
-    ]);
+    command
+        .args([
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+        ])
+        .arg(&filter)
+        .args(["-c:v", "libx264", "-profile:v", "high"]);
     command.args(extra);
     command.args([
         "-x264-params",
@@ -152,7 +151,30 @@ fn decodes_generated_clip() {
 
     // The decoder is documented as pixel-exact against ffmpeg. Allow a small
     // rounding margin for the fixed-point RGB matrix and chroma upsampling.
-    assert_matches_ffmpeg(&ffmpeg, &clip, &frames);
+    assert_matches_ffmpeg(&ffmpeg, &clip, &frames, WIDTH, HEIGHT);
+    let _ = std::fs::remove_file(clip);
+}
+
+/// Small frames have NAL units of 256-511 bytes, whose four-byte length prefix
+/// (`00 00 01 xx`) begins with the same bytes as a three-byte Annex-B start
+/// code. A caller that trusts the prefix shape fails on exactly these streams.
+#[test]
+fn decodes_small_frames_with_start_code_like_lengths() {
+    let Some(ffmpeg) = ffmpeg() else {
+        eprintln!("skipping: set TORN_FFMPEG or install ffmpeg to run this test");
+        return;
+    };
+    let clip = std::env::temp_dir().join(format!("paleo-h264-small-{}.mp4", std::process::id()));
+    generate_with(&ffmpeg, &clip, "160x90", &["-bf", "2"]);
+
+    let (packets, extra_data) = packets(&clip);
+    let frames = decode(&packets, &extra_data);
+    assert_eq!(frames.len(), FRAMES, "every picture is emitted");
+    for frame in &frames {
+        assert_eq!((frame.width(), frame.height()), (160, 90));
+    }
+    assert_matches_ffmpeg(&ffmpeg, &clip, &frames, 160, 90);
+
     let _ = std::fs::remove_file(clip);
 }
 
@@ -168,6 +190,7 @@ fn decodes_hierarchical_b_frames() {
     generate_with(
         &ffmpeg,
         &clip,
+        "320x240",
         &["-bf", "3", "-x264-params", "b-pyramid=strict"],
     );
 
@@ -180,17 +203,24 @@ fn decodes_hierarchical_b_frames() {
             .all(|window| window[0].pts() < window[1].pts()),
         "frames are emitted in presentation order"
     );
-    assert_matches_ffmpeg(&ffmpeg, &clip, &frames);
+    assert_matches_ffmpeg(&ffmpeg, &clip, &frames, WIDTH, HEIGHT);
 
     let _ = std::fs::remove_file(clip);
 }
 
-fn assert_matches_ffmpeg(ffmpeg: &std::ffi::OsString, clip: &Path, frames: &[VideoFrame]) {
+fn assert_matches_ffmpeg(
+    ffmpeg: &std::ffi::OsString,
+    clip: &Path,
+    frames: &[VideoFrame],
+    width: usize,
+    height: usize,
+) {
     let reference = frame_bytes(ffmpeg, clip);
-    assert_eq!(reference.len(), frames.len() * WIDTH * HEIGHT * 4);
+    let frame_bytes = width * height * 4;
+    assert_eq!(reference.len(), frames.len() * frame_bytes);
     for (index, frame) in frames.iter().enumerate() {
-        let start = index * WIDTH * HEIGHT * 4;
-        let expected = &reference[start..start + WIDTH * HEIGHT * 4];
+        let start = index * frame_bytes;
+        let expected = &reference[start..start + frame_bytes];
         let difference = mean_absolute_difference(frame.pixels(), expected);
         assert!(
             difference < 1.0,

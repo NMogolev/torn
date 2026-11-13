@@ -61,6 +61,11 @@ impl AvcConfig {
     /// When `prepend_parameter_sets` is set, the SPS/PPS from the record are
     /// emitted first, which is required at every random-access point because
     /// length-prefixed packets do not repeat them in-band.
+    ///
+    /// Packets are length-prefixed by contract. A packet that does not form a
+    /// consistent sequence of length-prefixed NAL units is accepted as
+    /// Annex-B instead, because some muxers keep the stream in that form even
+    /// when the track declares an `avcC` record.
     pub fn to_annex_b(
         &self,
         packet: &[u8],
@@ -68,77 +73,90 @@ impl AvcConfig {
         prepend_parameter_sets: bool,
     ) -> Result<()> {
         out.clear();
-        if prepend_parameter_sets {
+        let parameters_len = if prepend_parameter_sets {
             out.extend_from_slice(&self.parameter_sets);
+            self.parameter_sets.len()
+        } else {
+            0
+        };
+
+        if self.append_framed(packet, out) {
+            return Ok(());
         }
 
-        // Some muxers keep the packets in Annex-B form even inside a
-        // length-prefixed container. Pass those through untouched.
-        if starts_with_start_code(packet) {
+        out.truncate(parameters_len);
+        if annex_b_nal_header(packet).is_some() {
             out.extend_from_slice(packet);
             return Ok(());
         }
 
-        let length_size = self.nal_length_size;
-        let mut offset = 0;
-        while offset < packet.len() {
-            if offset + length_size > packet.len() {
-                return Err(Error::InvalidPacket("truncated NAL length prefix"));
-            }
-            let mut length = 0_usize;
-            for byte in &packet[offset..offset + length_size] {
-                length = (length << 8) | usize::from(*byte);
-            }
-            offset += length_size;
-
-            let end = offset
-                .checked_add(length)
-                .filter(|end| *end <= packet.len())
-                .ok_or(Error::InvalidPacket("NAL length exceeds the packet"))?;
-            if length == 0 {
-                // Tolerate empty NAL units; they carry no data.
-                continue;
-            }
-            out.extend_from_slice(&START_CODE);
-            out.extend_from_slice(&packet[offset..end]);
-            offset = end;
-        }
-
-        Ok(())
+        Err(Error::InvalidPacket("NAL length exceeds the packet"))
     }
 
     /// Reports whether the packet contains an IDR slice.
     pub fn is_idr(&self, packet: &[u8]) -> bool {
-        if starts_with_start_code(packet) {
-            return annex_b_has_nal_type(packet, NAL_TYPE_IDR);
+        if let Some(idr) = self.framed_is_idr(packet) {
+            return idr;
         }
-        self.framed_has_nal_type(packet, NAL_TYPE_IDR)
+        annex_b_has_nal_type(packet, NAL_TYPE_IDR)
     }
 
-    fn framed_has_nal_type(&self, packet: &[u8], nal_type: u8) -> bool {
-        let length_size = self.nal_length_size;
-        let Some(header_len) = length_size.checked_add(1) else {
-            return false;
-        };
+    /// Appends the packet's length-prefixed NAL units as Annex-B.
+    ///
+    /// Returns `false` unless the prefixes consume the packet exactly and at
+    /// least one NAL is non-empty. This disambiguates a four-byte length prefix
+    /// such as `00 00 01 b0` (432) from a three-byte Annex-B start code followed
+    /// by a NAL header, which otherwise look identical at the start of a
+    /// packet. Nothing is rolled back here; the caller truncates `out`.
+    fn append_framed(&self, packet: &[u8], out: &mut Vec<u8>) -> bool {
         let mut offset = 0;
-        while offset + header_len <= packet.len() {
-            let mut length = 0_usize;
-            for byte in &packet[offset..offset + length_size] {
-                length = (length << 8) | usize::from(*byte);
-            }
-            offset += length_size;
-            let Some(end) = offset.checked_add(length) else {
+        let mut count = 0;
+        while offset < packet.len() {
+            let Some((start, length)) = self.next_nal(packet, &mut offset) else {
                 return false;
             };
-            if end > packet.len() {
-                return false;
+            if length > 0 {
+                count += 1;
+                out.extend_from_slice(&START_CODE);
+                out.extend_from_slice(&packet[start..start + length]);
             }
-            if length > 0 && packet[offset] & 0x1f == nal_type {
-                return true;
-            }
-            offset = end;
         }
-        false
+        count > 0
+    }
+
+    /// Returns whether the length-prefixed packet contains an IDR slice, or
+    /// `None` when its framing is not a consistent sequence of NAL units.
+    fn framed_is_idr(&self, packet: &[u8]) -> Option<bool> {
+        let mut offset = 0;
+        let mut count = 0;
+        let mut idr = false;
+        while offset < packet.len() {
+            let (start, length) = self.next_nal(packet, &mut offset)?;
+            if length > 0 {
+                count += 1;
+                idr |= packet[start] & 0x1f == NAL_TYPE_IDR;
+            }
+        }
+        (count > 0).then_some(idr)
+    }
+
+    /// Reads one NAL length prefix and returns the payload offset and length.
+    fn next_nal(&self, packet: &[u8], offset: &mut usize) -> Option<(usize, usize)> {
+        let length_size = self.nal_length_size;
+        let header_end = offset.checked_add(length_size)?;
+        if header_end > packet.len() {
+            return None;
+        }
+        let mut length = 0_usize;
+        for byte in &packet[*offset..header_end] {
+            length = (length << 8) | usize::from(*byte);
+        }
+        let end = header_end.checked_add(length)?;
+        if end > packet.len() {
+            return None;
+        }
+        *offset = end;
+        Some((header_end, length))
     }
 }
 
@@ -168,9 +186,26 @@ fn copy_parameter_sets(
     Ok(offset)
 }
 
-/// Returns whether `data` starts with a three- or four-byte Annex-B start code.
-pub(crate) fn starts_with_start_code(data: &[u8]) -> bool {
-    data.starts_with(&[0, 0, 1]) || data.starts_with(&START_CODE)
+/// Returns the Annex-B NAL header byte when `data` begins with a start code
+/// and a valid NAL header.
+///
+/// The forbidden zero bit must be clear (H.264 §7.3.1). This check keeps a
+/// four-byte length prefix such as `00 00 01 b0` from being mistaken for a
+/// three-byte start code followed by a NAL header.
+fn annex_b_nal_header(data: &[u8]) -> Option<u8> {
+    let offset = if data.starts_with(&START_CODE) {
+        4
+    } else if data.starts_with(&[0, 0, 1]) {
+        3
+    } else {
+        return None;
+    };
+    let header = *data.get(offset)?;
+    if header & 0x80 == 0 {
+        Some(header)
+    } else {
+        None
+    }
 }
 
 fn annex_b_has_nal_type(data: &[u8], nal_type: u8) -> bool {
@@ -257,6 +292,23 @@ mod tests {
             ]
             .to_vec()
         );
+    }
+
+    #[test]
+    fn does_not_confuse_a_nal_length_with_a_start_code() {
+        let config = AvcConfig::parse(&record(3, &[0x67], &[0x68])).unwrap();
+        // A four-byte NAL length of 432 is `00 00 01 b0`, which begins with
+        // the same three bytes as a three-byte Annex-B start code. A stream of
+        // 256-511-byte NALs is common for small frames, so this ambiguity must
+        // resolve in favour of the declared length-prefixed framing.
+        let mut packet = vec![0, 0, 1, 0xb0];
+        packet.resize(4 + 432, 0xaa);
+        let mut out = Vec::new();
+        config.to_annex_b(&packet, &mut out, false).unwrap();
+        assert_eq!(out.len(), 4 + 432);
+        assert_eq!(&out[..4], &START_CODE);
+        assert!(out[4..].iter().all(|byte| *byte == 0xaa));
+        assert!(!config.is_idr(&packet));
     }
 
     #[test]
