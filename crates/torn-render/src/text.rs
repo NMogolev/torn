@@ -793,8 +793,14 @@ impl FontdueTextShaper {
                     }
                 }
 
-                let line_clusters =
-                    line_text_clusters(&line_glyphs, &graphemes, span, line_index, metrics);
+                let line_clusters = line_text_clusters(
+                    &line_glyphs,
+                    &graphemes,
+                    span,
+                    paragraph.start,
+                    line_index,
+                    metrics,
+                );
                 clusters.extend(line_clusters);
                 y += line_height;
             }
@@ -1182,6 +1188,7 @@ fn line_text_clusters(
     glyphs: &[ShapedGlyph],
     graphemes: &[Range<usize>],
     span: Range<usize>,
+    paragraph_start: usize,
     line: usize,
     metrics: LineMetrics,
 ) -> Vec<TextCluster> {
@@ -1191,8 +1198,8 @@ fn line_text_clusters(
         if grapheme.end <= span.start || grapheme.start >= span.end {
             continue;
         }
-        let start = grapheme.start.max(span.start);
-        let end = grapheme.end.min(span.end);
+        let start = paragraph_start + grapheme.start.max(span.start);
+        let end = paragraph_start + grapheme.end.min(span.end);
         let mut left = f32::INFINITY;
         let mut right = f32::NEG_INFINITY;
         let mut level = 0_u8;
@@ -1347,6 +1354,27 @@ mod tests {
                 .flat_map(GlyphRun::glyphs)
                 .all(|glyph| glyph.glyph_id() != 0)
         );
+    }
+
+    #[test]
+    fn assigns_global_byte_ranges_to_clusters_after_line_breaks() {
+        let text = "Первая строка\nВторая строка";
+        let layout = FontdueTextShaper::ubuntu_light().layout(
+            text,
+            &TextStyle::new(16.0, Color::BLACK),
+            None,
+        );
+        let second_line_start = "Первая строка\n".len();
+
+        assert_eq!(layout.lines().len(), 2);
+        assert_eq!(layout.line_ranges()[1].start, second_line_start);
+        assert!(
+            layout
+                .clusters()
+                .iter()
+                .any(|cluster| cluster.source().start >= second_line_start)
+        );
+        assert_eq!(layout.line_at(second_line_start), 1);
     }
 
     #[test]

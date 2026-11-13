@@ -143,13 +143,21 @@ impl TextEdit {
 
     fn ensure_caret_visible(&mut self) {
         let caret = self.text_layout.caret_rect(self.display().1, 1.0);
-        let height = (self.viewport.height() - self.padding.vertical()).max(1.0);
+        let height = self.content_viewport_height();
         if caret.origin.y < self.scroll_y {
             self.scroll_y = caret.origin.y;
         } else if caret.bottom() > self.scroll_y + height {
             self.scroll_y = caret.bottom() - height;
         }
-        self.scroll_y = self.scroll_y.max(0.0);
+        self.scroll_y = self.scroll_y.clamp(0.0, self.max_scroll_y());
+    }
+
+    fn content_viewport_height(&self) -> f32 {
+        (self.viewport.height() - self.padding.vertical()).max(1.0)
+    }
+
+    fn max_scroll_y(&self) -> f32 {
+        (self.text_layout.size().height() - self.content_viewport_height()).max(0.0)
     }
 
     fn hit_test_caret(&self, position: Point) -> usize {
@@ -440,11 +448,11 @@ impl Widget for TextEdit {
                     WheelDelta::Pixels(delta) => delta,
                     WheelDelta::Lines(delta) => Point::new(delta.x * 24.0, delta.y * 24.0),
                 };
-                let total_height = self.text_layout.size().height() + self.padding.vertical();
-                if total_height <= self.viewport.height() {
+                let max_scroll_y = self.max_scroll_y();
+                if max_scroll_y == 0.0 {
                     return EventStatus::Ignored;
                 }
-                self.scroll_y = (self.scroll_y - delta.y).max(0.0);
+                self.scroll_y = (self.scroll_y - delta.y).clamp(0.0, max_scroll_y);
                 context.request_redraw();
                 EventStatus::Handled
             }
@@ -637,4 +645,47 @@ fn empty_layout() -> TextLayout {
         &TextStyle::new(1.0, Color::BLACK),
         None,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn layout_edit(text: &str, viewport: Size) -> TextEdit {
+        let environment = UiEnvironment::new(torn_ui::LightTheme);
+        let mut edit = TextEdit::with_text(text);
+        edit.text_style = TextStyle::new(14.0, Color::BLACK);
+        edit.viewport = viewport;
+        edit.relayout(&environment);
+        edit
+    }
+
+    #[test]
+    fn wraps_text_and_highlights_each_visual_line_of_a_selection() {
+        let text = "one two three four five six seven eight";
+        let mut edit = layout_edit(text, size(80.0, 120.0));
+
+        edit.editor.select_all();
+
+        assert!(edit.text_layout.lines().len() > 1);
+        assert!(
+            edit.text_layout
+                .selection_rects(edit.editor.selection())
+                .len()
+                > 1
+        );
+    }
+
+    #[test]
+    fn clamps_scroll_to_the_end_of_the_text() {
+        let text = "one two three four five six seven eight nine ten eleven twelve";
+        let mut edit = layout_edit(text, size(80.0, 30.0));
+        let maximum = edit.max_scroll_y();
+        assert!(maximum > 0.0);
+
+        edit.scroll_y = f32::MAX;
+        edit.ensure_caret_visible();
+
+        assert_eq!(edit.scroll_y, maximum);
+    }
 }
