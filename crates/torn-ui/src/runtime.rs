@@ -436,7 +436,7 @@ impl UiRuntime {
         }
     }
 
-    /// Advances hover, press, and focus transitions by `delta`.
+    /// Advances hover, press, focus, and widget-owned animations by `delta`.
     ///
     /// [`Self::paint`] calls this automatically with the wall-clock time since
     /// the previous frame. Call it directly to drive deterministic animation in
@@ -456,15 +456,19 @@ impl UiRuntime {
     /// Returns how long to wait before painting the next animation frame.
     ///
     /// Platform adapters should schedule a redraw after this delay when it is
-    /// `Some`. The result becomes `None` once every transition has settled.
+    /// `Some`. The result becomes `None` once every transition has settled and
+    /// no widget reports live animation through [`Widget::is_animating`].
     /// When animation is disabled while a transition is in flight, this returns
     /// `Some(Duration::ZERO)` so the next paint can snap it to its target.
     #[must_use]
     pub fn next_frame_in(&self) -> Option<Duration> {
-        if !self.animating {
-            return None;
-        }
-        let animating = self.nodes.iter().enumerate().any(|(index, slot)| {
+        let widget_animating = self.nodes.iter().any(|slot| {
+            slot.node
+                .as_ref()
+                .and_then(|node| node.widget.as_deref())
+                .is_some_and(Widget::is_animating)
+        });
+        let transition_animating = self.nodes.iter().enumerate().any(|(index, slot)| {
             let Some(node) = &slot.node else {
                 return false;
             };
@@ -474,8 +478,13 @@ impl UiRuntime {
             let id = WidgetId::new(index, slot.generation);
             node.transition.is_animating(self.transition_targets(id))
         });
-        if !animating {
+        if !widget_animating && !transition_animating {
             return None;
+        }
+        if widget_animating {
+            // Media playback runs on a steady frame cadence regardless of the
+            // reduced-motion setting used for interaction transitions.
+            return Some(ANIMATION_FRAME_INTERVAL);
         }
         let duration = self.environment.theme().animation_duration();
         if !self.environment.animations_enabled() || duration.is_zero() {
@@ -512,34 +521,47 @@ impl UiRuntime {
         } else {
             (delta.as_secs_f32() / duration.as_secs_f32()).clamp(0.0, 1.0)
         };
-        if step == 0.0 {
-            return;
-        }
         let hovered: Vec<WidgetId> = self.hovered.values().copied().collect();
         let focused = self.focused;
         let pressed = self.pressed;
-        let mut changed = false;
-        for (index, slot) in self.nodes.iter_mut().enumerate() {
+        let mut transition_changed = false;
+        if step > 0.0 {
+            for (index, slot) in self.nodes.iter_mut().enumerate() {
+                let Some(node) = &mut slot.node else {
+                    continue;
+                };
+                let Ok(index) = u32::try_from(index) else {
+                    continue;
+                };
+                let id = WidgetId::new(index, slot.generation);
+                let hover = if hovered.contains(&id) { 1.0 } else { 0.0 };
+                let press = if pressed == Some(id) { 1.0 } else { 0.0 };
+                let focus = if focused == Some(id) { 1.0 } else { 0.0 };
+                transition_changed |= approach(&mut node.transition.hover, hover, step);
+                transition_changed |= approach(&mut node.transition.press, press, step);
+                transition_changed |= approach(&mut node.transition.focus, focus, step);
+            }
+        }
+
+        let mut widgets_changed = false;
+        let mut widgets_animating = false;
+        for slot in &mut self.nodes {
             let Some(node) = &mut slot.node else {
                 continue;
             };
-            let Ok(index) = u32::try_from(index) else {
+            let Some(widget) = &mut node.widget else {
                 continue;
             };
-            let id = WidgetId::new(index, slot.generation);
-            let hover = if hovered.contains(&id) { 1.0 } else { 0.0 };
-            let press = if pressed == Some(id) { 1.0 } else { 0.0 };
-            let focus = if focused == Some(id) { 1.0 } else { 0.0 };
-            changed |= approach(&mut node.transition.hover, hover, step);
-            changed |= approach(&mut node.transition.press, press, step);
-            changed |= approach(&mut node.transition.focus, focus, step);
+            widgets_changed |= widget.advance_animation(delta, settle);
+            widgets_animating |= widget.is_animating();
         }
-        if changed {
+
+        if transition_changed || widgets_changed {
             self.mark_full_damage();
             self.cached_display_list = None;
             self.redraw_requested = true;
         }
-        self.animating = step < 1.0 && changed;
+        self.animating = widgets_animating || (step < 1.0 && transition_changed);
     }
 
     fn mark_full_damage(&mut self) {
@@ -932,9 +954,7 @@ impl UiRuntime {
         let now = Instant::now();
         let delta = now.saturating_duration_since(self.last_animation_tick);
         self.last_animation_tick = now;
-        if self.animating {
-            self.advance_animations(delta);
-        }
+        self.advance_animations(delta);
         let command_count_before = context.command_count();
         let started = Instant::now();
         if let Some(cached) = &self.cached_display_list {
@@ -1791,6 +1811,10 @@ mod tests {
         observed: Rc<RefCell<Vec<(f32, f32, f32)>>>,
     }
 
+    struct TimelineRecorder {
+        remaining: std::time::Duration,
+    }
+
     impl Widget for EnvironmentRecorder {
         fn layout(
             &mut self,
@@ -1873,6 +1897,24 @@ mod tests {
 
         fn accepts_focus(&self) -> bool {
             true
+        }
+    }
+
+    impl Widget for TimelineRecorder {
+        fn layout(&mut self, _: &mut LayoutContext<'_>, constraints: Constraints) -> LayoutResult {
+            LayoutResult::new(constraints.constrain(Size::ZERO))
+        }
+
+        fn advance_animation(&mut self, delta: std::time::Duration, _settle: bool) -> bool {
+            if self.remaining.is_zero() {
+                return false;
+            }
+            self.remaining = self.remaining.saturating_sub(delta);
+            true
+        }
+
+        fn is_animating(&self) -> bool {
+            !self.remaining.is_zero()
         }
     }
 
@@ -2553,6 +2595,23 @@ mod tests {
 
         let (hover, _, _) = observed.borrow().last().copied().expect("painted once");
         assert!((hover - 1.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn schedules_frames_for_widget_owned_animations() {
+        let mut runtime = UiRuntime::new(TimelineRecorder {
+            remaining: std::time::Duration::from_millis(20),
+        });
+        runtime
+            .layout(Constraints::tight(size(10.0, 10.0)).expect("valid constraints"))
+            .expect("layout succeeds");
+
+        assert_eq!(
+            runtime.next_frame_in(),
+            Some(super::ANIMATION_FRAME_INTERVAL)
+        );
+        runtime.advance_animations(std::time::Duration::from_millis(30));
+        assert!(runtime.next_frame_in().is_none());
     }
 
     #[test]

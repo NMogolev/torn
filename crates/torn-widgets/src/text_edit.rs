@@ -686,6 +686,6 @@ mod tests {
         edit.scroll_y = f32::MAX;
         edit.ensure_caret_visible();
 
-        assert_eq!(edit.scroll_y, maximum);
+        assert!((edit.scroll_y - maximum).abs() <= f32::EPSILON);
     }
 }

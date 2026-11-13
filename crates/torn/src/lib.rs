@@ -20,14 +20,15 @@ pub use torn_ui::{
     UiEnvironment, UiRuntime, UiRuntimeError, Widget, WindowCommand,
 };
 pub use torn_widgets::{
-    Alert, AlertTone, Align, Alignment, Avatar, AvatarStatus, Badge, BadgeTone, Box, Button,
-    ButtonStyle, Card, CardStyle, Checkbox, ComboBox, Container, Divider, DividerAxis, DockArea,
-    DockAreaError, DockItem, Dropdown, Expander, Image, ListView, MenuBar, Padding, ProgressBar,
+    Alert, AlertTone, Align, Alignment, AnimatedImage, AnimationFrame, Avatar, AvatarStatus, Badge,
+    BadgeTone, Box, Button, ButtonStyle, Card, CardStyle, Checkbox, ComboBox, Container, Divider,
+    DividerAxis, DockArea, DockAreaError, DockItem, Dropdown, Expander, FfmpegConfig,
+    GifDecodeError, Image, ImageFit, ImageViewer, ListView, MenuBar, Padding, ProgressBar,
     RadioButton, RadioGroup, ScrollAxis, ScrollView, SegmentedControl, SelectionMode,
     SelectionModel, SizedBox, Skeleton, Slider, Spinner, SplitAxis, Splitter, Stack, Switch,
-    TabBar, Text, TextEdit, TextField, TextInput, TitleBar, TitleBarStyle, Toolbar,
-    VirtualDataSource, VirtualList, VirtualTable, VirtualTableSource, WindowChromeState,
-    WindowControl, WindowFrame,
+    TabBar, Text, TextEdit, TextField, TextInput, TitleBar, TitleBarStyle, Toolbar, Video,
+    VideoError, VideoMetadata, VirtualDataSource, VirtualList, VirtualTable, VirtualTableSource,
+    WindowChromeState, WindowControl, WindowFrame,
 };
 pub use torn_workspace::{
     DockAxis, DocumentId, DocumentPresentation, FloatingDocument, FloatingPanel, LayoutNode,

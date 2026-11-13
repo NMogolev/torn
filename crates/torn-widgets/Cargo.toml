@@ -11,6 +11,7 @@ repository.workspace = true
 workspace = true
 
 [dependencies]
+image = { version = "0.25", default-features = false, features = ["gif"] }
 torn-core = { path = "../torn-core" }
 torn-render = { path = "../torn-render" }
 torn-ui = { path = "../torn-ui" }

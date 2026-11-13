@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use torn_core::{Constraints, InputEvent, Rect};
 use torn_render::PaintContext;
 
@@ -49,6 +51,29 @@ pub trait Widget {
     ) {
         let _ = style;
         self.paint(context, environment, bounds);
+    }
+
+    /// Advances widget-owned, time-driven content by `delta`.
+    ///
+    /// The runtime calls this before painting every frame. Widgets that play
+    /// media, drive procedural effects, or otherwise change visually with time
+    /// should update their state here and return whether paint output changed.
+    /// `settle` is `true` when the host requested an immediate jump to the
+    /// final state, such as when animations are disabled.
+    ///
+    /// Returning `true` invalidates the retained display list so the next
+    /// paint reflects the new state. This method must not emit application
+    /// signals; report user-driven changes from [`Widget::handle_event`].
+    fn advance_animation(&mut self, _delta: Duration, _settle: bool) -> bool {
+        false
+    }
+
+    /// Returns whether this widget needs continuous animation frames.
+    ///
+    /// Platform adapters use this through [`crate::UiRuntime::next_frame_in`]
+    /// to schedule the next paint while media is playing.
+    fn is_animating(&self) -> bool {
+        false
     }
 
     /// Handles an input event during capture, target, or bubble propagation.
@@ -135,6 +160,14 @@ where
         style: &TssStyle,
     ) {
         (**self).paint_styled(context, environment, bounds, style);
+    }
+
+    fn advance_animation(&mut self, delta: Duration, settle: bool) -> bool {
+        (**self).advance_animation(delta, settle)
+    }
+
+    fn is_animating(&self) -> bool {
+        (**self).is_animating()
     }
 
     fn handle_event(&mut self, context: &mut EventContext<'_>, event: &InputEvent) -> EventStatus {

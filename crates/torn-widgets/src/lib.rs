@@ -2,6 +2,7 @@
 
 mod alert;
 mod align;
+mod animated_image;
 mod avatar;
 mod badge;
 mod box_widget;
@@ -13,7 +14,9 @@ mod dock_area;
 mod dropdown;
 mod expander;
 mod image;
+mod image_viewer;
 mod list_view;
+mod media;
 mod menu_bar;
 mod padding;
 mod progress_bar;
@@ -34,11 +37,14 @@ mod text_editor;
 mod text_field;
 mod title_bar;
 mod toolbar;
+mod video;
+mod video_ffmpeg;
 mod virtual_list;
 mod window_frame;
 
 pub use alert::{Alert, AlertTone};
 pub use align::{Align, Alignment};
+pub use animated_image::{AnimatedImage, AnimationFrame, GifDecodeError};
 pub use avatar::{Avatar, AvatarStatus};
 pub use badge::{Badge, BadgeTone};
 pub use box_widget::Box;
@@ -49,7 +55,8 @@ pub use divider::{Divider, DividerAxis};
 pub use dock_area::{DockArea, DockAreaError, DockItem};
 pub use dropdown::Dropdown;
 pub use expander::Expander;
-pub use image::Image;
+pub use image::{Image, ImageFit};
+pub use image_viewer::ImageViewer;
 pub use list_view::ListView;
 pub use menu_bar::MenuBar;
 pub use padding::Padding;
@@ -70,6 +77,8 @@ pub use text_edit::TextEdit;
 pub use text_field::TextField;
 pub use title_bar::{TitleBar, TitleBarStyle, WindowChromeState, WindowControl};
 pub use toolbar::Toolbar;
+pub use video::Video;
+pub use video_ffmpeg::{FfmpegConfig, VideoError, VideoMetadata};
 pub use virtual_list::{
     Column, SelectionMode, SelectionModel, VirtualDataSource, VirtualList, VirtualTable,
     VirtualTableSource,
