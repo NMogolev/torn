@@ -3,9 +3,9 @@
 //! The output owns one SPSC ring buffer. The application pushes interleaved
 //! `f32` frames from the decoding thread; the device callback owns the consumer
 //! end, pops frames, and converts them to the host's sample format. The render
-//! path takes no locks: [`AudioOutput::reset`] publishes a flush generation and
-//! an absolute sample marker, and the callback discards every sample queued up
-//! to that marker on its next invocation.
+//! path takes no locks and allocates nothing: [`AudioOutput::reset`] publishes a
+//! flush generation and an absolute sample marker, and the callback discards
+//! every sample queued up to that marker on its next invocation.
 
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
@@ -18,7 +18,7 @@ use cpal::{
 use ringbuf::traits::{Consumer, Observer, Producer, Split};
 use ringbuf::{HeapCons, HeapProd, HeapRb};
 
-use crate::buffer::{PcmBuffer, PcmFormat};
+use crate::buffer::{MAX_CHANNELS, PcmBuffer, PcmFormat};
 use crate::error::{Error, Result};
 
 /// Default amount of audio kept in the output ring.
@@ -29,6 +29,13 @@ const MIN_RING_FRAMES: usize = 1_024;
 const MAX_LATENCY: Duration = Duration::from_secs(2);
 /// Below this, scheduling jitter would underrun constantly; requests are raised.
 const MIN_LATENCY: Duration = Duration::from_millis(20);
+/// Samples converted per ring-buffer pop on the real-time path.
+///
+/// The callback converts into this fixed stack buffer instead of allocating a
+/// scratch vector. It must hold at least one whole frame; `PcmFormat` limits
+/// the channel count to [`MAX_CHANNELS`], so this always does.
+const CHUNK_SAMPLES: usize = 256;
+const _: () = assert!(CHUNK_SAMPLES >= MAX_CHANNELS);
 
 /// A host output device that persisted as a stable id.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -609,7 +616,8 @@ where
 /// Real-time state owned exclusively by the device callback.
 struct CallbackState {
     consumer: HeapCons<f32>,
-    scratch: Vec<f32>,
+    /// Fixed conversion buffer; populating it never allocates.
+    chunk: [f32; CHUNK_SAMPLES],
     /// Absolute count of samples this callback has popped.
     read_samples: u64,
     /// Last flush generation observed from [`Shared`].
@@ -620,7 +628,7 @@ impl CallbackState {
     fn new(consumer: HeapCons<f32>) -> Self {
         Self {
             consumer,
-            scratch: Vec::new(),
+            chunk: [0.0; CHUNK_SAMPLES],
             read_samples: 0,
             generation: 0,
         }
@@ -630,7 +638,13 @@ impl CallbackState {
     fn flush(&mut self, shared: &Shared) {
         let target = shared.flush_until.load(Ordering::Acquire);
         while self.read_samples < target {
-            let count = self.consumer.pop_slice(&mut self.scratch);
+            // Stop exactly at the marker: audio queued after a reset may already
+            // be in the ring and must not be discarded with the stale prefix.
+            let remaining = target - self.read_samples;
+            let take = usize::try_from(remaining)
+                .unwrap_or(usize::MAX)
+                .min(CHUNK_SAMPLES);
+            let count = self.consumer.pop_slice(&mut self.chunk[..take]);
             if count == 0 {
                 break;
             }
@@ -678,7 +692,6 @@ where
     if wanted == 0 {
         return;
     }
-    state.scratch.resize(wanted, 0.0);
 
     let generation = shared.flush_generation.load(Ordering::Acquire);
     if generation != state.generation {
@@ -686,29 +699,36 @@ where
         state.flush(shared);
     }
 
-    let mut popped = 0;
-    while popped < wanted {
-        let count = state.consumer.pop_slice(&mut state.scratch[popped..wanted]);
+    // Pop and convert in whole-frame chunks that fit the fixed buffer. This
+    // keeps the ring at a frame boundary even when it runs dry mid-callback.
+    let chunk = (CHUNK_SAMPLES / channels) * channels;
+    let mut converted = 0;
+    while converted < wanted {
+        let take = chunk.min(wanted - converted);
+        let count = state.consumer.pop_slice(&mut state.chunk[..take]);
         if count == 0 {
             break;
         }
-        popped += count;
+        for (sample, value) in output[converted..converted + count]
+            .iter_mut()
+            .zip(&state.chunk[..count])
+        {
+            *sample = T::from_sample((value * gain).clamp(-1.0, 1.0));
+        }
+        converted += count;
     }
     state.read_samples = state
         .read_samples
-        .saturating_add(u64::try_from(popped).unwrap_or(u64::MAX));
+        .saturating_add(u64::try_from(converted).unwrap_or(u64::MAX));
     shared
         .read_samples
         .store(state.read_samples, Ordering::Relaxed);
 
-    for (sample, value) in output.iter_mut().zip(&state.scratch[..popped]) {
-        *sample = T::from_sample((value * gain).clamp(-1.0, 1.0));
-    }
-    for sample in &mut output[popped..] {
+    for sample in &mut output[converted..] {
         *sample = silence;
     }
 
-    let complete = popped / channels;
+    let complete = converted / channels;
     count_frames(shared, frames, frames.saturating_sub(complete));
 }
 
@@ -780,7 +800,6 @@ mod tests {
 
         assert_eq!(shared.pending_flush_samples(), 32);
 
-        state.scratch.resize(8, 0.0);
         state.flush(&shared);
 
         assert_eq!(state.read_samples, 32);
@@ -811,11 +830,41 @@ mod tests {
         shared.written_samples.store(32, Ordering::Release);
         shared.flush_until.store(32, Ordering::Release);
 
-        state.scratch.resize(4, 0.0);
         state.flush(&shared);
 
         assert_eq!(state.read_samples, 32);
         assert_eq!(producer.occupied_len(), 0);
+    }
+
+    #[test]
+    fn callback_streams_long_buffers_in_whole_frame_chunks() {
+        let (mut producer, consumer) = HeapRb::<f32>::new(1_024).split();
+        let shared = Shared::new();
+        shared.paused.store(false, Ordering::Release);
+        let mut state = CallbackState::new(consumer);
+
+        let input: Vec<f32> = (0..600_u16).map(|index| f32::from(index) * 0.001).collect();
+        assert_eq!(producer.push_slice(&input), input.len());
+
+        let mut output = [0.0_f32; 600];
+        fill_output(&mut output, 1, &shared, &mut state);
+
+        for (sample, expected) in output.iter().zip(&input) {
+            assert!((sample - expected).abs() <= f32::EPSILON);
+        }
+        assert_eq!(state.read_samples, 600);
+        assert_eq!(shared.rendered_frames.load(Ordering::Relaxed), 600);
+        assert_eq!(shared.underrun_frames.load(Ordering::Relaxed), 0);
+
+        // A short ring fills the rest with silence and counts the missing frames.
+        assert_eq!(producer.push_slice(&[0.5; 300]), 300);
+        let mut output = [1.0_f32; 600];
+        fill_output(&mut output, 1, &shared, &mut state);
+
+        assert!((output[299] - 0.5).abs() <= f32::EPSILON);
+        assert!((output[300] - 0.0).abs() <= f32::EPSILON);
+        assert_eq!(shared.underrun_frames.load(Ordering::Relaxed), 300);
+        assert_eq!(shared.underruns.load(Ordering::Relaxed), 1);
     }
 
     #[test]
