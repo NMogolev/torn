@@ -10,10 +10,6 @@ layout and paint work, and remain independent of the renderer and windowing
 system. The same tree can run headlessly in tests, render deterministically to a
 pixel buffer, or be presented through `wgpu` in a native `winit` window.
 
-> **Status:** Drawen is at an early `0.1` stage. The documented APIs are
-> implemented and tested, but the public surface may change between minor
-> releases before `1.0`.
-
 ## Quick start
 
 Add the facade crate:

@@ -1,0 +1,39 @@
+{
+  "version": 1,
+  "root": {
+    "Split": {
+      "axis": "Horizontal",
+      "ratio": 0.22,
+      "first": {
+        "Panel": {
+          "id": "project"
+        }
+      },
+      "second": {
+        "Split": {
+          "axis": "Horizontal",
+          "ratio": 0.72,
+          "first": {
+            "Documents": {
+              "presentation": "Tabbed",
+              "items": [
+                "welcome",
+                "scene",
+                "notes"
+              ],
+              "active": "welcome"
+            }
+          },
+          "second": {
+            "Panel": {
+              "id": "inspector"
+            }
+          }
+        }
+      }
+    }
+  },
+  "floating": [],
+  "hidden": [],
+  "freeform_documents": []
+}
