@@ -620,21 +620,21 @@ impl Widget for Video {
             .or(style.background)
             .unwrap_or_else(|| environment.theme().background());
         context.fill_rect(bounds, background);
-        if let Some(frame) = self.frame()
-            && frame.width() > 0
-            && frame.height() > 0
-            && !bounds.is_empty()
-        {
-            let destination = fitted_rect(
-                bounds,
-                image_size(frame),
-                self.fit,
-                crate::Alignment::Center,
-                crate::Alignment::Center,
-            );
-            context.with_clip(bounds, |context| {
-                context.draw_image(frame.clone(), destination);
-            });
+        if let Some(frame) = self.scheduler.current() {
+            let image = frame.image();
+            if image.width() > 0 && image.height() > 0 && !bounds.is_empty() {
+                let destination = fitted_rect(
+                    bounds,
+                    image_size(image),
+                    self.fit,
+                    crate::Alignment::Center,
+                    crate::Alignment::Center,
+                );
+                let shared = frame.shared_image().clone();
+                context.with_clip(bounds, |context| {
+                    context.draw_image(shared, destination);
+                });
+            }
         }
         if !self.controls || bounds.size.height() < CONTROL_HEIGHT || bounds.is_empty() {
             return;

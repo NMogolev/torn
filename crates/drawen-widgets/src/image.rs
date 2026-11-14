@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use drawen_core::{Color, Constraints, Point, Rect, Size};
 use drawen_render::{PaintContext, RasterImage};
 use drawen_ui::{
@@ -31,7 +33,7 @@ pub enum ImageFit {
 /// pixels are mapped into those bounds, and [`Self::with_alignment`] positions
 /// an image that does not fill them completely.
 pub struct Image {
-    source: RasterImage,
+    source: Arc<RasterImage>,
     display_size: Option<Size>,
     fit: ImageFit,
     horizontal: Alignment,
@@ -43,9 +45,9 @@ pub struct Image {
 impl Image {
     /// Creates an image widget at its intrinsic pixel dimensions.
     #[must_use]
-    pub const fn new(image: RasterImage) -> Self {
+    pub fn new(image: RasterImage) -> Self {
         Self {
-            source: image,
+            source: Arc::new(image),
             display_size: None,
             fit: ImageFit::Fill,
             horizontal: Alignment::Center,
@@ -63,7 +65,7 @@ impl Image {
     #[must_use]
     pub fn with_size(image: RasterImage, width: f32, height: f32) -> Self {
         Self {
-            source: image,
+            source: Arc::new(image),
             display_size: Some(size(width, height)),
             fit: ImageFit::Fill,
             horizontal: Alignment::Center,
@@ -75,8 +77,8 @@ impl Image {
 
     /// Returns the source image.
     #[must_use]
-    pub const fn image(&self) -> &RasterImage {
-        &self.source
+    pub fn image(&self) -> &RasterImage {
+        self.source.as_ref()
     }
 
     /// Returns the requested display size, if explicitly set.
@@ -307,7 +309,7 @@ mod tests {
 
         assert!(matches!(
             list.commands(),
-            [DisplayCommand::DrawImage { image: recorded, .. }] if recorded == &image
+            [DisplayCommand::DrawImage { image: recorded, .. }] if recorded.as_ref() == &image
         ));
     }
 

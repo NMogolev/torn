@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use drawen_core::{Affine, Color, Point, Rect};
 
 use crate::{DisplayCommand, DisplayList, RasterImage, TextLayout, TextureId};
@@ -220,15 +222,25 @@ impl<'a> PaintContext<'a> {
     }
 
     /// Records a draw operation for already shaped and measured text.
-    pub fn draw_text(&mut self, layout: TextLayout, origin: Point) {
-        self.display_list
-            .push(DisplayCommand::DrawText { layout, origin });
+    ///
+    /// Accepts either an owned [`TextLayout`] or an [`Arc<TextLayout>`]; pass a
+    /// shared layout when the same text is repainted every frame.
+    pub fn draw_text(&mut self, layout: impl Into<Arc<TextLayout>>, origin: Point) {
+        self.display_list.push(DisplayCommand::DrawText {
+            layout: layout.into(),
+            origin,
+        });
     }
 
     /// Records a raster image scaled into `destination`.
-    pub fn draw_image(&mut self, image: RasterImage, destination: Rect) {
-        self.display_list
-            .push(DisplayCommand::DrawImage { image, destination });
+    ///
+    /// Accepts either an owned [`RasterImage`] or an [`Arc<RasterImage>`]; pass
+    /// a shared image when the same pixels are repainted every frame.
+    pub fn draw_image(&mut self, image: impl Into<Arc<RasterImage>>, destination: Rect) {
+        self.display_list.push(DisplayCommand::DrawImage {
+            image: image.into(),
+            destination,
+        });
     }
 
     /// Records a GPU texture scaled into `destination`.

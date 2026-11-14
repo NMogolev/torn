@@ -107,6 +107,16 @@ impl PixelBuffer {
         self.index_of(x, y).map(|index| &mut self.pixels[index])
     }
 
+    /// Returns one physical row as a slice, or `None` outside the buffer.
+    pub(crate) fn row_mut(&mut self, y: u32) -> Option<&mut [Pixel]> {
+        if y >= self.height {
+            return None;
+        }
+        let width = usize::try_from(self.width).ok()?;
+        let start = usize::try_from(y).ok()?.checked_mul(width)?;
+        self.pixels.get_mut(start..start.checked_add(width)?)
+    }
+
     fn index_of(&self, x: u32, y: u32) -> Option<usize> {
         (x < self.width && y < self.height)
             .then(|| usize::try_from(u64::from(y) * u64::from(self.width) + u64::from(x)).ok())

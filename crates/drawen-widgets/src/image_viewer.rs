@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use drawen_core::{
     Color, Constraints, InputEvent, Key, NamedKey, Point, PointerButton, PointerId, Rect, Size,
     WheelDelta,
@@ -25,7 +27,7 @@ const CHECKER_SIZE: f32 = 16.0;
 /// zoom values enlarge it and enable panning; the pan offset is clamped so the
 /// image never drifts completely out of view.
 pub struct ImageViewer {
-    image: RasterImage,
+    image: Arc<RasterImage>,
     zoom: f32,
     minimum_zoom: f32,
     maximum_zoom: f32,
@@ -45,7 +47,7 @@ impl ImageViewer {
     #[must_use]
     pub fn new(image: RasterImage) -> Self {
         Self {
-            image,
+            image: Arc::new(image),
             zoom: 1.0,
             minimum_zoom: DEFAULT_MIN_ZOOM,
             maximum_zoom: DEFAULT_MAX_ZOOM,
@@ -63,8 +65,8 @@ impl ImageViewer {
 
     /// Returns the displayed image.
     #[must_use]
-    pub const fn image(&self) -> &RasterImage {
-        &self.image
+    pub fn image(&self) -> &RasterImage {
+        self.image.as_ref()
     }
 
     /// Returns the current zoom relative to the fitted image.
@@ -105,7 +107,7 @@ impl ImageViewer {
 
     /// Replaces the displayed image and resets the pan offset.
     pub fn set_image(&mut self, image: RasterImage) {
-        self.image = image;
+        self.image = Arc::new(image);
         self.pan = Point::ZERO;
         self.clamp_pan();
     }

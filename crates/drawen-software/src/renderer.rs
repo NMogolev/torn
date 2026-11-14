@@ -194,29 +194,64 @@ impl SoftwareRenderer {
         };
         let (start_x, start_y, end_x, end_y) =
             physical_bounds(bounds, state.transform, target, scale_factor);
+        if start_x >= end_x || start_y >= end_y {
+            return Ok(());
+        }
 
+        // Hard-edged fills are convex, so their intersection with a scanline is
+        // one contiguous span. Find that span with a binary search instead of
+        // running the full shape test on every pixel.
+        if shape.blur == 0.0 && shape.stroke_width.is_none() {
+            fill_convex_shape(
+                target,
+                state,
+                scale_factor,
+                color,
+                shape,
+                inverse,
+                (start_x, start_y, end_x, end_y),
+            );
+            return Ok(());
+        }
+
+        // General paths step through logical and local coordinates incrementally;
+        // the affine transform is linear, so each pixel only needs two adds.
+        let inv_scale = scale_factor.recip();
+        let step_local_x = inverse.xx * inv_scale;
+        let step_local_y = inverse.xy * inv_scale;
+        let has_clips = !state.clips.is_empty();
+        let solid_source = (shape.blur == 0.0).then(|| SourceOver::new(color));
+
+        let mut point_y = logical_pixel_center(0, start_y, scale_factor).y;
         for y in start_y..end_y {
+            let mut point_x = logical_pixel_center(start_x, 0, scale_factor).x;
+            let mut local = inverse.transform_point(Point::new(point_x, point_y));
             for x in start_x..end_x {
-                let point = logical_pixel_center(x, y, scale_factor);
-                if !is_visible(point, state) {
-                    continue;
-                }
-                let local = inverse.transform_point(point);
-                if shape.blur > 0.0 {
-                    let coverage = shadow_coverage(shape.rect, shape.radius, shape.blur, local);
-                    if coverage > 0.0 {
-                        blend_pixel(target, x, y, color.with_alpha(color.alpha * coverage));
+                if !has_clips || is_visible(Point::new(point_x, point_y), state) {
+                    if shape.blur > 0.0 {
+                        let coverage = shadow_coverage(shape.rect, shape.radius, shape.blur, local);
+                        if coverage > 0.0 {
+                            blend_pixel(target, x, y, color.with_alpha(color.alpha * coverage));
+                        }
+                    } else {
+                        let inside = match shape.stroke_width {
+                            None => contains_rounded_rect(shape.rect, shape.radius, local),
+                            Some(width) => contains_stroke(shape.rect, shape.radius, width, local),
+                        };
+                        if inside {
+                            if let Some(source) = solid_source {
+                                blend_pixel_source(target, x, y, source);
+                            } else {
+                                blend_pixel(target, x, y, color);
+                            }
+                        }
                     }
-                } else {
-                    let inside = match shape.stroke_width {
-                        None => contains_rounded_rect(shape.rect, shape.radius, local),
-                        Some(width) => contains_stroke(shape.rect, shape.radius, width, local),
-                    };
-                    if inside {
-                        blend_pixel(target, x, y, color);
-                    }
                 }
+                point_x += inv_scale;
+                local.x += step_local_x;
+                local.y += step_local_y;
             }
+            point_y += inv_scale;
         }
         Ok(())
     }
@@ -235,6 +270,10 @@ impl SoftwareRenderer {
             .transform
             .inverse()
             .ok_or(RenderError::SingularTransform)?;
+        let inv_scale = scale_factor.recip();
+        let step_local_x = inverse.xx * inv_scale;
+        let step_local_y = inverse.xy * inv_scale;
+        let has_clips = !state.clips.is_empty();
 
         for run in layout.glyph_runs() {
             if !run.font_size().is_finite() || run.font_size() <= 0.0 {
@@ -261,37 +300,40 @@ impl SoftwareRenderer {
                 );
                 let (start_x, start_y, end_x, end_y) =
                     physical_bounds(glyph_rect, state.transform, target, scale_factor);
+                let mut point_y = logical_pixel_center(0, start_y, scale_factor).y;
                 for y in start_y..end_y {
+                    let mut point_x = logical_pixel_center(start_x, 0, scale_factor).x;
+                    let mut local = inverse.transform_point(Point::new(point_x, point_y));
                     for x in start_x..end_x {
-                        let point = logical_pixel_center(x, y, scale_factor);
-                        if !is_visible(point, state) {
-                            continue;
+                        if !has_clips || is_visible(Point::new(point_x, point_y), state) {
+                            let bitmap_x =
+                                coordinate_to_usize((local.x - glyph_origin.x) * scale_factor);
+                            let bitmap_y =
+                                coordinate_to_usize((local.y - glyph_origin.y) * scale_factor);
+                            if let Some(&coverage) = bitmap.coverage().get(
+                                bitmap_y
+                                    .saturating_mul(bitmap.width())
+                                    .saturating_add(bitmap_x),
+                            ) {
+                                let alpha = f32::from(coverage) / 255.0;
+                                blend_pixel(
+                                    target,
+                                    x,
+                                    y,
+                                    Color::rgba(
+                                        layout.color().red,
+                                        layout.color().green,
+                                        layout.color().blue,
+                                        layout.color().alpha * alpha,
+                                    ),
+                                );
+                            }
                         }
-                        let local = inverse.transform_point(point);
-                        let bitmap_x =
-                            coordinate_to_usize((local.x - glyph_origin.x) * scale_factor);
-                        let bitmap_y =
-                            coordinate_to_usize((local.y - glyph_origin.y) * scale_factor);
-                        let Some(&coverage) = bitmap.coverage().get(
-                            bitmap_y
-                                .saturating_mul(bitmap.width())
-                                .saturating_add(bitmap_x),
-                        ) else {
-                            continue;
-                        };
-                        let alpha = f32::from(coverage) / 255.0;
-                        blend_pixel(
-                            target,
-                            x,
-                            y,
-                            Color::rgba(
-                                layout.color().red,
-                                layout.color().green,
-                                layout.color().blue,
-                                layout.color().alpha * alpha,
-                            ),
-                        );
+                        point_x += inv_scale;
+                        local.x += step_local_x;
+                        local.y += step_local_y;
                     }
+                    point_y += inv_scale;
                 }
             }
         }
@@ -317,40 +359,46 @@ impl SoftwareRenderer {
             .transform
             .inverse()
             .ok_or(RenderError::SingularTransform)?;
+        let inv_scale = scale_factor.recip();
+        let step_local_x = inverse.xx * inv_scale;
+        let step_local_y = inverse.xy * inv_scale;
+        let has_clips = !state.clips.is_empty();
         let (start_x, start_y, end_x, end_y) =
             physical_bounds(destination, state.transform, target, scale_factor);
+        let mut point_y = logical_pixel_center(0, start_y, scale_factor).y;
         for y in start_y..end_y {
+            let mut point_x = logical_pixel_center(start_x, 0, scale_factor).x;
+            let mut local = inverse.transform_point(Point::new(point_x, point_y));
             for x in start_x..end_x {
-                let point = logical_pixel_center(x, y, scale_factor);
-                if !is_visible(point, state) {
-                    continue;
+                if (!has_clips || is_visible(Point::new(point_x, point_y), state))
+                    && destination.contains(local)
+                {
+                    let source_x = image_coordinate(
+                        (local.x - destination.origin.x) / destination.size.width(),
+                        image.width(),
+                    );
+                    let source_y = image_coordinate(
+                        (local.y - destination.origin.y) / destination.size.height(),
+                        image.height(),
+                    );
+                    let offset = source_y
+                        .saturating_mul(usize::try_from(image.width()).unwrap_or(usize::MAX))
+                        .saturating_add(source_x)
+                        .saturating_mul(4);
+                    if let Some(rgba) = image.pixels().get(offset..offset.saturating_add(4)) {
+                        blend_pixel(
+                            target,
+                            x,
+                            y,
+                            Color::rgba8(rgba[0], rgba[1], rgba[2], rgba[3]),
+                        );
+                    }
                 }
-                let local = inverse.transform_point(point);
-                if !destination.contains(local) {
-                    continue;
-                }
-                let source_x = image_coordinate(
-                    (local.x - destination.origin.x) / destination.size.width(),
-                    image.width(),
-                );
-                let source_y = image_coordinate(
-                    (local.y - destination.origin.y) / destination.size.height(),
-                    image.height(),
-                );
-                let offset = source_y
-                    .saturating_mul(usize::try_from(image.width()).unwrap_or(usize::MAX))
-                    .saturating_add(source_x)
-                    .saturating_mul(4);
-                let Some(rgba) = image.pixels().get(offset..offset.saturating_add(4)) else {
-                    continue;
-                };
-                blend_pixel(
-                    target,
-                    x,
-                    y,
-                    Color::rgba8(rgba[0], rgba[1], rgba[2], rgba[3]),
-                );
+                point_x += inv_scale;
+                local.x += step_local_x;
+                local.y += step_local_y;
             }
+            point_y += inv_scale;
         }
         Ok(())
     }
@@ -568,6 +616,73 @@ fn is_visible(point: Point, state: &RenderState) -> bool {
         .all(|clip| clip.rect.contains(clip.inverse.transform_point(point)))
 }
 
+#[allow(clippy::too_many_arguments)]
+fn fill_convex_shape(
+    target: &mut PixelBuffer,
+    state: &RenderState,
+    scale_factor: f32,
+    color: Color,
+    shape: Shape,
+    inverse: Affine,
+    (start_x, start_y, end_x, end_y): (u32, u32, u32, u32),
+) {
+    let has_clips = !state.clips.is_empty();
+    for y in start_y..end_y {
+        let inside = |x: u32| {
+            let point = logical_pixel_center(x, y, scale_factor);
+            if has_clips && !is_visible(point, state) {
+                return false;
+            }
+            contains_rounded_rect(shape.rect, shape.radius, inverse.transform_point(point))
+        };
+        let first = first_true(start_x, end_x, inside);
+        if first == end_x {
+            continue;
+        }
+        // Convex containment makes the true region a single interval, so the
+        // first false pixel after `first` ends the span.
+        let last = first_true(first, end_x, |x| !inside(x));
+        fill_row(target, y, first, last, color);
+    }
+}
+
+fn first_true(mut low: u32, mut high: u32, predicate: impl Fn(u32) -> bool) -> u32 {
+    while low < high {
+        let middle = low + (high - low) / 2;
+        if predicate(middle) {
+            high = middle;
+        } else {
+            low = middle + 1;
+        }
+    }
+    low
+}
+
+fn fill_row(target: &mut PixelBuffer, y: u32, start_x: u32, end_x: u32, color: Color) {
+    let width = target.width();
+    let start = usize::try_from(start_x.min(width)).unwrap_or(usize::MAX);
+    let end = usize::try_from(end_x.min(width)).unwrap_or(usize::MAX);
+    if start >= end {
+        return;
+    }
+    let Some(row) = target.row_mut(y) else {
+        return;
+    };
+    let Some(span) = row.get_mut(start..end) else {
+        return;
+    };
+    if color.alpha.is_finite() && color.alpha >= 1.0 {
+        // Source-over with an opaque source ignores the destination entirely.
+        let pixel = Pixel::rgba(to_u8(color.red), to_u8(color.green), to_u8(color.blue), 255);
+        span.fill(pixel);
+    } else {
+        let source = SourceOver::new(color);
+        for destination in span {
+            *destination = source.apply(*destination);
+        }
+    }
+}
+
 fn physical_bounds(
     rect: Rect,
     transform: Affine,
@@ -612,28 +727,60 @@ fn blend_pixel(target: &mut PixelBuffer, x: u32, y: u32, color: Color) {
     }
 }
 
+fn blend_pixel_source(target: &mut PixelBuffer, x: u32, y: u32, source: SourceOver) {
+    if let Some(pixel) = target.get_mut(x, y) {
+        *pixel = source.apply(*pixel);
+    }
+}
+
 fn blend(destination: Pixel, source: Color) -> Pixel {
-    let source_alpha = component(source.alpha);
-    let destination_alpha = f32::from(destination.alpha) / 255.0;
-    let output_alpha = source_alpha + destination_alpha * (1.0 - source_alpha);
+    SourceOver::new(source).apply(destination)
+}
 
-    let source_red = component(source.red) * source_alpha;
-    let source_green = component(source.green) * source_alpha;
-    let source_blue = component(source.blue) * source_alpha;
-    let destination_red = f32::from(destination.red) / 255.0 * destination_alpha;
-    let destination_green = f32::from(destination.green) / 255.0 * destination_alpha;
-    let destination_blue = f32::from(destination.blue) / 255.0 * destination_alpha;
+/// Source-over terms that stay constant for one solid-color draw.
+#[derive(Clone, Copy)]
+struct SourceOver {
+    alpha: f32,
+    inverse_alpha: f32,
+    red: f32,
+    green: f32,
+    blue: f32,
+}
 
-    let (red, green, blue) = if output_alpha == 0.0 {
-        (0.0, 0.0, 0.0)
-    } else {
-        (
-            (source_red + destination_red * (1.0 - source_alpha)) / output_alpha,
-            (source_green + destination_green * (1.0 - source_alpha)) / output_alpha,
-            (source_blue + destination_blue * (1.0 - source_alpha)) / output_alpha,
-        )
-    };
-    Pixel::rgba(to_u8(red), to_u8(green), to_u8(blue), to_u8(output_alpha))
+impl SourceOver {
+    fn new(source: Color) -> Self {
+        let alpha = component(source.alpha);
+        let inverse_alpha = 1.0 - alpha;
+        Self {
+            alpha,
+            inverse_alpha,
+            red: component(source.red) * alpha,
+            green: component(source.green) * alpha,
+            blue: component(source.blue) * alpha,
+        }
+    }
+
+    fn apply(self, destination: Pixel) -> Pixel {
+        let destination_alpha = f32::from(destination.alpha) / 255.0;
+        let output_alpha = self.alpha + destination_alpha * self.inverse_alpha;
+
+        let destination_scale = destination_alpha / 255.0;
+        let destination_red = f32::from(destination.red) * destination_scale;
+        let destination_green = f32::from(destination.green) * destination_scale;
+        let destination_blue = f32::from(destination.blue) * destination_scale;
+
+        let (red, green, blue) = if output_alpha == 0.0 {
+            (0.0, 0.0, 0.0)
+        } else {
+            let inverse_output_alpha = output_alpha.recip();
+            (
+                (self.red + destination_red * self.inverse_alpha) * inverse_output_alpha,
+                (self.green + destination_green * self.inverse_alpha) * inverse_output_alpha,
+                (self.blue + destination_blue * self.inverse_alpha) * inverse_output_alpha,
+            )
+        };
+        Pixel::rgba(to_u8(red), to_u8(green), to_u8(blue), to_u8(output_alpha))
+    }
 }
 
 fn component(value: f32) -> f32 {
@@ -645,9 +792,11 @@ fn component(value: f32) -> f32 {
 }
 
 fn to_u8(value: f32) -> u8 {
+    // Every input is non-negative after `component`, so truncating
+    // `scaled + 0.5` matches `round()` without a libm call on baseline x86-64.
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     {
-        (component(value) * 255.0).round() as u8
+        (component(value) * 255.0 + 0.5) as u8
     }
 }
 
@@ -763,6 +912,47 @@ mod tests {
         assert_eq!(pixels.get(0, 0), Some(Pixel::rgba(255, 255, 255, 255)));
         assert_eq!(pixels.get(1, 0), Some(Pixel::TRANSPARENT));
         assert_eq!(pixels.get(2, 0), Some(Pixel::rgba(0, 0, 0, 255)));
+    }
+
+    #[test]
+    fn rotated_fills_match_per_pixel_containment() {
+        // The scanline fast path finds one span per row; a rotated fill is still
+        // convex, so the span must agree with testing every pixel center.
+        let rotation = Affine::rotate(0.5);
+        let shape = rect(-2.0, -1.0, 4.0, 2.0);
+        let mut list = DisplayList::new();
+        PaintContext::new(&mut list).with_transform(rotation, |context| {
+            context.fill_rect(shape, Color::WHITE);
+        });
+        let mut pixels = PixelBuffer::new(20, 20).expect("small test buffer");
+
+        SoftwareRenderer
+            .render(&list, &mut pixels)
+            .expect("valid display list");
+
+        let inverse = rotation.inverse().expect("rotation is invertible");
+        for y in 0..20 {
+            for x in 0..20 {
+                let point = Point::new(as_test_coordinate(x) + 0.5, as_test_coordinate(y) + 0.5);
+                let expected = if shape.contains(inverse.transform_point(point)) {
+                    255
+                } else {
+                    0
+                };
+                assert_eq!(
+                    pixels.get(x, y).expect("pixel is in bounds").alpha,
+                    expected,
+                    "pixel ({x}, {y})"
+                );
+            }
+        }
+    }
+
+    fn as_test_coordinate(value: u32) -> f32 {
+        #[allow(clippy::cast_precision_loss)]
+        {
+            value as f32
+        }
     }
 
     #[test]

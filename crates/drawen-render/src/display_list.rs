@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use drawen_core::{Affine, Color, Point, Rect};
 
 use crate::{RasterImage, TextLayout};
@@ -61,6 +63,31 @@ impl DisplayList {
         Self {
             commands: Vec::new(),
         }
+    }
+
+    /// Creates an empty display list with room for `capacity` commands.
+    ///
+    /// Retained runtimes can pre-size their frame buffer to avoid reallocating
+    /// on the first frames of a new scene.
+    #[must_use]
+    pub fn with_capacity(capacity: usize) -> Self {
+        Self {
+            commands: Vec::with_capacity(capacity),
+        }
+    }
+
+    /// Removes every recorded command while retaining the allocated capacity.
+    ///
+    /// Reuse one display list across frames instead of allocating a fresh list
+    /// per frame; the recorded command count returns to zero without releasing
+    /// the underlying buffer.
+    pub fn clear(&mut self) {
+        self.commands.clear();
+    }
+
+    /// Reserves capacity for at least `additional` more commands.
+    pub fn reserve(&mut self, additional: usize) {
+        self.commands.reserve(additional);
     }
 
     /// Returns the paint commands in recording order.
@@ -237,15 +264,17 @@ pub enum DisplayCommand {
     PopClip,
     /// Draws pre-laid-out text at the supplied top-left origin.
     DrawText {
-        /// Pre-laid-out text data.
-        layout: TextLayout,
+        /// Pre-laid-out text data, shared with the caller so repainting an
+        /// unchanged layout does not copy its glyph runs.
+        layout: Arc<TextLayout>,
         /// Top-left text origin in logical pixels.
         origin: Point,
     },
     /// Draws a raster image scaled into the supplied destination rectangle.
     DrawImage {
-        /// Source pixels in 8-bit sRGBA format.
-        image: RasterImage,
+        /// Source pixels in 8-bit sRGBA format, shared with the caller so
+        /// repainting an unchanged image does not copy its pixel buffer.
+        image: Arc<RasterImage>,
         /// Destination rectangle in logical pixels.
         destination: Rect,
     },
@@ -280,5 +309,38 @@ impl TextureId {
     #[must_use]
     pub const fn get(self) -> u64 {
         self.0
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use drawen_core::{Color, Point, Rect, Size};
+
+    use super::{DisplayCommand, DisplayList};
+
+    fn rect() -> Rect {
+        Rect::new(Point::ZERO, Size::new(1.0, 1.0).expect("valid test size"))
+    }
+
+    #[test]
+    fn clear_retains_the_command_buffer_for_reuse() {
+        let mut list = DisplayList::with_capacity(16);
+        assert!(list.commands.capacity() >= 16);
+        list.push(DisplayCommand::FillRect {
+            rect: rect(),
+            color: Color::BLACK,
+        });
+        let capacity = list.commands.capacity();
+
+        list.clear();
+
+        assert!(list.is_empty());
+        assert_eq!(list.commands.capacity(), capacity);
+        list.push(DisplayCommand::FillRect {
+            rect: rect(),
+            color: Color::WHITE,
+        });
+        assert_eq!(list.len(), 1);
+        assert_eq!(list.commands.capacity(), capacity);
     }
 }

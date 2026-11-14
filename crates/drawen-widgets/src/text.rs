@@ -157,7 +157,7 @@ impl Widget for Text {
 
 #[cfg(test)]
 mod tests {
-    use std::{cell::Cell, rc::Rc};
+    use std::{cell::Cell, rc::Rc, sync::Arc};
 
     use drawen_core::{Color, Constraints, Point, Size};
     use drawen_render::{
@@ -204,7 +204,7 @@ mod tests {
         assert_eq!(
             list.commands(),
             &[DisplayCommand::DrawText {
-                layout,
+                layout: Arc::new(layout),
                 origin: Point::ZERO,
             }]
         );

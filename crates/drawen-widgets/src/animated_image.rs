@@ -1,4 +1,4 @@
-use std::{fmt, io::Cursor, time::Duration};
+use std::{fmt, io::Cursor, sync::Arc, time::Duration};
 
 use drawen_core::{Color, Constraints, Rect, Size};
 use drawen_render::{PaintContext, RasterImage};
@@ -17,7 +17,7 @@ const DEFAULT_GIF_DELAY: Duration = Duration::from_millis(100);
 /// One frame of an [`AnimatedImage`] and how long it stays on screen.
 #[derive(Clone, Debug, PartialEq)]
 pub struct AnimationFrame {
-    image: RasterImage,
+    image: Arc<RasterImage>,
     duration: Duration,
 }
 
@@ -29,14 +29,20 @@ impl AnimationFrame {
     #[must_use]
     pub fn new(image: RasterImage, duration: Duration) -> Self {
         Self {
-            image,
+            image: Arc::new(image),
             duration: duration.max(MIN_FRAME_DELAY),
         }
     }
 
     /// Returns the frame pixels.
     #[must_use]
-    pub const fn image(&self) -> &RasterImage {
+    pub fn image(&self) -> &RasterImage {
+        self.image.as_ref()
+    }
+
+    /// Returns the shared frame pixels without copying them.
+    #[must_use]
+    pub(crate) fn shared_image(&self) -> &Arc<RasterImage> {
         &self.image
     }
 
@@ -395,8 +401,9 @@ impl Widget for AnimatedImage {
             self.horizontal,
             self.vertical,
         );
+        let shared = frame.shared_image().clone();
         context.with_clip(bounds, |context| {
-            context.draw_image(image.clone(), destination);
+            context.draw_image(shared, destination);
         });
     }
 

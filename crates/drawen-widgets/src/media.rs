@@ -17,6 +17,7 @@
 
 use std::collections::VecDeque;
 use std::fmt;
+use std::sync::Arc;
 use std::time::Duration;
 
 use drawen_render::RasterImage;
@@ -325,7 +326,7 @@ pub type VideoMetadata = MediaMetadata;
 /// A decoded video frame with its presentation timestamp.
 #[derive(Clone, Debug, PartialEq)]
 pub struct MediaFrame {
-    image: RasterImage,
+    image: Arc<RasterImage>,
     pts: Duration,
     duration: Duration,
 }
@@ -335,7 +336,7 @@ impl MediaFrame {
     #[must_use]
     pub fn new(image: RasterImage, pts: Duration, duration: Duration) -> Self {
         Self {
-            image,
+            image: Arc::new(image),
             pts,
             duration,
         }
@@ -343,7 +344,13 @@ impl MediaFrame {
 
     /// Returns the decoded RGBA image.
     #[must_use]
-    pub const fn image(&self) -> &RasterImage {
+    pub fn image(&self) -> &RasterImage {
+        self.image.as_ref()
+    }
+
+    /// Returns the shared frame pixels without copying them.
+    #[must_use]
+    pub(crate) fn shared_image(&self) -> &Arc<RasterImage> {
         &self.image
     }
 
