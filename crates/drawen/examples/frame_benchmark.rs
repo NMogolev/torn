@@ -1,9 +1,10 @@
-//! Headless frame benchmark for render diagnostics and virtualized controls.
+//! Reproducible headless frame benchmark.
 //!
 //! Run with `cargo run --release -p drawen --example frame_benchmark`.
-//! Each scene paints a fixed number of frames and prints the counters from
-//! [`drawen::FrameDiagnostics`]: layout and paint timing, cache reuse, display
-//! command composition, damage coverage, and text-layout cache activity.
+//! The output reports p99, never just an average. It intentionally separates
+//! retained UI work from software raster work: a GPU comparison needs a native
+//! surface and must be collected by the platform-specific benchmark described
+//! in `docs/PERFORMANCE.md`.
 
 use std::{
     hint::black_box,
@@ -11,95 +12,157 @@ use std::{
 };
 
 use drawen::{
-    Color, Constraints, FrameDiagnostics, Point, Rect, Size, UiRuntime, VirtualDataSource,
-    VirtualList, Widget,
-    render::{FontdueTextShaper, PaintContext, TextStyle},
+    Color, Constraints, InputEvent, Modifiers, Point, Rect, Size, UiRuntime, VirtualDataSource,
+    VirtualList, WheelDelta, WheelEvent, Widget,
+    render::{DisplayList, PaintContext},
+    software::{PixelBuffer, SoftwareRenderer},
 };
 
-const FRAMES: u32 = 60;
+const SAMPLES: usize = 240;
 const WINDOW_WIDTH: f32 = 1_280.0;
 const WINDOW_HEIGHT: f32 = 800.0;
 
 fn main() {
-    let size = fixed_size(WINDOW_WIDTH, WINDOW_HEIGHT);
-    println!("Drawen frame benchmark: {WINDOW_WIDTH}x{WINDOW_HEIGHT}, {FRAMES} frames per scene\n");
-    run_scene("fill commands", size, FillScene::new(80, 40));
-    run_scene("text shaping", size, TextScene::new(20, 12));
-    run_scene("virtual list", size, virtual_list_scene());
+    println!("Drawen performance benchmark ({SAMPLES} measured frames; p99 after warmup)\n");
+    retained_frame_benchmark();
+    software_fill_benchmark(1_920, 1_080);
+    software_fill_benchmark(3_840, 2_160);
+    virtual_list_scroll_benchmark();
 }
 
-fn run_scene(label: &str, size: Size, scene: impl Widget + 'static) {
-    let mut runtime = UiRuntime::new(scene);
+fn retained_frame_benchmark() {
+    let size = fixed_size(WINDOW_WIDTH, WINDOW_HEIGHT);
+    let mut runtime = UiRuntime::new(FillScene);
+    layout(&mut runtime, size);
+
+    // Build the retained display list once. Subsequent frames must not repaint it.
+    paint_frame(&mut runtime);
+    let samples = measure(|| {
+        paint_frame(&mut runtime);
+    });
+    let diagnostics = runtime.frame_diagnostics();
+
+    println!("unchanged retained frame");
+    print_timing(&samples);
+    println!(
+        "  retained paint {}  damage {}  commands {}",
+        diagnostics.last_paint_reused(),
+        describe_damage(diagnostics.last_damage()),
+        diagnostics.last_paint_command_count(),
+    );
+    println!("  note: this includes appending the retained list to a fresh caller output list\n");
+}
+
+fn software_fill_benchmark(width: u32, height: u32) {
+    let mut list = DisplayList::new();
+    PaintContext::new(&mut list).fill_rect(
+        Rect::new(
+            Point::ZERO,
+            fixed_size(u32_to_f32(width), u32_to_f32(height)),
+        ),
+        Color::rgba8(32, 96, 160, 255),
+    );
+    let renderer = SoftwareRenderer;
+    let mut pixels =
+        PixelBuffer::new(width, height).expect("benchmark buffer dimensions are valid");
+    renderer.render(&list, &mut pixels).expect("fill renders");
+    let samples = measure(|| {
+        renderer.render(&list, &mut pixels).expect("fill renders");
+    });
+    let median = percentile(&samples, 50);
+    let pixels_per_second = f64::from(width) * f64::from(height) / median.as_secs_f64();
+
+    println!("software fill {width}x{height}");
+    print_timing(&samples);
+    println!(
+        "  median fill rate {:.2} Gpixel/s\n",
+        pixels_per_second / 1e9
+    );
+}
+
+fn virtual_list_scroll_benchmark() {
+    let size = fixed_size(WINDOW_WIDTH, WINDOW_HEIGHT);
+    let mut runtime = UiRuntime::new(VirtualList::new(BenchmarkRows(1_000_000), 28.0));
+    layout(&mut runtime, size);
+    paint_frame(&mut runtime);
+
+    let mut text_commands = 0;
+    let samples = measure(|| {
+        let scroll = InputEvent::Wheel(WheelEvent {
+            position: Point::new(10.0, 10.0),
+            delta: WheelDelta::Pixels(Point::new(0.0, -28.0)),
+            modifiers: Modifiers::NONE,
+        });
+        runtime.dispatch_event(&scroll);
+        layout(&mut runtime, size);
+        let list = paint_frame(&mut runtime);
+        text_commands = list
+            .commands()
+            .iter()
+            .filter(|command| matches!(command, drawen::render::DisplayCommand::DrawText { .. }))
+            .count();
+    });
+
+    println!("virtual list scroll (1,000,000 rows)");
+    print_timing(&samples);
+    println!(
+        "  visible row text commands {text_commands} (must scale with viewport, not row count)\n"
+    );
+}
+
+fn layout(runtime: &mut UiRuntime, size: Size) {
     runtime
         .layout(Constraints::tight(size).expect("benchmark constraints are valid"))
         .expect("benchmark scene lays out");
-
-    // Warm caches before timing so the report focuses on steady-state cost.
-    for _ in 0..3 {
-        paint_frame(&mut runtime);
-    }
-
-    let mut total = Duration::ZERO;
-    let mut diagnostics = FrameDiagnostics::default();
-    for _ in 0..FRAMES {
-        let started = Instant::now();
-        paint_frame(&mut runtime);
-        total += started.elapsed();
-        diagnostics = runtime.frame_diagnostics();
-    }
-    let average = total / FRAMES;
-    let display = diagnostics.last_display_stats();
-
-    println!("{label}");
-    println!(
-        "  paint/total  {:>9.2} ms avg  (last {:>9.2} ms)",
-        milliseconds(average),
-        milliseconds(diagnostics.last_paint_time())
-    );
-    println!(
-        "  commands     {:>9}  fills {}  rounded {}  strokes {}  text {}  clips {}  state {}",
-        diagnostics.last_paint_command_count(),
-        display.fills,
-        display.rounded_fills,
-        display.strokes + display.rounded_strokes,
-        display.text_runs,
-        display.clips,
-        display.state_changes
-    );
-    println!(
-        "  caches       paint reused {}  layout reused {}  text {} hits / {} misses ({} entries)",
-        diagnostics.last_paint_reused(),
-        diagnostics.last_layout_reused(),
-        diagnostics.last_text_cache().hits,
-        diagnostics.last_text_cache().misses,
-        diagnostics.last_text_cache().entries
-    );
-    println!(
-        "  damage       {}\n",
-        describe_damage(diagnostics.last_damage())
-    );
 }
 
-fn paint_frame(runtime: &mut UiRuntime) {
-    runtime.invalidate_paint();
-    let mut display_list = drawen::render::DisplayList::new();
+fn paint_frame(runtime: &mut UiRuntime) -> DisplayList {
+    let mut display_list = DisplayList::new();
     runtime
         .paint(&mut PaintContext::new(&mut display_list))
         .expect("benchmark scene paints");
     black_box(display_list.len());
+    display_list
 }
 
-/// Paints a dense grid of filled rectangles and rounded rectangles.
-struct FillScene {
-    columns: usize,
-    rows: usize,
-}
-
-impl FillScene {
-    const fn new(columns: usize, rows: usize) -> Self {
-        Self { columns, rows }
+fn measure(mut frame: impl FnMut()) -> Vec<Duration> {
+    for _ in 0..16 {
+        frame();
     }
+    let mut samples = Vec::with_capacity(SAMPLES);
+    for _ in 0..SAMPLES {
+        let started = Instant::now();
+        frame();
+        samples.push(started.elapsed());
+    }
+    samples
 }
+
+fn print_timing(samples: &[Duration]) {
+    println!(
+        "  median {:>8.2} us  p99 {:>8.2} us  worst {:>8.2} us",
+        microseconds(percentile(samples, 50)),
+        microseconds(percentile(samples, 99)),
+        microseconds(*samples.iter().max().expect("samples are non-empty")),
+    );
+}
+
+fn percentile(samples: &[Duration], percentile: usize) -> Duration {
+    let mut sorted = samples.to_vec();
+    sorted.sort_unstable();
+    let index = (percentile * (sorted.len() - 1)).div_ceil(100);
+    sorted[index]
+}
+
+fn describe_damage(damage: Option<Rect>) -> &'static str {
+    if damage.is_some() { "present" } else { "none" }
+}
+
+fn microseconds(duration: Duration) -> f64 {
+    duration.as_secs_f64() * 1_000_000.0
+}
+
+struct FillScene;
 
 impl Widget for FillScene {
     fn layout(
@@ -115,90 +178,8 @@ impl Widget for FillScene {
     }
 
     fn paint(&self, context: &mut PaintContext<'_>, _: &drawen::UiEnvironment, bounds: Rect) {
-        let cell_width = bounds.size.width() / usize_to_f32(self.columns);
-        let cell_height = bounds.size.height() / usize_to_f32(self.rows);
-        for row in 0..self.rows {
-            for column in 0..self.columns {
-                let x = bounds.origin.x + cell_width * usize_to_f32(column);
-                let y = bounds.origin.y + cell_height * usize_to_f32(row);
-                let rect = Rect::new(
-                    Point::new(x, y),
-                    fixed_size(cell_width * 0.8, cell_height * 0.8),
-                );
-                let shade = (row * self.columns + column) % 255;
-                let color = Color::rgba8(u8::try_from(shade).unwrap_or(0), 96, 160, 255);
-                if shade.is_multiple_of(3) {
-                    context.fill_rounded_rect(rect, cell_height * 0.2, color);
-                } else {
-                    context.fill_rect(rect, color);
-                }
-            }
-        }
+        context.fill_rect(bounds, Color::rgba8(32, 96, 160, 255));
     }
-}
-
-/// Reshapes a grid of distinct strings through the shared text-layout cache.
-struct TextScene {
-    labels: Vec<String>,
-    shaper: FontdueTextShaper,
-    style: TextStyle,
-    columns: usize,
-    rows: usize,
-}
-
-impl TextScene {
-    fn new(columns: usize, rows: usize) -> Self {
-        let labels = (0..columns * rows)
-            .map(|index| format!("Row {index:04} — العربية עברית ligature fi"))
-            .collect();
-        Self {
-            labels,
-            shaper: FontdueTextShaper::ubuntu_light(),
-            style: TextStyle::new(15.0, Color::WHITE),
-            columns,
-            rows,
-        }
-    }
-}
-
-impl Widget for TextScene {
-    fn layout(
-        &mut self,
-        _: &mut drawen::LayoutContext<'_>,
-        constraints: Constraints,
-    ) -> drawen::LayoutResult {
-        drawen::LayoutResult::new(constraints.constrain(fixed_size(WINDOW_WIDTH, WINDOW_HEIGHT)))
-    }
-
-    fn style_target(&self) -> drawen::StyleTarget {
-        drawen::StyleTarget::new("benchmark-text")
-    }
-
-    fn paint(&self, context: &mut PaintContext<'_>, _: &drawen::UiEnvironment, bounds: Rect) {
-        let cell_width = bounds.size.width() / usize_to_f32(self.columns);
-        let cell_height = bounds.size.height() / usize_to_f32(self.rows);
-        for row in 0..self.rows {
-            for column in 0..self.columns {
-                let Some(label) = self
-                    .labels
-                    .get(row * self.columns + column)
-                    .map(String::as_str)
-                else {
-                    continue;
-                };
-                let layout = self.shaper.layout(label, &self.style, Some(cell_width));
-                let origin = Point::new(
-                    bounds.origin.x + cell_width * usize_to_f32(column),
-                    bounds.origin.y + cell_height * usize_to_f32(row),
-                );
-                context.draw_text(layout, origin);
-            }
-        }
-    }
-}
-
-fn virtual_list_scene() -> VirtualList<BenchmarkRows> {
-    VirtualList::new(BenchmarkRows(100_000), 28.0)
 }
 
 struct BenchmarkRows(usize);
@@ -209,40 +190,19 @@ impl VirtualDataSource for BenchmarkRows {
     }
 
     fn row_key(&self, row: usize) -> u64 {
-        u64::try_from(row).unwrap_or(u64::MAX)
+        row as u64
     }
 
     fn row_text(&self, row: usize) -> String {
         format!("Item {row:06} — cached row visual")
     }
-
-    fn label(&self) -> Option<String> {
-        Some("Benchmark rows".to_owned())
-    }
-}
-
-fn describe_damage(damage: Option<Rect>) -> String {
-    match damage {
-        Some(rect) => format!(
-            "{:.0}x{:.0} at ({:.0}, {:.0})",
-            rect.size.width(),
-            rect.size.height(),
-            rect.origin.x,
-            rect.origin.y
-        ),
-        None => "none (retained output reused)".to_owned(),
-    }
-}
-
-fn milliseconds(duration: Duration) -> f64 {
-    duration.as_secs_f64() * 1_000.0
 }
 
 fn fixed_size(width: f32, height: f32) -> Size {
     Size::new(width, height).expect("benchmark dimensions are finite")
 }
 
-fn usize_to_f32(value: usize) -> f32 {
+fn u32_to_f32(value: u32) -> f32 {
     #[allow(clippy::cast_precision_loss)]
     {
         value as f32
