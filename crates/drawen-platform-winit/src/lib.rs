@@ -11,7 +11,7 @@ use drawen_core::{
     PointerButtons, PointerEvent, PointerId, Size, TextPreedit, WheelDelta, WheelEvent,
 };
 use drawen_platform::{
-    WindowAction, WindowApplication, WindowEvent, WindowOptions, WindowResizeDirection,
+    WindowAction, WindowApplication, WindowEvent, WindowOptions, WindowResizeDirection, WindowWaker,
 };
 use drawen_wgpu::{GpuError, GpuRenderer, RenderStatus};
 use winit::{
@@ -113,6 +113,14 @@ pub fn run(application: impl WindowApplication + 'static) -> Result<(), RunError
         .build()
         .map_err(RunError::EventLoop)?;
     let proxy = event_loop.create_proxy();
+    let waker = WindowWaker::new({
+        let proxy = proxy.clone();
+        move || {
+            let _ = proxy.send_event(UserEvent::Wake);
+        }
+    });
+    let mut application = application;
+    application.attach_waker(waker);
     let mut adapter = Adapter::new(Box::new(application), proxy);
     event_loop
         .run_app(&mut adapter)
@@ -124,6 +132,8 @@ pub fn run(application: impl WindowApplication + 'static) -> Result<(), RunError
 enum UserEvent {
     /// An accessibility request from the platform adapter.
     Accessibility(accesskit_winit::Event),
+    /// A worker asked the UI thread to drain delivered values.
+    Wake,
 }
 
 impl From<accesskit_winit::Event> for UserEvent {
@@ -497,8 +507,10 @@ impl ApplicationHandler<UserEvent> for Adapter {
     }
 
     fn user_event(&mut self, _event_loop: &ActiveEventLoop, event: UserEvent) {
-        let UserEvent::Accessibility(event) = event;
-        self.handle_accessibility_event(event);
+        match event {
+            UserEvent::Accessibility(event) => self.handle_accessibility_event(event),
+            UserEvent::Wake => self.request_render(),
+        }
     }
 
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {

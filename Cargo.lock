@@ -589,6 +589,7 @@ dependencies = [
  "drawen-platform-winit",
  "drawen-render",
  "drawen-software",
+ "drawen-tasks",
  "drawen-ui",
  "drawen-wgpu",
  "drawen-widgets",
@@ -702,6 +703,10 @@ dependencies = [
  "drawen-core",
  "drawen-render",
 ]
+
+[[package]]
+name = "drawen-tasks"
+version = "0.1.0"
 
 [[package]]
 name = "drawen-ui"

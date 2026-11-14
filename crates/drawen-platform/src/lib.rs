@@ -9,10 +9,50 @@
 //! and reports logical sizes, so layout and hit testing are independent of the
 //! display DPI.
 
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
 use drawen_core::{InputEvent, Size};
 use drawen_render::DisplayList;
+
+/// A cloneable, thread-safe handle that wakes a native event loop.
+///
+/// Platform adapters create one per window and pass it to
+/// [`WindowApplication::attach_waker`]. A worker thread keeps a clone and calls
+/// [`Self::wake`] after handing a value to a UI dispatcher, so the UI thread
+/// drains the value and repaints.
+#[derive(Clone)]
+pub struct WindowWaker {
+    wake: Arc<dyn Fn() + Send + Sync>,
+}
+
+impl WindowWaker {
+    /// Creates a waker from a thread-safe wake-up function.
+    ///
+    /// The function should only nudge the event loop. It must not touch the
+    /// widget tree, block, or run application logic.
+    #[must_use]
+    pub fn new(wake: impl Fn() + Send + Sync + 'static) -> Self {
+        Self {
+            wake: Arc::new(wake),
+        }
+    }
+
+    /// Wakes the event loop.
+    ///
+    /// This is safe to call from any thread and is cheap enough for workers to
+    /// call after each delivered value.
+    pub fn wake(&self) {
+        (self.wake)();
+    }
+}
+
+impl core::fmt::Debug for WindowWaker {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter
+            .debug_struct("WindowWaker")
+            .finish_non_exhaustive()
+    }
+}
 
 /// Initial properties of a native application window.
 // Four independent window states are clearer as named booleans than as an
@@ -215,13 +255,47 @@ pub trait WindowApplication {
     fn next_frame_in(&self) -> Option<Duration> {
         None
     }
+
+    /// Stores a thread-safe handle that wakes this application's event loop.
+    ///
+    /// Adapters call this once before the first event. Applications give a
+    /// clone to worker threads, usually as the wake callback of a
+    /// [`UiDispatcher`](https://docs.rs/drawen-tasks/latest/drawen_tasks/struct.UiDispatcher.html),
+    /// so queued values are applied from [`Self::window_event`] on the UI
+    /// thread. The default ignores the handle.
+    fn attach_waker(&mut self, _waker: WindowWaker) {}
 }
 
 #[cfg(test)]
 mod tests {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+
     use drawen_core::Size;
 
-    use super::WindowOptions;
+    use super::{WindowOptions, WindowWaker};
+
+    #[test]
+    fn waker_clones_share_the_wake_up() {
+        let wake_count = Arc::new(AtomicUsize::new(0));
+        let waker = WindowWaker::new({
+            let wake_count = Arc::clone(&wake_count);
+            move || {
+                wake_count.fetch_add(1, Ordering::SeqCst);
+            }
+        });
+
+        std::thread::spawn({
+            let waker = waker.clone();
+            move || waker.wake()
+        })
+        .join()
+        .expect("the wake-up thread does not panic");
+
+        assert_eq!(wake_count.load(Ordering::SeqCst), 1);
+    }
 
     #[test]
     fn new_options_enable_native_decorations() {

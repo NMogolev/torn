@@ -26,6 +26,7 @@ drawen-render = { version = "0.1.0", path = "../drawen-render" }
 drawen-software = { version = "0.1.0", path = "../drawen-software" }
 drawen-wgpu = { version = "0.1.0", path = "../drawen-wgpu" }
 drawen-platform = { version = "0.1.0", path = "../drawen-platform" }
+drawen-tasks = { version = "0.1.0", path = "../drawen-tasks" }
 drawen-ui = { version = "0.1.0", path = "../drawen-ui" }
 drawen-widgets = { version = "0.1.0", path = "../drawen-widgets" }
 drawen-workspace = { version = "0.1.0", path = "../drawen-workspace" }

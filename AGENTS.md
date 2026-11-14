@@ -22,6 +22,9 @@ Non-negotiables:
   `Video::open_paleo_audio` (feature `audio`), `Video::open` (external FFmpeg,
   no audio). Background playback after the last window closes requires
   `MediaDirector::with_background_playback(true)`.
+- Off-thread work goes through `drawen::tasks` (`TaskPool` + `UiDispatcher`).
+  Workers own plain data and never capture widgets, signals, or subscriptions;
+  the UI thread drains delivered values in `window_event`.
 
 Canonical files:
 
@@ -29,3 +32,4 @@ Canonical files:
 - `crates/drawen/examples/stateful_app.rs`
 - `docs/RECIPES.md`
 - `docs/MEDIA.md`
+- `docs/THREADING.md`

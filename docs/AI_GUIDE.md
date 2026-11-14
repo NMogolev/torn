@@ -18,8 +18,9 @@ application state -> widgets -> layout -> input -> paint -> DisplayList -> rende
   keep live widget values outside the runtime after moving them in.
 - The tree, widgets, signals, and subscriptions are **single-threaded** and
   UI-thread-local. They are not `Send`/`Sync` and must not be touched from a
-  worker thread. Send plain data to the UI thread through a channel and mutate
-  state in the event loop.
+  worker thread. Run owned work on `drawen::tasks::TaskPool` and deliver owned
+  data to the UI thread through `drawen::tasks::UiDispatcher`; mutate state in
+  the event loop.
 - Widgets do not call platform APIs, open windows, spawn threads, or start
   timers. They emit typed signals and use `EventContext` requests. The
   application or `drawen-platform-winit` performs the platform action.
@@ -40,6 +41,7 @@ application state -> widgets -> layout -> input -> paint -> DisplayList -> rende
 | `Widget::new().build()` | Widgets are values appended with `UiRuntime::append_child` |
 | CSS descendant selectors, animations | DSS compound selectors and typed properties only |
 | `signal.connect` from any thread | `Signal::subscribe` on the UI thread, returns `drop`-based `Subscription` |
+| `std::thread::spawn` that captures a widget | `drawen::tasks::TaskPool` + `UiDispatcher`; workers own plain data |
 | An audio widget with its own timer | `Video` + `MediaSession`; audio is part of the media session |
 | `drawen::MediaDirector` by default | Enable the `director` feature; `AudioPaleoSession` needs `audio` |
 
@@ -82,10 +84,12 @@ Do not invent a reactive dependency graph, hooks, or a global store. A
 
 ### "Can I update the UI from another thread?"
 
-No. The widget tree is UI-thread-only. Decode, parse, or compute on a worker if
-needed, then deliver owned data to the UI thread (for example through a channel)
-and apply it from `window_event`, `next_frame_in`, or a widget animation tick.
-Never hold a `UiRuntime`, `Widget`, `Signal`, or `Subscription` across threads.
+No. The widget tree is UI-thread-only. Run decoding, parsing, or computation on
+a `drawen::tasks::TaskPool` worker, then deliver owned data through a
+`drawen::tasks::UiDispatcher` and apply it from `window_event` (the native
+adapter wakes the loop through `WindowApplication::attach_waker`),
+`next_frame_in`, or a widget animation tick. Never hold a `UiRuntime`, `Widget`,
+`Signal`, or `Subscription` across threads.
 
 ### "Add a stylesheet."
 
@@ -164,5 +168,8 @@ Copy the event loop and media policy from:
   complete single-window application.
 - [`workspace.rs`](../crates/drawen/examples/workspace.rs) — docking, tabs,
   persistence.
+- [`background_tasks.rs`](../crates/drawen/examples/background_tasks.rs) —
+  worker pool, progress, and UI delivery.
 - [`RECIPES.md`](RECIPES.md) — the seven application patterns.
 - [`MEDIA.md`](MEDIA.md) — sessions, clocks, backends, lifecycle policy.
+- [`THREADING.md`](THREADING.md) — task pools, cancellation, and the UI bridge.

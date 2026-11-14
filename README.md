@@ -149,6 +149,9 @@ timing; `stateful_app` adds application state.
   subscriptions instead of a global dynamic event bus.
 - **Backend-neutral painting.** Widgets record a `DisplayList`; the deterministic
   software renderer and the `wgpu` renderer execute the same commands.
+- **Background work.** A fixed task pool with cooperative cancellation,
+  progress, and a wakeable UI dispatcher keeps decoding and parsing off the UI
+  thread without touching widgets from a worker.
 - **Production text.** HarfRust shaping, bidirectional layout, grapheme-aware
   fallback, system font discovery, wrapping, caret hit testing, and selection
   geometry.
@@ -208,6 +211,7 @@ remain available for headless tests, custom backends, and smaller binaries.
 | [`drawen-ui`](https://crates.io/crates/drawen-ui) | Retained tree, layout lifecycle, event routing, themes, DSS |
 | [`drawen-widgets`](https://crates.io/crates/drawen-widgets) | Standard layout and control widgets |
 | [`drawen-software`](https://crates.io/crates/drawen-software) | Deterministic software renderer and test support |
+| [`drawen-tasks`](https://crates.io/crates/drawen-tasks) | Worker pool, cancellation, progress, and the UI-thread dispatcher |
 | [`drawen-wgpu`](https://crates.io/crates/drawen-wgpu) | GPU display-list renderer |
 | [`drawen-platform`](https://crates.io/crates/drawen-platform) | Platform-independent window and event contracts |
 | [`drawen-platform-winit`](https://crates.io/crates/drawen-platform-winit) | Native `winit` window adapter |
@@ -369,6 +373,7 @@ docking, tabs, floating panels, and persisted layout data.
 - [Custom window chrome](https://github.com/NMogolev/drawen/blob/main/docs/WINDOW_CHROME.md)
 - [Media pipeline and backends](https://github.com/NMogolev/drawen/blob/main/docs/MEDIA.md)
 - [Paleo media layer](https://github.com/NMogolev/drawen/blob/main/docs/PALEO.md)
+- [Background work and threading](https://github.com/NMogolev/drawen/blob/main/docs/THREADING.md)
 - [Using an AI assistant with Drawen](https://github.com/NMogolev/drawen/blob/main/docs/AI_GUIDE.md)
 
 API documentation is published on [docs.rs/drawen](https://docs.rs/drawen).

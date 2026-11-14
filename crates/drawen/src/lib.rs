@@ -96,6 +96,7 @@ pub use drawen_workspace::{
 pub mod platform {
     pub use drawen_platform::{
         WindowAction, WindowApplication, WindowEvent, WindowOptions, WindowResizeDirection,
+        WindowWaker,
     };
 
     use drawen_ui::{ResizeEdge, WindowCommand};
@@ -124,6 +125,18 @@ pub mod platform {
             }),
         }
     }
+}
+
+/// Worker-thread execution, cancellation, and the UI-thread bridge.
+///
+/// The widget tree stays UI-thread-only. Use this module to run blocking work
+/// on a [`TaskPool`](crate::tasks::TaskPool) and deliver owned results through a
+/// [`UiDispatcher`](crate::tasks::UiDispatcher).
+pub mod tasks {
+    pub use drawen_tasks::{
+        CancellationToken, TaskCancelled, TaskContext, TaskHandle, TaskJoinError, TaskPool,
+        TaskProgress, UiDispatcher, UiSendError, UiSender,
+    };
 }
 
 /// Backend-neutral display-list and text-shaping contracts.
