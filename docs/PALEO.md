@@ -210,14 +210,18 @@ The output device is always opened with the host's default output
 configuration; media is adapted to it rather than the reverse. `AudioOutput`
 owns a fixed ring buffer (250 ms by default, clamped to 20 ms–2 s with a
 1024-frame floor). The application pushes converted frames; the real-time
-callback pops them and converts to the device's sample format. A full ring drops
-the remainder instead of blocking the decoding thread, and `QueueReport` reports
-both counts so a session can throttle.
+callback owns the consumer, pops them, and converts to the device's sample
+format. The render path takes no locks. A full ring drops the remainder instead
+of blocking the decoding thread, and `QueueReport` reports both counts so a
+session can throttle.
 
 `AudioOutput::position` is `base + rendered_frames / sample_rate`. It counts
 frames the device actually consumed, including silence written after an
 underrun, which is why it can drive the media clock while decorated mode is
-paused or occluded. Call `reset(position)` and `PcmConverter::reset_at(position)`
+paused or occluded. `reset(position)` publishes an atomic flush generation and
+sample marker instead of locking the callback; the callback discards audio
+queued before the marker on its next invocation, and `buffered()` already
+excludes it. Call `reset(position)` and `PcmConverter::reset_at(position)`
 together after a seek so the converter drops decoded audio that precedes the
 target keyframe.
 

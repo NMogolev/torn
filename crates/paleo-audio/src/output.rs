@@ -1,10 +1,11 @@
 //! Device audio output built on `cpal`.
 //!
 //! The output owns one SPSC ring buffer. The application pushes interleaved
-//! `f32` frames from the decoding thread; the device callback pops frames and
-//! converts them to the host's sample format. No allocation or locking happens
-//! on the real-time path except a short `try_lock` around the consumer, which
-//! is only contended by [`AudioOutput::reset`] and then falls back to silence.
+//! `f32` frames from the decoding thread; the device callback owns the consumer
+//! end, pops frames, and converts them to the host's sample format. The render
+//! path takes no locks: [`AudioOutput::reset`] publishes a flush generation and
+//! an absolute sample marker, and the callback discards every sample queued up
+//! to that marker on its next invocation.
 
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
@@ -136,8 +137,11 @@ impl QueueReport {
 }
 
 /// State shared with the real-time callback.
+///
+/// The ring's producer stays with [`AudioOutput`]; its consumer lives inside
+/// the callback. Reset is coordinated through the sample counters and the flush
+/// marker below, so the callback never has to take a lock.
 struct Shared {
-    consumer: Mutex<HeapCons<f32>>,
     rendered_frames: AtomicU64,
     underrun_frames: AtomicU64,
     underruns: AtomicU64,
@@ -146,12 +150,19 @@ struct Shared {
     paused: AtomicBool,
     error_count: AtomicU64,
     last_error: Mutex<Option<String>>,
+    /// Samples successfully pushed into the ring over its lifetime.
+    written_samples: AtomicU64,
+    /// Samples the callback has popped over its lifetime, including discards.
+    read_samples: AtomicU64,
+    /// Incremented by [`AudioOutput::reset`] so the callback resets counters.
+    flush_generation: AtomicU64,
+    /// Absolute sample index at which the callback stops discarding.
+    flush_until: AtomicU64,
 }
 
 impl Shared {
-    fn new(consumer: HeapCons<f32>) -> Self {
+    fn new() -> Self {
         Self {
-            consumer: Mutex::new(consumer),
             rendered_frames: AtomicU64::new(0),
             underrun_frames: AtomicU64::new(0),
             underruns: AtomicU64::new(0),
@@ -160,7 +171,18 @@ impl Shared {
             paused: AtomicBool::new(true),
             error_count: AtomicU64::new(0),
             last_error: Mutex::new(None),
+            written_samples: AtomicU64::new(0),
+            read_samples: AtomicU64::new(0),
+            flush_generation: AtomicU64::new(0),
+            flush_until: AtomicU64::new(0),
         }
+    }
+
+    /// Returns how many samples are still waiting to be discarded after a reset.
+    fn pending_flush_samples(&self) -> u64 {
+        self.flush_until
+            .load(Ordering::Acquire)
+            .saturating_sub(self.read_samples.load(Ordering::Acquire))
     }
 }
 
@@ -224,8 +246,8 @@ impl AudioOutput {
             .ok_or_else(|| Error::InvalidFormat("ring capacity overflows".to_owned()))?;
 
         let (producer, consumer) = HeapRb::<f32>::new(capacity_samples).split();
-        let shared = Arc::new(Shared::new(consumer));
-        let stream = build_stream(&device, &config, sample_format, &shared)?;
+        let shared = Arc::new(Shared::new());
+        let stream = build_stream(&device, &config, sample_format, &shared, consumer)?;
         let device = describe(&device)?;
 
         Ok(Self {
@@ -294,9 +316,14 @@ impl AudioOutput {
     }
 
     /// Returns how many frames are waiting in the ring.
+    ///
+    /// Samples that a pending [`Self::reset`] has logically discarded are not
+    /// counted, even while the callback has not drained them yet.
     #[must_use]
     pub fn buffered_frames(&self) -> usize {
-        self.producer.occupied_len() / self.format.channels()
+        let samples = u64::try_from(self.producer.occupied_len()).unwrap_or(u64::MAX);
+        let buffered = samples.saturating_sub(self.shared.pending_flush_samples());
+        usize::try_from(buffered).unwrap_or(usize::MAX) / self.format.channels()
     }
 
     /// Returns how much audio is waiting in the ring.
@@ -404,20 +431,18 @@ impl AudioOutput {
 
     /// Discards queued audio, resets diagnostics, and anchors the device clock.
     ///
-    /// This takes the consumer lock briefly, so it must not be called from the
-    /// real-time callback. The usual call site is a seek while paused.
+    /// This never touches the real-time thread's consumer. It records how many
+    /// samples were queued and bumps a flush generation; the callback discards
+    /// everything up to that marker before outputting again. While the stream is
+    /// paused the discard is deferred until playback resumes, and
+    /// [`Self::buffered_frames`] already excludes the stale samples.
     pub fn reset(&mut self, position: Duration) {
-        let mut consumer = self
-            .shared
-            .consumer
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
-        let mut scratch = [0.0_f32; 1_024];
-        while consumer.pop_slice(&mut scratch) > 0 {}
+        let written = self.shared.written_samples.load(Ordering::Acquire);
+        self.shared.flush_until.store(written, Ordering::Release);
         self.shared.rendered_frames.store(0, Ordering::Relaxed);
         self.shared.underrun_frames.store(0, Ordering::Relaxed);
         self.shared.underruns.store(0, Ordering::Relaxed);
-        drop(consumer);
+        self.shared.flush_generation.fetch_add(1, Ordering::AcqRel);
         self.base_position = position;
         self.dropped_frames = 0;
     }
@@ -451,6 +476,10 @@ impl AudioOutput {
         }
 
         let channels = self.format.channels();
+        self.shared.written_samples.fetch_add(
+            u64::try_from(written).unwrap_or(u64::MAX),
+            Ordering::Relaxed,
+        );
         let written_frames = written / channels;
         let skipped_frames = (samples.len() - written) / channels;
         self.dropped_frames = self
@@ -531,39 +560,45 @@ fn build_stream(
     config: &StreamConfig,
     sample_format: SampleFormat,
     shared: &Arc<Shared>,
+    consumer: HeapCons<f32>,
 ) -> Result<Stream> {
     match sample_format {
-        SampleFormat::I8 => build::<i8>(device, config, shared),
-        SampleFormat::I16 => build::<i16>(device, config, shared),
-        SampleFormat::I24 => build::<cpal::I24>(device, config, shared),
-        SampleFormat::I32 => build::<i32>(device, config, shared),
-        SampleFormat::I64 => build::<i64>(device, config, shared),
-        SampleFormat::U8 => build::<u8>(device, config, shared),
-        SampleFormat::U16 => build::<u16>(device, config, shared),
-        SampleFormat::U24 => build::<cpal::U24>(device, config, shared),
-        SampleFormat::U32 => build::<u32>(device, config, shared),
-        SampleFormat::U64 => build::<u64>(device, config, shared),
-        SampleFormat::F32 => build::<f32>(device, config, shared),
-        SampleFormat::F64 => build::<f64>(device, config, shared),
+        SampleFormat::I8 => build::<i8>(device, config, shared, consumer),
+        SampleFormat::I16 => build::<i16>(device, config, shared, consumer),
+        SampleFormat::I24 => build::<cpal::I24>(device, config, shared, consumer),
+        SampleFormat::I32 => build::<i32>(device, config, shared, consumer),
+        SampleFormat::I64 => build::<i64>(device, config, shared, consumer),
+        SampleFormat::U8 => build::<u8>(device, config, shared, consumer),
+        SampleFormat::U16 => build::<u16>(device, config, shared, consumer),
+        SampleFormat::U24 => build::<cpal::U24>(device, config, shared, consumer),
+        SampleFormat::U32 => build::<u32>(device, config, shared, consumer),
+        SampleFormat::U64 => build::<u64>(device, config, shared, consumer),
+        SampleFormat::F32 => build::<f32>(device, config, shared, consumer),
+        SampleFormat::F64 => build::<f64>(device, config, shared, consumer),
         other => Err(Error::UnsupportedConfig(format!(
             "device sample format {other} is not supported"
         ))),
     }
 }
 
-fn build<T>(device: &Device, config: &StreamConfig, shared: &Arc<Shared>) -> Result<Stream>
+fn build<T>(
+    device: &Device,
+    config: &StreamConfig,
+    shared: &Arc<Shared>,
+    consumer: HeapCons<f32>,
+) -> Result<Stream>
 where
     T: SizedSample + FromSample<f32>,
 {
     let channels = usize::from(config.channels);
     let callback_shared = Arc::clone(shared);
     let error_shared = Arc::clone(shared);
-    let mut scratch = Vec::<f32>::new();
+    let mut state = CallbackState::new(consumer);
     device
         .build_output_stream(
             *config,
             move |output: &mut [T], _: &OutputCallbackInfo| {
-                fill_output(output, channels, &callback_shared, &mut scratch);
+                fill_output(output, channels, &callback_shared, &mut state);
             },
             move |error| record_error(&error_shared, &error),
             None,
@@ -571,7 +606,48 @@ where
         .map_err(|error| Error::Stream(error.to_string()))
 }
 
-fn fill_output<T>(output: &mut [T], channels: usize, shared: &Shared, scratch: &mut Vec<f32>)
+/// Real-time state owned exclusively by the device callback.
+struct CallbackState {
+    consumer: HeapCons<f32>,
+    scratch: Vec<f32>,
+    /// Absolute count of samples this callback has popped.
+    read_samples: u64,
+    /// Last flush generation observed from [`Shared`].
+    generation: u64,
+}
+
+impl CallbackState {
+    fn new(consumer: HeapCons<f32>) -> Self {
+        Self {
+            consumer,
+            scratch: Vec::new(),
+            read_samples: 0,
+            generation: 0,
+        }
+    }
+
+    /// Drops queued samples up to the pending reset marker and clears counters.
+    fn flush(&mut self, shared: &Shared) {
+        let target = shared.flush_until.load(Ordering::Acquire);
+        while self.read_samples < target {
+            let count = self.consumer.pop_slice(&mut self.scratch);
+            if count == 0 {
+                break;
+            }
+            self.read_samples = self
+                .read_samples
+                .saturating_add(u64::try_from(count).unwrap_or(u64::MAX));
+        }
+        shared
+            .read_samples
+            .store(self.read_samples, Ordering::Relaxed);
+        shared.rendered_frames.store(0, Ordering::Relaxed);
+        shared.underrun_frames.store(0, Ordering::Relaxed);
+        shared.underruns.store(0, Ordering::Relaxed);
+    }
+}
+
+fn fill_output<T>(output: &mut [T], channels: usize, shared: &Shared, state: &mut CallbackState)
 where
     T: SizedSample + FromSample<f32>,
 {
@@ -598,27 +674,34 @@ where
         volume
     };
 
-    let Some(mut consumer) = lock_consumer(shared) else {
-        for sample in output.iter_mut() {
-            *sample = silence;
-        }
-        count_frames(shared, frames, frames);
-        return;
-    };
-
     let wanted = frames * channels;
-    scratch.resize(wanted, 0.0);
+    if wanted == 0 {
+        return;
+    }
+    state.scratch.resize(wanted, 0.0);
+
+    let generation = shared.flush_generation.load(Ordering::Acquire);
+    if generation != state.generation {
+        state.generation = generation;
+        state.flush(shared);
+    }
+
     let mut popped = 0;
     while popped < wanted {
-        let count = consumer.pop_slice(&mut scratch[popped..wanted]);
+        let count = state.consumer.pop_slice(&mut state.scratch[popped..wanted]);
         if count == 0 {
             break;
         }
         popped += count;
     }
-    drop(consumer);
+    state.read_samples = state
+        .read_samples
+        .saturating_add(u64::try_from(popped).unwrap_or(u64::MAX));
+    shared
+        .read_samples
+        .store(state.read_samples, Ordering::Relaxed);
 
-    for (sample, value) in output.iter_mut().zip(&scratch[..popped]) {
+    for (sample, value) in output.iter_mut().zip(&state.scratch[..popped]) {
         *sample = T::from_sample((value * gain).clamp(-1.0, 1.0));
     }
     for sample in &mut output[popped..] {
@@ -627,10 +710,6 @@ where
 
     let complete = popped / channels;
     count_frames(shared, frames, frames.saturating_sub(complete));
-}
-
-fn lock_consumer(shared: &Shared) -> Option<std::sync::MutexGuard<'_, HeapCons<f32>>> {
-    shared.consumer.try_lock().ok()
 }
 
 fn count_frames(shared: &Shared, rendered: usize, underrun: usize) {
@@ -681,6 +760,62 @@ mod tests {
 
         let options = AudioOptions::new().with_latency(MAX_LATENCY + Duration::from_secs(1));
         assert_eq!(options.latency(), MAX_LATENCY + Duration::from_secs(1));
+    }
+
+    #[test]
+    fn reset_marker_discards_only_audio_queued_before_it() {
+        let (mut producer, consumer) = HeapRb::<f32>::new(64).split();
+        let shared = Shared::new();
+        let mut state = CallbackState::new(consumer);
+
+        // Audio queued before the reset is stale; audio queued after it must play.
+        assert_eq!(producer.push_slice(&[0.25; 32]), 32);
+        shared.written_samples.store(32, Ordering::Release);
+        shared.flush_until.store(32, Ordering::Release);
+        shared.rendered_frames.store(7, Ordering::Relaxed);
+        shared.flush_generation.fetch_add(1, Ordering::AcqRel);
+
+        assert_eq!(producer.push_slice(&[0.5; 8]), 8);
+        shared.written_samples.store(40, Ordering::Release);
+
+        assert_eq!(shared.pending_flush_samples(), 32);
+
+        state.scratch.resize(8, 0.0);
+        state.flush(&shared);
+
+        assert_eq!(state.read_samples, 32);
+        assert_eq!(shared.pending_flush_samples(), 0);
+        assert_eq!(shared.rendered_frames.load(Ordering::Relaxed), 0);
+        assert_eq!(producer.occupied_len(), 8);
+
+        let mut played = [0.0_f32; 8];
+        assert_eq!(state.consumer.pop_slice(&mut played), 8);
+        assert!(
+            played
+                .iter()
+                .all(|sample| (*sample - 0.5).abs() <= f32::EPSILON)
+        );
+    }
+
+    #[test]
+    fn a_second_reset_extends_the_flush_marker() {
+        let (mut producer, consumer) = HeapRb::<f32>::new(64).split();
+        let shared = Shared::new();
+        let mut state = CallbackState::new(consumer);
+
+        assert_eq!(producer.push_slice(&[0.25; 16]), 16);
+        shared.written_samples.store(16, Ordering::Release);
+        shared.flush_until.store(16, Ordering::Release);
+
+        assert_eq!(producer.push_slice(&[0.5; 16]), 16);
+        shared.written_samples.store(32, Ordering::Release);
+        shared.flush_until.store(32, Ordering::Release);
+
+        state.scratch.resize(4, 0.0);
+        state.flush(&shared);
+
+        assert_eq!(state.read_samples, 32);
+        assert_eq!(producer.occupied_len(), 0);
     }
 
     #[test]
