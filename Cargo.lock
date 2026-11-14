@@ -363,9 +363,9 @@ checksum = "f079e83a288787bcd14a6aea84cee5c87a67c5a3e660c30f557a3d24761b3527"
 
 [[package]]
 name = "clipboard-win"
-version = "5.4.1"
+version = "5.4.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bde03770d3df201d4fb868f2c9c59e66a3e4e2bd06692a0fe701e7103c7e84d4"
+checksum = "052af7878466feccda12ba7a6a67d019d712f296809559b47c12c8cc196d3a9a"
 dependencies = [
  "error-code",
 ]
@@ -577,6 +577,174 @@ name = "dpi"
 version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d8b14ccef22fc6f5a8f4d7d768562a182c04ce9a3b3157b91390b52ddfdf1a76"
+
+[[package]]
+name = "drawen"
+version = "0.1.0"
+dependencies = [
+ "drawen-browser",
+ "drawen-core",
+ "drawen-director",
+ "drawen-platform",
+ "drawen-platform-winit",
+ "drawen-render",
+ "drawen-software",
+ "drawen-ui",
+ "drawen-wgpu",
+ "drawen-widgets",
+ "drawen-workspace",
+]
+
+[[package]]
+name = "drawen-browser"
+version = "0.1.0"
+dependencies = [
+ "drawen-core",
+ "drawen-render",
+ "drawen-servo",
+ "drawen-ui",
+ "drawen-wgpu",
+ "wgpu",
+]
+
+[[package]]
+name = "drawen-core"
+version = "0.1.0"
+
+[[package]]
+name = "drawen-director"
+version = "0.1.0"
+dependencies = [
+ "drawen-platform",
+ "drawen-widgets",
+]
+
+[[package]]
+name = "drawen-platform"
+version = "0.1.0"
+dependencies = [
+ "accesskit",
+ "drawen-core",
+ "drawen-render",
+]
+
+[[package]]
+name = "drawen-platform-winit"
+version = "0.1.0"
+dependencies = [
+ "accesskit",
+ "accesskit_winit",
+ "arboard",
+ "drawen-core",
+ "drawen-platform",
+ "drawen-wgpu",
+ "winit",
+]
+
+[[package]]
+name = "drawen-render"
+version = "0.1.0"
+dependencies = [
+ "drawen-core",
+ "fontdb",
+ "fontdue",
+ "harfrust",
+ "unicode-bidi",
+ "unicode-segmentation",
+]
+
+[[package]]
+name = "drawen-servo"
+version = "0.1.0"
+dependencies = [
+ "drawen-servo-linux",
+ "drawen-servo-macos",
+ "drawen-servo-windows",
+]
+
+[[package]]
+name = "drawen-servo-linux"
+version = "0.1.0"
+dependencies = [
+ "ash",
+ "khronos-egl",
+ "libc",
+ "libloading",
+ "pollster",
+ "wgpu",
+]
+
+[[package]]
+name = "drawen-servo-macos"
+version = "0.1.0"
+dependencies = [
+ "objc2 0.6.4",
+ "objc2-core-foundation",
+ "objc2-io-surface",
+ "objc2-metal 0.3.2",
+ "pollster",
+ "wgpu",
+]
+
+[[package]]
+name = "drawen-servo-windows"
+version = "0.1.0"
+dependencies = [
+ "pollster",
+ "wgpu",
+ "windows",
+]
+
+[[package]]
+name = "drawen-software"
+version = "0.1.0"
+dependencies = [
+ "drawen-core",
+ "drawen-render",
+]
+
+[[package]]
+name = "drawen-ui"
+version = "0.1.0"
+dependencies = [
+ "accesskit",
+ "drawen-core",
+ "drawen-render",
+]
+
+[[package]]
+name = "drawen-wgpu"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "drawen-core",
+ "drawen-render",
+ "pollster",
+ "wgpu",
+]
+
+[[package]]
+name = "drawen-widgets"
+version = "0.1.0"
+dependencies = [
+ "drawen-core",
+ "drawen-render",
+ "drawen-ui",
+ "drawen-workspace",
+ "image",
+ "paleo",
+ "paleo-audio",
+ "paleo-h264",
+ "unicode-segmentation",
+]
+
+[[package]]
+name = "drawen-workspace"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
 
 [[package]]
 name = "equivalent"
@@ -2591,174 +2759,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1d38ac1cf9b95face32296c0a3ede1fdc270627c9d9c02a7274dd6d960dc4d56"
 dependencies = [
  "winnow",
-]
-
-[[package]]
-name = "torn"
-version = "0.1.0"
-dependencies = [
- "torn-browser",
- "torn-core",
- "torn-director",
- "torn-platform",
- "torn-platform-winit",
- "torn-render",
- "torn-software",
- "torn-ui",
- "torn-wgpu",
- "torn-widgets",
- "torn-workspace",
-]
-
-[[package]]
-name = "torn-browser"
-version = "0.1.0"
-dependencies = [
- "torn-core",
- "torn-render",
- "torn-servo",
- "torn-ui",
- "torn-wgpu",
- "wgpu",
-]
-
-[[package]]
-name = "torn-core"
-version = "0.1.0"
-
-[[package]]
-name = "torn-director"
-version = "0.1.0"
-dependencies = [
- "torn-platform",
- "torn-widgets",
-]
-
-[[package]]
-name = "torn-platform"
-version = "0.1.0"
-dependencies = [
- "accesskit",
- "torn-core",
- "torn-render",
-]
-
-[[package]]
-name = "torn-platform-winit"
-version = "0.1.0"
-dependencies = [
- "accesskit",
- "accesskit_winit",
- "arboard",
- "torn-core",
- "torn-platform",
- "torn-wgpu",
- "winit",
-]
-
-[[package]]
-name = "torn-render"
-version = "0.1.0"
-dependencies = [
- "fontdb",
- "fontdue",
- "harfrust",
- "torn-core",
- "unicode-bidi",
- "unicode-segmentation",
-]
-
-[[package]]
-name = "torn-servo"
-version = "0.1.0"
-dependencies = [
- "torn-servo-linux",
- "torn-servo-macos",
- "torn-servo-windows",
-]
-
-[[package]]
-name = "torn-servo-linux"
-version = "0.1.0"
-dependencies = [
- "ash",
- "khronos-egl",
- "libc",
- "libloading",
- "pollster",
- "wgpu",
-]
-
-[[package]]
-name = "torn-servo-macos"
-version = "0.1.0"
-dependencies = [
- "objc2 0.6.4",
- "objc2-core-foundation",
- "objc2-io-surface",
- "objc2-metal 0.3.2",
- "pollster",
- "wgpu",
-]
-
-[[package]]
-name = "torn-servo-windows"
-version = "0.1.0"
-dependencies = [
- "pollster",
- "wgpu",
- "windows",
-]
-
-[[package]]
-name = "torn-software"
-version = "0.1.0"
-dependencies = [
- "torn-core",
- "torn-render",
-]
-
-[[package]]
-name = "torn-ui"
-version = "0.1.0"
-dependencies = [
- "accesskit",
- "torn-core",
- "torn-render",
-]
-
-[[package]]
-name = "torn-wgpu"
-version = "0.1.0"
-dependencies = [
- "bytemuck",
- "pollster",
- "torn-core",
- "torn-render",
- "wgpu",
-]
-
-[[package]]
-name = "torn-widgets"
-version = "0.1.0"
-dependencies = [
- "image",
- "paleo",
- "paleo-audio",
- "paleo-h264",
- "torn-core",
- "torn-render",
- "torn-ui",
- "torn-workspace",
- "unicode-segmentation",
-]
-
-[[package]]
-name = "torn-workspace"
-version = "0.1.0"
-dependencies = [
- "serde",
- "serde_json",
 ]
 
 [[package]]

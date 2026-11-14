@@ -1,11 +1,12 @@
 [package]
 name = "paleo"
-description = "Torn's pure-Rust media layer built from focused container, audio, and video crates"
+description = "Drawen's pure-Rust media layer built from focused container, audio, and video crates"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+readme.workspace = true
 
 [lints]
 workspace = true

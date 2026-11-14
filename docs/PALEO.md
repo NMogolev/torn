@@ -1,7 +1,7 @@
 # Paleo
 
-Paleo is Torn's media layer. It is not a codec library and not a container
-parser: it assembles focused crates behind one streaming API, so Torn can pick
+Paleo is Drawen's media layer. It is not a codec library and not a container
+parser: it assembles focused crates behind one streaming API, so Drawen can pick
 the best implementation for each job instead of depending on a single
 monolithic framework.
 
@@ -20,7 +20,7 @@ file ──► Symphonia demuxer ──┬──► Symphonia audio decoder ─�
 Paleo lives in `crates/paleo`. The H.264 backend lives in `crates/paleo-h264`,
 and the optional audio runtime lives in `crates/paleo-audio`. The `MediaSession`
 contract, the `PaleoSession` and `AudioPaleoSession` adapters, and the widgets
-that present frames live in `torn-widgets`; see [MEDIA.md](MEDIA.md).
+that present frames live in `drawen-widgets`; see [MEDIA.md](MEDIA.md).
 
 ## Why not one framework
 
@@ -29,7 +29,7 @@ The media layer needs four independent things:
 1. container demuxing that streams and seeks;
 2. audio decoding for many codecs;
 3. video decoding for H.264, HEVC, AV1, and VP8/VP9;
-4. encoding when Torn needs to export media.
+4. encoding when Drawen needs to export media.
 
 No single pure-Rust crate is currently best at all four. Symphonia is the de
 facto standard for demuxing and audio decoding: it is widely used, permissively
@@ -95,8 +95,8 @@ Audio codecs: AAC-LC, ALAC, FLAC, MP1/MP2/MP3, Vorbis, PCM, and ADPCM.
 Not yet decodable: HE-AAC and HE-AACv2 (Symphonia marks them unfinished) and
 Opus (recognized by the demuxer, no decoder in Symphonia). A file whose
 selected audio track has no decoder fails to open with
-`Error::UnsupportedCodec`; the file can still be inspected by a future
-video-only session that tolerates missing audio.
+`Error::UnsupportedCodec`; the file can still be inspected by a video-only
+session that tolerates missing audio.
 
 Video: Paleo demuxes H.264, HEVC, AV1, VP8, VP9, MPEG-4 Part 2, and Motion JPEG
 packets. H.264 is decodable through `paleo-h264`; the other codecs still need a
@@ -165,7 +165,7 @@ container layer:
 | --- | --- | --- |
 | H.264 | `paleo-h264` over `rusty_h264-decoder` | implemented: `avcC` bridge, POC reorder, RGBA output |
 | AV1 | `rav1d` | candidate: Rust port of dav1d, low-level API |
-| VP8/VP9 | `libvpx` bindings | candidate: C dependency, needs a per-package `unsafe_code` exception like `torn-servo-*` |
+| VP8/VP9 | `libvpx` bindings | candidate: C dependency, needs a per-package `unsafe_code` exception like `drawen-servo-*` |
 | HEVC | none mature | Symphonia parses `hvcC`; decoding remains open |
 
 Backends are separate crates that convert `VideoPacket` plus `VideoTrackInfo`
@@ -228,7 +228,7 @@ target keyframe.
 The `device` feature is enabled by default and pulls in `cpal` and `ringbuf`.
 `paleo-audio` with `default-features = false` keeps the PCM utilities and links
 no native audio API, so a metadata, preview, or server build stays headless.
-Audio-mastered playback itself lives in `torn-widgets` behind its own `audio`
+Audio-mastered playback itself lives in `drawen-widgets` behind its own `audio`
 feature; see [MEDIA.md](MEDIA.md).
 
 ## Testing
@@ -238,17 +238,17 @@ feature; see [MEDIA.md](MEDIA.md).
 - `cargo test -p paleo-h264` runs unit tests for the `avcC` parser, NAL framing,
   and RGBA conversion.
 - `cargo test -p paleo-audio` runs PCM, channel-map, resampler, and converter
-  tests without touching a device. Setting `TORN_AUDIO_DEVICE_TEST` adds a
+  tests without touching a device. Setting `DRAWEN_AUDIO_DEVICE_TEST` adds a
   short default-output smoke test that starts a stream and checks that the
   position advances.
-- `cargo test -p torn-widgets --features audio` covers `AudioPaleoSession`.
-  Setting `TORN_AUDIO_DEVICE_TEST` as well as `TORN_FFMPEG` adds an end-to-end
+- `cargo test -p drawen-widgets --features audio` covers `AudioPaleoSession`.
+  Setting `DRAWEN_AUDIO_DEVICE_TEST` as well as `DRAWEN_FFMPEG` adds an end-to-end
   test that encodes a one-second clip, plays it through the device, checks that
   the audio clock drives playback, that a hidden window keeps audio running
   while video stops, and that seeking resumes video from the audio clock.
-- `cargo test -p torn-director` covers lifecycle transitions, every visibility
+- `cargo test -p drawen-director` covers lifecycle transitions, every visibility
   policy, last-window close behavior, and applying actions to a `Video`.
-- Setting `TORN_FFMPEG` additionally runs `paleo/tests/ffmpeg_formats.rs` and
+- Setting `DRAWEN_FFMPEG` additionally runs `paleo/tests/ffmpeg_formats.rs` and
   `paleo-h264/tests/decode.rs`. They generate AAC, MP3, FLAC, Vorbis,
   MP4/H.264, and Matroska fixtures with a real FFmpeg, then check track
   selection, audio decoding, packet timestamps, A/V seek, and H.264
@@ -257,12 +257,12 @@ feature; see [MEDIA.md](MEDIA.md).
   The H.264 comparison allows a mean per-channel difference below 1 after
   matching FFmpeg's nearest-neighbour chroma upsampling.
 
-The optional tests follow the existing `torn-widgets` FFmpeg smoke test: no
+The optional tests follow the existing `drawen-widgets` FFmpeg smoke test: no
 system FFmpeg is required for the normal suite.
 
-## Limits and next steps
+## Limits
 
-Not implemented yet:
+Not implemented:
 
 - AV1, VP8/VP9, and HEVC decoding;
 - HE-AAC and Opus decoding;
@@ -279,9 +279,3 @@ Streams with a deeper reorder pattern can raise the depth explicitly.
 Known limits of the audio runtime: playback is fixed at `1x`, decoding,
 conversion, and queueing happen on the calling thread, and device loss is
 reported as an error instead of switching outputs automatically.
-
-Roadmap:
-
-1. AV1 (decode) and VP8/VP9 (decode/encode) backends as separate crates.
-2. Opus and HE-AAC decoder backends; HEVC once a mature pure-Rust decoder
-   exists.

@@ -10,7 +10,7 @@
 //!   device's rate and channel layout;
 //! - [`AudioOutput`] owns the device, a bounded SPSC PCM queue, volume, mute,
 //!   pause, underrun diagnostics, and the playback position that can drive a
-//!   [`MediaClock`](https://docs.rs/torn-widgets/latest/torn_widgets/struct.MediaClock.html).
+//!   [`MediaClock`](https://docs.rs/drawen-widgets/latest/drawen_widgets/struct.MediaClock.html).
 //!
 //! The `device` feature is enabled by default. A metadata-only, server, or test
 //! build can disable default features and use the PCM utilities without linking

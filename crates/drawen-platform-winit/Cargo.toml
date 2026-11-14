@@ -1,0 +1,21 @@
+[package]
+name = "drawen-platform-winit"
+description = "Winit native-window adapter for Drawen"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+accesskit = "0.24"
+accesskit_winit = { version = "0.32", default-features = false, features = ["rwh_06"] }
+arboard = "3.6"
+drawen-core = { version = "0.1.0", path = "../drawen-core" }
+drawen-platform = { version = "0.1.0", path = "../drawen-platform" }
+drawen-wgpu = { version = "0.1.0", path = "../drawen-wgpu" }
+winit = { version = "0.30.13", features = ["rwh_06"] }

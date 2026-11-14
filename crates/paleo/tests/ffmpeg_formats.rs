@@ -1,6 +1,6 @@
 //! Optional integration test for real containers and codecs.
 //!
-//! Set `TORN_FFMPEG` to an `ffmpeg` executable (or install `ffmpeg` on `PATH`)
+//! Set `DRAWEN_FFMPEG` to an `ffmpeg` executable (or install `ffmpeg` on `PATH`)
 //! to generate the fixtures. Without it the test is a no-op so the normal test
 //! suite never depends on an external encoder.
 
@@ -11,7 +11,7 @@ use std::time::Duration;
 use paleo::{AudioCodec, Event, Media, VideoCodec, VideoExtraDataKind};
 
 fn ffmpeg() -> Option<std::ffi::OsString> {
-    std::env::var_os("TORN_FFMPEG").or_else(|| {
+    std::env::var_os("DRAWEN_FFMPEG").or_else(|| {
         Command::new("ffmpeg")
             .arg("-version")
             .output()
@@ -68,7 +68,7 @@ fn decode_all(media: &mut Media) -> (Vec<paleo::AudioBuffer>, Vec<paleo::VideoPa
 #[test]
 fn decodes_generated_media() {
     let Some(ffmpeg) = ffmpeg() else {
-        eprintln!("skipping: set TORN_FFMPEG or install ffmpeg to run this test");
+        eprintln!("skipping: set DRAWEN_FFMPEG or install ffmpeg to run this test");
         return;
     };
 

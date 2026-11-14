@@ -3,22 +3,22 @@ members = [
     "crates/paleo",
     "crates/paleo-audio",
     "crates/paleo-h264",
-    "crates/torn-core",
-    "crates/torn-render",
-    "crates/torn-ui",
-    "crates/torn-widgets",
-    "crates/torn-software",
-    "crates/torn-wgpu",
-    "crates/torn-platform",
-    "crates/torn-platform-winit",
-    "crates/torn-workspace",
-    "crates/torn-director",
-    "crates/torn-servo-windows",
-    "crates/torn-servo-linux",
-    "crates/torn-servo-macos",
-    "crates/torn-servo",
-    "crates/torn-browser",
-    "crates/torn",
+    "crates/drawen-core",
+    "crates/drawen-render",
+    "crates/drawen-ui",
+    "crates/drawen-widgets",
+    "crates/drawen-software",
+    "crates/drawen-wgpu",
+    "crates/drawen-platform",
+    "crates/drawen-platform-winit",
+    "crates/drawen-workspace",
+    "crates/drawen-director",
+    "crates/drawen-servo-windows",
+    "crates/drawen-servo-linux",
+    "crates/drawen-servo-macos",
+    "crates/drawen-servo",
+    "crates/drawen-browser",
+    "crates/drawen",
 ]
 resolver = "3"
 
@@ -26,8 +26,9 @@ resolver = "3"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.88"
-license = "AGPL-3.0-only"
-repository = "https://github.com/NMogolev/torn"
+license = "MIT"
+repository = "https://github.com/NMogolev/drawen"
+readme = "README.md"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

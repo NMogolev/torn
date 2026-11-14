@@ -1,0 +1,20 @@
+[package]
+name = "drawen-browser"
+description = "Browser surface and Servo integration layer for Drawen"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+drawen-core = { version = "0.1.0", path = "../drawen-core" }
+drawen-render = { version = "0.1.0", path = "../drawen-render" }
+drawen-servo = { version = "0.1.0", path = "../drawen-servo" }
+drawen-ui = { version = "0.1.0", path = "../drawen-ui" }
+drawen-wgpu = { version = "0.1.0", path = "../drawen-wgpu" }
+wgpu = "=29.0.4"

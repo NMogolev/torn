@@ -1,6 +1,6 @@
 # Media
 
-Media support in Torn is split into three layers: a timing and scheduling
+Media support in Drawen is split into three layers: a timing and scheduling
 contract, a decode/playback session behind that contract, and widgets that only
 present frames and forward user intent. This document defines the contract and
 the current backends: the out-of-process `FFmpeg` command-line backend, the
@@ -110,7 +110,7 @@ stopping the media:
 
 `Video` forwards both methods and adds `release_session()`, which drops the
 session while keeping the last painted frame. Applications use them through a
-policy layer such as `torn-director`; a widget never decides on its own what a
+policy layer such as `drawen-director`; a widget never decides on its own what a
 hidden window means.
 
 `MediaMetadata` reports the display width and height after rotation, plus the
@@ -146,7 +146,7 @@ The first backend is intentionally out of process:
 - Seeking kills the process and restarts it at the requested position.
 - The decoded size is capped at 1280 pixels by default; rotation swaps the
   reported width and height before scaling.
-- `TORN_FFMPEG` and `TORN_FFPROBE` select the executables. `FfmpegConfig` can
+- `DRAWEN_FFMPEG` and `DRAWEN_FFPROBE` select the executables. `FfmpegConfig` can
   point at a portable build shipped next to the application.
 
 Frame timestamps assigned by the reader are `start + index / frame_rate`. That is
@@ -168,7 +168,7 @@ These are backend limits, not contract limits. A new backend implements
 
 ## Paleo backend
 
-`PaleoSession` (in `torn-widgets`) is the in-process backend. It opens a file
+`PaleoSession` (in `drawen-widgets`) is the in-process backend. It opens a file
 with `paleo::Media`, demuxes video packets with Symphonia, and decodes H.264
 with `paleo_h264::H264Decoder`:
 
@@ -203,7 +203,7 @@ Known limits:
 
 ## Audio-mastered Paleo backend
 
-`AudioPaleoSession` (in `torn-widgets`, behind the `audio` feature) adds the
+`AudioPaleoSession` (in `drawen-widgets`, behind the `audio` feature) adds the
 other half of playback. It decodes audio with Paleo, converts it to the output
 device with `paleo_audio::PcmConverter`, and calls
 `MediaClock::synchronize(output.position())` on every update, so the device is
@@ -216,7 +216,7 @@ Paleo audio ──► PcmConverter ──► AudioOutput ring ──► device
 ```
 
 - `Video::open_paleo_audio(path)` is the convenience entry point; the
-  `torn` facade forwards the same feature as `torn/audio`.
+  `drawen` facade forwards the same feature as `drawen/audio`.
 - The device is opened with its default output configuration and the media is
   adapted to it. A file with no audio track falls back to the wall-clock
   behavior of `PaleoSession`; a file with an audio track needs an output device
@@ -251,7 +251,7 @@ Known limits:
 - audio is refilled from `MediaSession::update`, so sound continues only while
   the application keeps ticking the session. A minimized or fully occluded
   window may stop receiving redraws; a background-playing application must keep
-  a tick source that does not depend on painting. `torn-director` supplies the
+  a tick source that does not depend on painting. `drawen-director` supplies the
   policy and window actions, but the event loop still owns that tick.
 
 ## Lifecycle and presentation policy
@@ -265,7 +265,7 @@ The platform layer reports normalized states instead of prescribing what to do:
 | `Occluded(bool)` | another window or the desktop fully covers the window |
 | `CloseRequested` | the user asked to close the window |
 
-Torn does not assume that audio must stop when video is not visible, and it does
+Drawen does not assume that audio must stop when video is not visible, and it does
 not assume that closing the last window means the application continues. Those
 are application decisions. The intended defaults are:
 
@@ -275,10 +275,10 @@ are application decisions. The intended defaults are:
 - close the last window: exit the application, unless background playback was
   requested explicitly.
 
-`torn-director` packages those policies as an optional crate so applications do
-not reimplement them. It is not part of `torn-widgets`: the widgets stay
-presentation and control only. Enable it through the `torn` facade with the
-`director` feature, or depend on `torn-director` directly:
+`drawen-director` packages those policies as an optional crate so applications do
+not reimplement them. It is not part of `drawen-widgets`: the widgets stay
+presentation and control only. Enable it through the `drawen` facade with the
+`director` feature, or depend on `drawen-director` directly:
 
 ```text
 MediaDirector    owns lifecycle state and converts WindowEvents into actions
@@ -316,22 +316,3 @@ repaints immediately.
 
 In-process and hardware backends are expected to keep the same contract. Their
 value is removing copies and improving seek accuracy, not changing the view API.
-
-## Future work
-
-The next milestones, in order:
-
-1. Explicit buffering, pause-on-underflow, and end-of-stream reporting for
-   network sources.
-2. Subtitle and metadata tracks.
-3. Additional Paleo video backends: AV1, VP8/VP9, and HEVC once a mature
-   pure-Rust decoder exists.
-4. In-process decoding, hardware decode, and GPU external textures without
-   changing `Video` or `MediaSession` callers.
-5. A non-redraw tick source in the windowed examples so `torn-director`
-   background playback keeps refilling audio while no window is painted.
-
-Until then, documentation and one coherent example product are more valuable
-than additional media surface area. That example should exercise media with a
-clear fallback and error state rather than demonstrate every widget in the
-toolkit.

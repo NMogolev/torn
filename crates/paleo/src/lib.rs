@@ -1,4 +1,4 @@
-//! Paleo is Torn's pure-Rust media layer.
+//! Paleo is Drawen's pure-Rust media layer.
 //!
 //! Paleo does not implement containers or codecs itself. It assembles focused
 //! crates behind one streaming API:

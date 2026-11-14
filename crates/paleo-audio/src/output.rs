@@ -869,7 +869,7 @@ mod tests {
 
     #[test]
     fn real_device_smoke_test_is_opt_in() {
-        if std::env::var_os("TORN_AUDIO_DEVICE_TEST").is_none() {
+        if std::env::var_os("DRAWEN_AUDIO_DEVICE_TEST").is_none() {
             return;
         }
 

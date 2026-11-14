@@ -1,17 +1,17 @@
 # Fonts
 
-Torn models fonts the way Qt does: application code describes a **font
+Drawen models fonts the way Qt does: application code describes a **font
 request**, and a `FontDatabase` resolves that request to concrete **font faces**
 at shaping time. Measurement and painting always use the same resolved face, so
 layout and rendering cannot disagree about which font was selected.
 
-The implementation lives in [`torn-render`](../crates/torn-render/src/font.rs);
+The implementation lives in [`drawen-render`](../crates/drawen-render/src/font.rs);
 the environment-level defaults live in
-[`torn-ui`](../crates/torn-ui/src/environment.rs).
+[`drawen-ui`](../crates/drawen-ui/src/environment.rs).
 
 ## Requests and faces
 
-A [`Font`](../crates/torn-render/src/font.rs) is a request, analogous to
+A [`Font`](../crates/drawen-render/src/font.rs) is a request, analogous to
 `QFont`:
 
 | Component | Type | Meaning |
@@ -22,7 +22,7 @@ A [`Font`](../crates/torn-render/src/font.rs) is a request, analogous to
 | Style | `FontStyle` | `Normal`, `Italic`, or `Oblique`. |
 
 ```rust
-use torn::{Font, FontFamily, FontSize, FontStyle, FontWeight};
+use drawen::{Font, FontFamily, FontSize, FontStyle, FontWeight};
 
 let font = Font::new()
     .with_families([
@@ -38,7 +38,7 @@ let font = Font::new()
 A request never guarantees that a family exists. It describes intent; the
 database decides what is actually available.
 
-A [`FontFace`](../crates/torn-render/src/font.rs) is a concrete parsed font
+A [`FontFace`](../crates/drawen-render/src/font.rs) is a concrete parsed font
 resource with a `FontDescriptor` (family, weight, style). Faces expose:
 
 - `family()`, `weight()`, `style()`, and `descriptor()`;
@@ -48,7 +48,7 @@ resource with a `FontDescriptor` (family, weight, style). Faces expose:
 
 ## The font database
 
-[`FontDatabase`](../crates/torn-render/src/font.rs) owns registered faces and
+[`FontDatabase`](../crates/drawen-render/src/font.rs) owns registered faces and
 performs Qt-style matching:
 
 1. For each requested family, in order, choose the face in that family with the
@@ -64,11 +64,11 @@ contains a glyph for the cluster's first printable character wins, consecutive
 clusters using the same face are merged into one run, and `?` is substituted
 only when no face can render the cluster.
 
-The first face added to a database becomes its default. Torn ships with Ubuntu
+The first face added to a database becomes its default. Drawen ships with Ubuntu
 Light registered under the `"Ubuntu"` family at `FontWeight::LIGHT`:
 
 ```rust
-use torn::{FontDatabase, FontFace};
+use drawen::{FontDatabase, FontFace};
 
 let database = FontDatabase::bundled();
 assert_eq!(database.default_face().unwrap().family().as_str(), "Ubuntu");
@@ -78,7 +78,7 @@ Register additional faces explicitly when their family, weight, or style should
 differ from the name embedded in the file:
 
 ```rust
-use torn::{FontDatabase, FontDescriptor, FontFace, FontStyle, FontWeight};
+use drawen::{FontDatabase, FontDescriptor, FontFace, FontStyle, FontWeight};
 
 let mut database = FontDatabase::bundled();
 database.add_font(
@@ -98,10 +98,10 @@ the face exactly.
 directories through `fontdb`; `discover_system_fonts()` adds those faces to an
 existing database while preserving its default. This is the portable
 enumeration path: it does not depend on `winit`, and applications can still
-prefer Torn's deterministic bundled face with `set_default_face`.
+prefer Drawen's deterministic bundled face with `set_default_face`.
 
 ```rust
-use torn::FontDatabase;
+use drawen::FontDatabase;
 
 let database = FontDatabase::load_system_fonts();
 assert!(!database.faces().is_empty());
@@ -115,8 +115,8 @@ records one `GlyphRun` per consecutive sequence of glyphs that share a face and
 size:
 
 ```rust
-use torn::render::{FontdueTextShaper, TextStyle};
-use torn::{Color, Font, FontSize, FontWeight};
+use drawen::render::{FontdueTextShaper, TextStyle};
+use drawen::{Color, Font, FontSize, FontWeight};
 
 let shaper = FontdueTextShaper::ubuntu_light();
 let style = TextStyle::new_with_font(
@@ -126,7 +126,7 @@ let style = TextStyle::new_with_font(
         .with_weight(FontWeight::NORMAL),
     Color::BLACK,
 );
-let layout = shaper.layout("Hello, Torn", &style, None);
+let layout = shaper.layout("Hello, Drawen", &style, None);
 
 for run in layout.glyph_runs() {
     println!("{} {}px", run.font().family(), run.font_size());
@@ -151,13 +151,13 @@ layout cache reports hits, misses, and evictions through
 To install a custom database, build the shaper and give it to the environment:
 
 ```rust
-use torn::{FontdueTextShaper, FontDatabase, UiEnvironment};
+use drawen::{FontdueTextShaper, FontDatabase, UiEnvironment};
 
 let mut database = FontDatabase::bundled();
 // register faces...
 let shaper = FontdueTextShaper::from_database(database);
 
-let mut environment = UiEnvironment::new(torn::LightTheme);
+let mut environment = UiEnvironment::new(drawen::LightTheme);
 environment.set_text_shaper(shaper);
 ```
 
@@ -175,26 +175,26 @@ override:
   theme-derived font.
 - `set_default_font(font)` installs an application-wide default.
 - `clear_default_font()` restores the theme-derived default.
-- `font_for(style)` applies a node's TSS font values on top of the default.
+- `font_for(style)` applies a node's DSS font values on top of the default.
 - `font_from(base, style)` applies them on top of an arbitrary base request.
 - `font_size_for(style)` resolves just the pixel size, including points and DPI.
 
 The `Theme` trait supplies `font_size()`, `font_family()`, `font_weight()`, and
 `font_style()`; its `font()` method combines them into a request. A custom theme
-can therefore change the default family, and TSS `:root` values override the
-theme through `TssTheme`.
+can therefore change the default family, and DSS `:root` values override the
+theme through `DssTheme`.
 
 Standard widgets shape through the environment instead of hardcoding a face.
-`Text::styled(text, style)` defers shaping until layout, so per-node TSS and the
+`Text::styled(text, style)` defers shaping until layout, so per-node DSS and the
 application default font both apply. `Text::wrapping` remains available when a
 widget must use an explicit shaper.
 
-## TSS font properties
+## DSS font properties
 
-TSS supports `font-family`, `font-size`, `font-weight`, and `font-style`. All
+DSS supports `font-family`, `font-size`, `font-weight`, and `font-style`. All
 four inherit from the parent node:
 
-```tss
+```dss
 :root {
     font-family: "Inter", "Noto Sans", sans-serif;
     font-size: 14px;
@@ -211,7 +211,7 @@ strong {
 }
 ```
 
-See [`TSS.md`](TSS.md#supported-properties) for the accepted value grammar.
+See [`DSS.md`](DSS.md#supported-properties) for the accepted value grammar.
 
 ## Current limits
 
@@ -220,5 +220,5 @@ grapheme-aware fallback, newlines, width wrapping, and system font enumeration.
 It does not implement vertical writing modes, synthetic bold or oblique, color
 fonts, or font matching by script metadata; fallback is coverage-driven per
 grapheme. Paragraph and line breaking use a grapheme/whitespace heuristic rather
-than the full Unicode line-breaking algorithm. These are deliberate follow-ups
-rather than silent behavior.
+than the full Unicode line-breaking algorithm. These are deliberate boundaries
+of the current text contract.

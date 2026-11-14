@@ -1,14 +1,14 @@
 # Custom Window Chrome
 
-Torn can draw its own title bar and window controls instead of relying on the
+Drawen can draw its own title bar and window controls instead of relying on the
 operating system frame. The window remains a normal native window: it can still
 be moved, resized, minimized, maximized, made fullscreen, and closed.
 
 The feature is built from three layers:
 
-- `torn-platform` describes window options, window events, and window actions.
-- `torn-ui` carries widget requests as `WindowCommand` intents.
-- `torn-widgets` provides `TitleBar` and `WindowFrame` for painting and input.
+- `drawen-platform` describes window options, window events, and window actions.
+- `drawen-ui` carries widget requests as `WindowCommand` intents.
+- `drawen-widgets` provides `TitleBar` and `WindowFrame` for painting and input.
 
 Widgets never call a native windowing API directly. They request an intent, the
 host application drains it, and the host maps it to its platform adapter. This
@@ -48,7 +48,7 @@ ignored. Edge and corner presses request a native resize before the event
 reaches the title bar or content.
 
 ```rust
-use torn::{
+use drawen::{
     Border, Color, TitleBar, TitleBarStyle, WindowChromeState, WindowControl,
     WindowFrame,
 };
@@ -151,7 +151,7 @@ runtime.append_child(title_bar, my_tabs).expect("title bar exists");
 ## 3. Forward window intents
 
 After dispatching an input event, drain the widget requests and translate them
-with `torn::platform::action_for`:
+with `drawen::platform::action_for`:
 
 ```rust
 WindowEvent::Input(event) => {
@@ -211,12 +211,12 @@ the current monitor without changing video mode.
 
 ## 5. Complete example
 
-[`crates/torn/examples/custom_titlebar.rs`](../crates/torn/examples/custom_titlebar.rs)
+[`crates/drawen/examples/custom_titlebar.rs`](../crates/drawen/examples/custom_titlebar.rs)
 combines `WindowFrame`, `TitleBar`, `WindowChromeState`, `Switch`, `Badge`,
 `Divider`, and `Card` in a runnable application:
 
 ```text
-cargo run -p torn --example custom_titlebar
+cargo run -p drawen --example custom_titlebar
 ```
 
 The example also shows the full event loop: layout on resize, state updates on

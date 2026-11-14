@@ -1,114 +1,118 @@
-# Torn
+# Tutorial
 
-Этот документ описывает API, который уже реализован в Torn. Приложение строит
-дерево виджетов, выполняет раскладку, записывает команды отрисовки в
-`DisplayList`, передаёт события ввода и может экспортировать результат рендера
-в PNG или показать его в нативном окне.
+This document walks through the API that is implemented in Drawen today. An
+application builds a widget tree, lays it out, records paint commands in a
+`DisplayList`, dispatches input events, and can either export the result as a
+PNG or present it in a native window.
 
-Полностью запускаемый исходник находится в
-[`crates/torn/examples/headless_tutorial.rs`](../crates/torn/examples/headless_tutorial.rs).
+The complete runnable headless source is
+[`crates/drawen/examples/headless_tutorial.rs`](../crates/drawen/examples/headless_tutorial.rs).
 
-## Быстрый запуск
+## Quick start
 
-В корне репозитория выполните:
-
-```text
-cargo run -p torn --example headless_tutorial
-```
-
-Пример напечатает число обработанных нажатий и создаст
-`target/torn-tutorial.png`.
-
-Для запуска нативного окна на Windows или Linux используйте:
+From the repository root:
 
 ```text
-cargo run -p torn --example hello_torn
+cargo run -p drawen --example headless_tutorial
 ```
 
-Пример построен на `winit`: на Windows используется Win32, на Linux — доступный
-сервер X11 или Wayland. Нативное окно остаётся необязательным: базовые crates и
-headless-тесты не зависят от платформенного кода.
+The example prints the number of completed clicks and writes
+`target/drawen-tutorial.png`.
 
-Для окна с собственной верхней панелью и кнопками свернуть/развернуть/закрыть:
+For a native window on Windows or Linux:
 
 ```text
-cargo run -p torn --example custom_titlebar
+cargo run -p drawen --example hello_drawen
 ```
 
-Подробности о настройке и платформенных различиях — в
-[WINDOW_CHROME.md](WINDOW_CHROME.md).
+The windowed example is built on `winit`: Win32 on Windows, and X11 or Wayland
+on Linux. A native window remains optional. The core crates and headless tests
+do not depend on platform code.
 
-## 1. Импорты через единый фасад
+For a window with custom chrome and minimize, maximize, and close controls:
 
-Потребительский код зависит от crate `torn`, а не от `torn-core`, `torn-ui` или
-`torn-widgets` по отдельности:
+```text
+cargo run -p drawen --example custom_titlebar
+```
+
+See [WINDOW_CHROME.md](WINDOW_CHROME.md) for the title-bar contract and
+platform differences.
+
+## 1. Imports through the facade
+
+Application code normally depends on the `drawen` crate, not on `drawen-core`,
+`drawen-ui`, or `drawen-widgets` individually:
 
 ```rust
-use torn::{
-    Box as TornBox, Button, Color, Constraints, LightTheme, Point, Size, Text, UiEnvironment,
+use drawen::{
+    Box as DrawenBox, Button, Color, Constraints, LightTheme, Point, Size, Text, UiEnvironment,
     UiRuntime,
     render::{DisplayList, FontdueTextShaper, PaintContext, TextStyle},
     software::{PixelBuffer, SoftwareRenderer},
 };
 ```
 
-Основные типы (`Box`, `Button`, `Text`, `Row`, `Column`, `UiRuntime`,
-`Constraints`) реэкспортируются из корня. Более низкоуровневые контракты лежат
-в следующих модулях:
+The main types (`Box`, `Button`, `Text`, `Row`, `Column`, `UiRuntime`,
+`Constraints`) are re-exported from the crate root. Lower-level contracts live
+in modules:
 
-- `torn::render` — `DisplayList`, `PaintContext`, `TextLayout`, `TextShaper`;
-- `torn::software` — `SoftwareRenderer`, `PixelBuffer` и PNG-экспорт.
+- `drawen::render` — `DisplayList`, `PaintContext`, `TextLayout`, `TextShaper`,
+  and fonts;
+- `drawen::software` — `SoftwareRenderer`, `PixelBuffer`, and PNG export;
+- `drawen::gpu` — the `wgpu` display-list renderer;
+- `drawen::platform` — native-window contracts and intent translation;
+- `drawen::browser` — Servo shared-texture surfaces, where supported.
 
-## 2. Текст
+## 2. Text
 
-`Text` принимает не строку, а заранее подготовленный `TextLayout`. Базовый
-детерминированный шейпер работает с базой шрифтов и поддерживает семейства,
-насыщенность, наклон и fallback:
+`Text` takes a prepared `TextLayout`, not a raw string. The deterministic
+bundled shaper works with a font database and supports families, weights, styles,
+fallback, complex shaping, and bidirectional text:
 
 ```rust
-use torn::{Color, Font, FontSize, FontWeight};
-use torn::render::{FontdueTextShaper, TextStyle};
+use drawen::{Color, Font, FontSize, FontWeight};
+use drawen::render::{FontdueTextShaper, TextStyle};
 
 let font = Font::new()
     .with_family("Ubuntu")
     .with_size(FontSize::pixels(16.0))
     .with_weight(FontWeight::LIGHT);
 let label = Text::new(FontdueTextShaper::ubuntu_light().layout(
-    "Нажмите кнопку",
+    "Click the button",
     &TextStyle::new_with_font(font, Color::BLACK),
     None,
 ));
 ```
 
-Это сознательное разделение ответственности: шейпер измеряет и подготавливает
-текст, а виджет использует уже известный размер в layout. `TextLayout` хранит
-исходный UTF-8 текст, font face, glyph runs, baseline и метрики строк, поэтому
-измерение и отрисовка используют одни и те же данные.
+Shaping and painting are separate responsibilities: the shaper measures and
+prepares the text, and the widget uses the known size during layout.
+`TextLayout` stores the source UTF-8 text, the resolved faces, glyph runs,
+baselines, and line metrics, so measurement and painting use the same data.
 
-Если текст должен учитывать шрифт приложения и TSS-свойства узла, используйте
-`Text::styled` — виджет отложит shaping до layout и возьмёт шейпер из
-`UiEnvironment`:
+When text should follow the application font and the node's DSS properties, use
+`Text::styled`. The widget defers shaping until layout and takes the shaper from
+the `UiEnvironment`:
 
 ```rust
-let label = Text::styled("Нажмите кнопку", TextStyle::new(16.0, Color::BLACK));
+let label = Text::styled("Click the button", TextStyle::new(16.0, Color::BLACK));
 ```
 
-`UiEnvironment::default_font()` играет роль `QApplication::font()`, а
-`font_for(&style)` накладывает на него `font-family`, `font-size`,
-`font-weight` и `font-style` конкретного узла. Подробности модели запроса и
-подбора face описаны в [`FONTS.md`](FONTS.md).
+`UiEnvironment::default_font()` plays the role of `QApplication::font()`, and
+`font_for(&style)` applies the node's `font-family`, `font-size`,
+`font-weight`, and `font-style`. See [FONTS.md](FONTS.md) for the request/face
+model and fallback rules.
 
-`SoftwareRenderer` растеризует bitmap glyphs с alpha coverage и учитывает
-активный прямоугольник clip. Базовый шейпер поддерживает `\n`, wrapping по
-ширине, GPOS-кернинг пар соседних глифов и посимвольный fallback между
-зарегистрированными шрифтами; сложное OpenType shaping и bidi остаются
-следующим этапом.
+`SoftwareRenderer` rasterizes glyph coverage and respects the active clip
+rectangle. The bundled text stack performs HarfRust OpenType shaping, kerning,
+ligatures, mark positioning, bidirectional reordering, grapheme-aware font
+fallback, newline handling, width wrapping, caret hit testing, and selection
+geometry.
 
-## 3. Button и Box
+## 3. Buttons and boxes
 
-`UiRuntime` владеет деревом виджетов. `Button` добавляет отступ 8 px с каждой
-стороны вокруг своего единственного дочернего узла и обрабатывает primary
-pointer events:
+`UiRuntime` owns the widget tree. `Button` is a clickable single-child control.
+It insets its child by the theme's control padding and handles primary pointer
+events and keyboard activation:
 
 ```rust
 let mut button = Button::new();
@@ -116,28 +120,27 @@ button.set_backgrounds(
     Color::rgba8(180, 220, 255, 255),
     Color::rgba8(120, 180, 230, 255),
 );
-button.set_on_click(|| println!("Нажато"));
+let subscription = button.activated().subscribe(|()| println!("Clicked"));
 ```
 
-На текущем этапе коллбек вызывается по событию PointerDown основной кнопки. 
-PointerUp сбрасывает визуальное состояние pressed. 
-Захват указателя и проверка того, что отпускание произошло в пределах кнопки,
-будут добавлены позже вместе с полноценной событийной моделью.
+`activated()` returns a typed `Signal<()>`. The click completes on `PointerUp`
+inside the button, and the button captures the pointer so a drag that starts
+inside it keeps receiving events. Keep the returned `Subscription` alive for as
+long as the handler should fire.
 
-
-`Box` похож на минимальный `div`: может содержать одного потомка и рисовать фон.
-Связи parent/child создаются через runtime; внешний `Box` в примере задаёт
-белый холст:
+`Box` is closer to a minimal `div`: it can contain one child and paint a
+background. The runtime creates parent/child links; the outer `Box` in the
+example provides a white canvas:
 
 ```rust
-let mut root = TornBox::new();
+let mut root = DrawenBox::new();
 root.set_background(Some(Color::WHITE));
 ```
 
-## 4. Layout и отрисовка
+## 4. Layout and painting
 
-`UiRuntime` владеет корневым виджетом. Перед обработкой событий или отрисовкой
-нужно вызвать `layout`:
+`UiRuntime` owns the root widget. Call `layout` before dispatching events or
+painting:
 
 ```rust
 let mut runtime = UiRuntime::with_environment(root, UiEnvironment::new(LightTheme));
@@ -150,32 +153,33 @@ let mut display_list = DisplayList::new();
 runtime.paint(&mut PaintContext::new(&mut display_list))?;
 ```
 
-`UiEnvironment` принадлежит runtime и доступен каждому виджету во время layout
-и paint. В нём находятся theme, scale factor, locale и, при необходимости,
-`TextShaper`. Обычная `Button` берёт normal и pressed цвета из `Theme`; вызов
-`set_backgrounds` по-прежнему задаёт явное локальное переопределение. Для
-стандартной светлой палитры `UiRuntime::new(root)` остаётся сокращением.
+`UiEnvironment` belongs to the runtime and is available to every widget during
+layout and paint. It contains the theme, scale factor, locale, the default font,
+and the text shaper. A standard `Button` resolves its normal and pressed colors
+from the `Theme`; `set_backgrounds` remains a local override. For the standard
+light palette, `UiRuntime::new(root)` is a shorthand for a runtime with the
+default environment.
 
-`Constraints::tight(canvas)` задаёт корню точный размер холста. У `Box` ребёнок
-остаётся в левом верхнем углу, но фон растягивается на весь итоговый размер.
+`Constraints::tight(canvas)` gives the root an exact canvas size. A `Box` keeps
+its child at the top-left corner but stretches its background to the final size.
 
-Порядок фрейма сейчас такой:
+The frame order is:
 
 ```text
-состояние виджета -> layout -> InputEvent -> paint -> DisplayList -> renderer
+widget state -> layout -> InputEvent -> paint -> DisplayList -> renderer
 ```
 
-Если состояние виджета изменилось через `UiRuntime::root_mut()`, предыдущая
-раскладка становится недействительной; перед следующим `paint` и
-`dispatch_event` снова вызовите `layout`.
+If application code changes widget state through `UiRuntime::root_mut()` or
+another mutable accessor, the retained layout is invalidated automatically. Call
+`layout` again before the next `paint` or `dispatch_event`.
 
-## 5. Передача клика
+## 5. Dispatching a click
 
-События имеют координаты относительно корня. Рантайм выполняет hit-test и
-передаёт виджету локальные координаты:
+Events use coordinates relative to the root. The runtime performs hit testing and
+passes local coordinates to each widget:
 
 ```rust
-use torn::{
+use drawen::{
     InputEvent, Modifiers, Point, PointerButton, PointerButtons, PointerEvent, PointerId,
 };
 
@@ -191,19 +195,19 @@ let result = runtime.dispatch_event(&event);
 assert!(result.is_handled());
 ```
 
-Маршрутизатор проводит событие через фазы `capture → target → bubble`; в каждой
-фазе координаты указателя и колеса локальны для текущего виджета. `EventContext`
-может остановить распространение, запросить фокус, захватить указатель и запросить
-новый кадр. Захваченный указатель продолжает доставлять move/up-события исходному
-виджету за пределами его bounds; `KeyDown`, `KeyUp` и `TextInput` направляются
-виджету с фокусом.
+The router runs every event through `capture -> target -> bubble`. Pointer and
+wheel coordinates are local to the current widget in each phase.
+`EventContext` can stop propagation, request focus, capture a pointer, and request
+a new frame. A captured pointer keeps delivering move and up events to the
+original widget outside its bounds. `KeyDown`, `KeyUp`, and `TextInput` are
+routed to the focused widget.
 
-## 6. Diagnostics вместо неясного падения
+## 6. Diagnostics instead of opaque failures
 
-`UiRuntime` изолирует panic в пользовательских методах `Widget::layout`,
-`Widget::paint` и `Widget::handle_event`. Вместо распространения panic наружу
-`layout` и `paint` возвращают `UiRuntimeError::WidgetPanicked`, а runtime
-сохраняет структурированный `Diagnostic`:
+`UiRuntime` isolates panics in application implementations of `Widget::layout`,
+`Widget::paint`, and `Widget::handle_event`. Instead of propagating a panic,
+`layout` and `paint` return `UiRuntimeError::WidgetPanicked`, and the runtime
+retains a structured `Diagnostic`:
 
 ```rust
 match runtime.layout(Constraints::tight(canvas)?) {
@@ -217,40 +221,48 @@ match runtime.layout(Constraints::tight(canvas)?) {
 }
 ```
 
-По умолчанию diagnostics собираются внутри runtime. Чтобы одновременно
-пересылать их в собственный логгер, установите reporter:
+Diagnostics are collected inside the runtime by default. To forward them to an
+application logger at the same time, install a reporter:
 
 ```rust
-runtime.set_diagnostic_reporter(|diagnostic: &torn::Diagnostic| {
+runtime.set_diagnostic_reporter(|diagnostic: &drawen::Diagnostic| {
     eprintln!("{diagnostic}");
 });
 ```
 
-В строгих тестах reporter `PanicOnDiagnostic` превращает любую diagnostic в
-панику. Это позволяет не пропустить ошибку разработчика в CI:
+In strict tests, the `PanicOnDiagnostic` reporter turns any diagnostic into a
+panic, so a CI job does not miss a framework error:
 
 ```rust
-runtime.set_diagnostic_reporter(torn::PanicOnDiagnostic);
+runtime.set_diagnostic_reporter(drawen::PanicOnDiagnostic);
 ```
 
-`SoftwareRenderer` сохраняет обычный `Result`, но имеет
-`render_with_diagnostics`. Он сообщает об ошибках display list, а также выдаёт
-warning, если пропускает `DrawText` из-за пока отсутствующей растеризации
-глифов:
+`SoftwareRenderer` keeps a regular `Result` API and also provides
+`render_with_diagnostics`. It reports display-list errors and warns when it
+cannot paint a command:
 
 ```rust
 let mut diagnostics = Vec::new();
 SoftwareRenderer.render_with_diagnostics(&display_list, &mut pixels, &mut diagnostics)?;
 ```
 
-## 7. Рендер в PNG
+## 7. Rendering to PNG
 
-`SoftwareRenderer` выполняет команды `FillRect`, clip-операции и source-over
-композицию в `PixelBuffer`. Затем `PixelBuffer::write_png` создаёт
-детерминированный RGBA PNG:
+`SoftwareRenderer` executes `FillRect`, rounded surfaces, borders, clip
+operations, transforms, rasterized text, and source-over composition into a
+`PixelBuffer`. `PixelBuffer::write_png` then writes a deterministic RGBA PNG:
 
 ```rust
 let mut pixels = PixelBuffer::new(320, 180)?;
 SoftwareRenderer.render(&display_list, &mut pixels)?;
-pixels.write_png("target/torn-tutorial.png")?;
+pixels.write_png("target/drawen-tutorial.png")?;
 ```
+
+## Further reading
+
+- [DSS](DSS.md) for stylesheets, themes, and per-node styling.
+- [Fonts](FONTS.md) for font requests, fallback, shaping, and system fonts.
+- [Window chrome](WINDOW_CHROME.md) for custom title bars and native window
+  intents.
+- [Docking](DOCKING.md) for persisted workspaces and MDI documents.
+- [Media](MEDIA.md) and [Paleo](PALEO.md) for video and audio playback.

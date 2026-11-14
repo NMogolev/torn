@@ -1,0 +1,13 @@
+[package]
+name = "drawen-core"
+description = "Core data types for the Drawen UI toolkit"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+
+[lints]
+workspace = true
+

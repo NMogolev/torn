@@ -1,0 +1,28 @@
+[package]
+name = "drawen-widgets"
+description = "Standard widgets for Drawen"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+default = []
+# Enables AudioPaleoSession and links the cpal audio output backend.
+audio = ["dep:paleo-audio"]
+
+[dependencies]
+image = { version = "0.25", default-features = false, features = ["gif"] }
+paleo = { version = "0.1.0", path = "../paleo" }
+paleo-audio = { version = "0.1.0", path = "../paleo-audio", optional = true }
+paleo-h264 = { version = "0.1.0", path = "../paleo-h264" }
+drawen-core = { version = "0.1.0", path = "../drawen-core" }
+drawen-render = { version = "0.1.0", path = "../drawen-render" }
+drawen-ui = { version = "0.1.0", path = "../drawen-ui" }
+drawen-workspace = { version = "0.1.0", path = "../drawen-workspace" }
+unicode-segmentation = "1.12"

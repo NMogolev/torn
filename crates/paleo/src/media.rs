@@ -315,7 +315,7 @@ impl Media {
     /// Returns the next decoded audio block, video packet, or end marker.
     ///
     /// Packets from unselected tracks are skipped. A packet that the audio
-    /// decoder rejects is dropped; [`MAX_DECODE_FAILURES`] consecutive failures
+    /// decoder rejects is dropped; `MAX_DECODE_FAILURES` consecutive failures
     /// abort playback with [`Error::Decode`].
     ///
     /// # Errors

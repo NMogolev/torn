@@ -1,0 +1,16 @@
+[package]
+name = "drawen-director"
+description = "Optional runtime orchestration for Drawen media playback"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+drawen-platform = { version = "0.1.0", path = "../drawen-platform" }
+drawen-widgets = { version = "0.1.0", path = "../drawen-widgets" }

@@ -1,0 +1,21 @@
+[package]
+name = "drawen-servo"
+description = "Platform selection facade for Drawen's Servo shared-texture interop"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+
+[lints]
+workspace = true
+
+[target.'cfg(windows)'.dependencies]
+drawen-servo-windows = { version = "0.1.0", path = "../drawen-servo-windows" }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+drawen-servo-linux = { version = "0.1.0", path = "../drawen-servo-linux" }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+drawen-servo-macos = { version = "0.1.0", path = "../drawen-servo-macos" }

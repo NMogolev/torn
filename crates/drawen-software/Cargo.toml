@@ -1,0 +1,16 @@
+[package]
+name = "drawen-software"
+description = "Deterministic software renderer and test support for Drawen"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+drawen-core = { version = "0.1.0", path = "../drawen-core" }
+drawen-render = { version = "0.1.0", path = "../drawen-render" }

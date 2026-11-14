@@ -6,12 +6,13 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+readme.workspace = true
 
 [lints]
 workspace = true
 
 [dependencies]
-paleo = { path = "../paleo" }
+paleo = { version = "0.1.0", path = "../paleo" }
 # Pin the decoder exactly: its streaming API is young and the packet bridge in
 # this crate is written against this release.
 rusty_h264-common = { version = "=0.17.2", default-features = false, features = [

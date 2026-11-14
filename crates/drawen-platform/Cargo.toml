@@ -1,0 +1,17 @@
+[package]
+name = "drawen-platform"
+description = "Platform-independent window contracts for Drawen"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+accesskit = "0.24"
+drawen-core = { version = "0.1.0", path = "../drawen-core" }
+drawen-render = { version = "0.1.0", path = "../drawen-render" }

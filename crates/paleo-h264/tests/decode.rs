@@ -1,6 +1,6 @@
 //! Optional end-to-end test against real H.264 media.
 //!
-//! Set `TORN_FFMPEG` to an `ffmpeg` executable (or install `ffmpeg` on
+//! Set `DRAWEN_FFMPEG` to an `ffmpeg` executable (or install `ffmpeg` on
 //! `PATH`) to run it. Without it the test is a no-op, so the normal suite
 //! never depends on an external encoder.
 
@@ -18,7 +18,7 @@ const HEIGHT: usize = 240;
 const FRAMES: usize = 50;
 
 fn ffmpeg() -> Option<std::ffi::OsString> {
-    std::env::var_os("TORN_FFMPEG").or_else(|| {
+    std::env::var_os("DRAWEN_FFMPEG").or_else(|| {
         Command::new("ffmpeg")
             .arg("-version")
             .output()
@@ -120,7 +120,7 @@ fn mean_absolute_difference(actual: &[u8], expected: &[u8]) -> f64 {
 #[test]
 fn decodes_generated_clip() {
     let Some(ffmpeg) = ffmpeg() else {
-        eprintln!("skipping: set TORN_FFMPEG or install ffmpeg to run this test");
+        eprintln!("skipping: set DRAWEN_FFMPEG or install ffmpeg to run this test");
         return;
     };
     let clip = std::env::temp_dir().join(format!("paleo-h264-{}.mp4", std::process::id()));
@@ -161,7 +161,7 @@ fn decodes_generated_clip() {
 #[test]
 fn decodes_small_frames_with_start_code_like_lengths() {
     let Some(ffmpeg) = ffmpeg() else {
-        eprintln!("skipping: set TORN_FFMPEG or install ffmpeg to run this test");
+        eprintln!("skipping: set DRAWEN_FFMPEG or install ffmpeg to run this test");
         return;
     };
     let clip = std::env::temp_dir().join(format!("paleo-h264-small-{}.mp4", std::process::id()));
@@ -183,7 +183,7 @@ fn decodes_small_frames_with_start_code_like_lengths() {
 #[test]
 fn decodes_hierarchical_b_frames() {
     let Some(ffmpeg) = ffmpeg() else {
-        eprintln!("skipping: set TORN_FFMPEG or install ffmpeg to run this test");
+        eprintln!("skipping: set DRAWEN_FFMPEG or install ffmpeg to run this test");
         return;
     };
     let clip = std::env::temp_dir().join(format!("paleo-h264-pyramid-{}.mp4", std::process::id()));
@@ -211,7 +211,7 @@ fn decodes_hierarchical_b_frames() {
 #[test]
 fn seek_keyframe_lands_on_the_preceding_idr() {
     let Some(ffmpeg) = ffmpeg() else {
-        eprintln!("skipping: set TORN_FFMPEG or install ffmpeg to run this test");
+        eprintln!("skipping: set DRAWEN_FFMPEG or install ffmpeg to run this test");
         return;
     };
     let clip = std::env::temp_dir().join(format!("paleo-h264-keyseek-{}.mp4", std::process::id()));
@@ -284,7 +284,7 @@ fn assert_matches_ffmpeg(
 #[test]
 fn resumes_at_a_keyframe_after_reset() {
     let Some(ffmpeg) = ffmpeg() else {
-        eprintln!("skipping: set TORN_FFMPEG or install ffmpeg to run this test");
+        eprintln!("skipping: set DRAWEN_FFMPEG or install ffmpeg to run this test");
         return;
     };
     let clip = std::env::temp_dir().join(format!("paleo-h264-seek-{}.mp4", std::process::id()));

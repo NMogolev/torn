@@ -2,15 +2,15 @@
 
 ## Goal
 
-Torn should support the practical desktop workflow associated with wxAUI:
-panels can be docked to an edge, tabbed, split, floated, hidden, and restored
-between launches. Documents should also have an MDI-like Qt presentation: a
-central tabbed document area by default, with an optional bounded free-form
-child-window mode for applications that need it.
+Drawen supports the practical desktop workflow associated with wxAUI: panels can
+be docked to an edge, tabbed, split, floated, hidden, and restored between
+launches. Documents also have an MDI-like Qt presentation: a central tabbed
+document area by default, with an optional bounded free-form child-window mode
+for applications that need it.
 
-This is a later desktop-workspace feature, not a replacement for the normal
-retained widget tree. It depends on a native window adapter, complete focus and
-pointer capture, clipping, keyboard routing, and drag interaction.
+The workspace is an application-level layer on top of the retained widget tree.
+It relies on the native window adapter, focus and pointer capture, clipping,
+keyboard routing, and drag interaction.
 
 ## Public model
 
@@ -79,9 +79,9 @@ persistence writes.
 
 ## Persistence contract
 
-The initial on-disk representation should be a versioned, human-readable JSON
-document. Serialization support belongs in the workspace/style layer and can
-use an optional `serde` feature; the core widget runtime stays dependency-free.
+The on-disk representation is a versioned, human-readable JSON document.
+Serialization lives in `drawen-workspace` and uses `serde` behind the default
+`serde` feature; the core widget runtime stays dependency-free.
 
 ```text
 WorkspaceLayout {
@@ -111,7 +111,7 @@ Restoring follows these rules:
    hook shared by restoration and JSON decoding. Newer, unsupported versions
    are not overwritten automatically.
 
-The application owns file I/O and its configuration path. Torn provides the
+The application owns file I/O and its configuration path. Drawen provides the
 versioned value type plus serialization helpers, which keeps persistence policy
 (autosave timing, profiles, backup files, and recovery) under application
 control.
@@ -119,10 +119,9 @@ control.
 ## Styling
 
 Docking chrome consumes semantic values from `Theme`: surface/background,
-foreground, accent, spacing, font size, and corner radius. It must not depend
-on a stylesheet parser. The future `.tss` layer resolves a cascade into the
-same typed values, so adopting CSS-like styles later does not alter layout or
-persistence data.
+foreground, accent, spacing, font size, and corner radius. It does not depend on
+a stylesheet parser. The `.dss` layer resolves a cascade into the same typed
+values, so adopting CSS-like styles does not alter layout or persistence data.
 
 Custom window chrome has its own semantic values: `title_bar_background`,
 `title_bar_foreground`, `title_bar_hover_background`, `muted_foreground`, and
