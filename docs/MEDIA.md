@@ -302,6 +302,48 @@ the application opts into background playback with
 window becomes visible again, so a presenter that skipped frames while hidden
 repaints immediately.
 
+### Wiring background playback
+
+The snippet below requires the `audio` and `director` facade features. Enable
+the features that provide the session and the policy:
+
+```text
+cargo add drawen --features audio,director
+```
+
+Keep one director per presented window and forward lifecycle events before the
+application's own handling:
+
+```rust
+use drawen::{
+    MediaDirector, Video, VisibilityPolicy,
+    platform::{WindowAction, WindowEvent},
+};
+
+let mut director = MediaDirector::new()
+    .with_policy(VisibilityPolicy::PauseVideoKeepAudio)
+    .with_background_playback(true);
+
+fn handle(
+    director: &mut MediaDirector,
+    video: &mut Video,
+    event: &WindowEvent,
+) -> WindowAction {
+    let Some(action) = director.window_event(event) else {
+        return WindowAction::None;
+    };
+    director.apply(action, video);
+    action.window()
+}
+```
+
+`with_background_playback(true)` is the explicit opt-in that keeps the process
+alive after the last window closes. Without it, the director returns
+`WindowAction::Exit`. The director does not tick audio: a hidden window may stop
+receiving redraws because the platform has nothing to present, so the
+application must keep a frame/tick source and call
+`MediaSession::update` while background audio should continue.
+
 ## Adding a backend
 
 1. Probe or negotiate metadata before playback and build a `MediaClock` with the

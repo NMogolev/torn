@@ -22,12 +22,35 @@ The example prints the number of completed clicks and writes
 For a native window on Windows or Linux:
 
 ```text
-cargo run -p drawen --example hello_drawen
+cargo run -p drawen --example minimal_window
 ```
 
 The windowed example is built on `winit`: Win32 on Windows, and X11 or Wayland
 on Linux. A native window remains optional. The core crates and headless tests
 do not depend on platform code.
+
+The complete runnable source is
+[`crates/drawen/examples/minimal_window.rs`](../crates/drawen/examples/minimal_window.rs).
+An external application adds the adapter beside the facade:
+
+```text
+cargo add drawen drawen-platform-winit
+```
+
+The event loop has one correct shape. Keep it visible instead of hiding it
+behind a custom framework:
+
+```text
+WindowEvent::Resized     -> runtime.layout(Constraints::tight(size))
+WindowEvent::Input       -> runtime.dispatch_event(&event)
+widget request           -> WindowAction::RequestRedraw
+redraw()                 -> runtime.paint(&mut PaintContext)
+WindowEvent::CloseRequested -> WindowAction::Exit
+```
+
+`minimal_window` handles resize, dispatch, redraw, and close. `hello_drawen`
+adds lifecycle events, timing, and a longer click handler;
+`stateful_app` shows application state and signal subscriptions.
 
 For a window with custom chrome and minimize, maximize, and close controls:
 
@@ -123,6 +146,23 @@ button.set_backgrounds(
 let subscription = button.activated().subscribe(|()| println!("Clicked"));
 ```
 
+A button has exactly one runtime-owned child and takes no label in its
+constructor. The child is arbitrary content, so the canonical text button is
+`Button` plus `Text`:
+
+```rust
+let button = runtime.append_child(runtime.root(), Button::new())?;
+runtime.append_child(
+    button,
+    Text::styled("Save", TextStyle::new(14.0, Color::BLACK)),
+)?;
+```
+
+This composition is intentional: a button can contain a label, an icon row, a
+spinner, or a custom composite. Do not look for `Button::new("Save")` or a
+button-specific text property; put the content in the child and keep surface
+styling on the button.
+
 `activated()` returns a typed `Signal<()>`. The click completes on `PointerUp`
 inside the button, and the button captures the pointer so a drag that starts
 inside it keeps receiving events. Keep the returned `Subscription` alive for as
@@ -202,7 +242,60 @@ a new frame. A captured pointer keeps delivering move and up events to the
 original widget outside its bounds. `KeyDown`, `KeyUp`, and `TextInput` are
 routed to the focused widget.
 
-## 6. Diagnostics instead of opaque failures
+## 6. Application state and signals
+
+State belongs to the application, not to a hidden framework. A shared model is
+usually an `Rc<RefCell<State>>`; widgets emit typed signals; the event loop turns
+a state change into a paint invalidation and a redraw request. There is no hook
+system, virtual DOM, or reactive dependency graph.
+
+The complete canonical example is
+[`crates/drawen/examples/stateful_app.rs`](../crates/drawen/examples/stateful_app.rs).
+The essential wiring is:
+
+```rust
+use std::{cell::{Cell, RefCell}, rc::Rc};
+
+#[derive(Default)]
+struct AppState {
+    count: u32,
+}
+
+let state = Rc::new(RefCell::new(AppState::default()));
+let dirty = Rc::new(Cell::new(false));
+
+let button = Button::new();
+let subscription = button.activated().subscribe({
+    let state = Rc::clone(&state);
+    let dirty = Rc::clone(&dirty);
+    move |()| {
+        state.borrow_mut().count += 1;
+        dirty.set(true);
+    }
+});
+```
+
+After dispatching an input event, turn the dirty flag into a redraw request:
+
+```rust
+let _ = self.runtime.dispatch_event(&event);
+let state_changed = self.dirty.replace(false);
+let widget_changed = self.runtime.take_redraw_request();
+if state_changed {
+    self.runtime.invalidate_paint();
+}
+if state_changed || widget_changed {
+    WindowAction::RequestRedraw
+} else {
+    WindowAction::None
+}
+```
+
+Use `invalidate_paint()` for a visual change and `invalidate_layout()` only when
+geometry changes. Keep every `Subscription` in the application. Signals are
+synchronous and UI-thread-local; never touch the tree from a worker thread.
+
+## 7. Diagnostics instead of opaque failures
 
 `UiRuntime` isolates panics in application implementations of `Widget::layout`,
 `Widget::paint`, and `Widget::handle_event`. Instead of propagating a panic,
@@ -246,7 +339,7 @@ let mut diagnostics = Vec::new();
 SoftwareRenderer.render_with_diagnostics(&display_list, &mut pixels, &mut diagnostics)?;
 ```
 
-## 7. Rendering to PNG
+## 8. Rendering to PNG
 
 `SoftwareRenderer` executes `FillRect`, rounded surfaces, borders, clip
 operations, transforms, rasterized text, and source-over composition into a
@@ -260,9 +353,13 @@ pixels.write_png("target/drawen-tutorial.png")?;
 
 ## Further reading
 
+- [Common recipes](RECIPES.md) for copyable button, form, state, stylesheet,
+  list, docking, and media patterns.
 - [DSS](DSS.md) for stylesheets, themes, and per-node styling.
 - [Fonts](FONTS.md) for font requests, fallback, shaping, and system fonts.
 - [Window chrome](WINDOW_CHROME.md) for custom title bars and native window
   intents.
 - [Docking](DOCKING.md) for persisted workspaces and MDI documents.
 - [Media](MEDIA.md) and [Paleo](PALEO.md) for video and audio playback.
+- [Ask AI safely](AI_GUIDE.md) for the API rules and prompt template that keep
+  generated code on the canonical path.

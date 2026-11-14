@@ -54,6 +54,14 @@ root; type, id, class, and state rules stay as per-node styles. Adding DSS does
 not require copying a complete palette, and a `button` rule no longer rewrites
 the theme value used by unrelated widgets.
 
+Inheritance covers text properties and `accent-color`; a `background` on
+`:root` is a token, not a paint command for the window surface. Give the root
+`Box` its own background (or style `box`) when the window should be filled.
+
+For an end-to-end button example with `Styled`, `UiEnvironment::from_dss`, and
+runtime-owned `:hover`/`:focus`, see
+[RECIPES.md](RECIPES.md#4-a-stylesheet-with-dss).
+
 ## Supported selectors and cascade
 
 DSS accepts one compound selector per rule, or a comma-separated list of
