@@ -10,9 +10,15 @@ repository.workspace = true
 [lints]
 workspace = true
 
+[features]
+default = []
+# Enables AudioPaleoSession and links the cpal audio output backend.
+audio = ["dep:paleo-audio"]
+
 [dependencies]
 image = { version = "0.25", default-features = false, features = ["gif"] }
 paleo = { path = "../paleo" }
+paleo-audio = { path = "../paleo-audio", optional = true }
 paleo-h264 = { path = "../paleo-h264" }
 torn-core = { path = "../torn-core" }
 torn-render = { path = "../torn-render" }

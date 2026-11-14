@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "crates/paleo",
+    "crates/paleo-audio",
     "crates/paleo-h264",
     "crates/torn-core",
     "crates/torn-render",

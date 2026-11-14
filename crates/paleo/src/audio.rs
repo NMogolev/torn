@@ -63,4 +63,13 @@ impl AudioBuffer {
     pub fn is_empty(&self) -> bool {
         self.frames() == 0
     }
+
+    /// Consumes the buffer and returns its interleaved samples.
+    ///
+    /// This lets an audio runtime move PCM data into its own queue without
+    /// copying it.
+    #[must_use]
+    pub fn into_samples(self) -> Vec<f32> {
+        self.samples
+    }
 }

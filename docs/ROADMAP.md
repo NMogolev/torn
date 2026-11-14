@@ -285,10 +285,16 @@ The completed implementation includes:
   `MediaSession` contract with frame-timestamp scheduling and an optional
   `FFmpeg` command-line backend (`ffmpeg`/`ffprobe`) plus app-supplied frames.
   Paleo (`crates/paleo`) is the in-process media layer built from focused
-  crates, with a pure-Rust H.264 backend (`crates/paleo-h264`) and the
-  `PaleoSession` adapter behind `Video::open_paleo`; see
-  [`PALEO.md`](PALEO.md) for its streaming model and codec matrix.
-  See [`MEDIA.md`](MEDIA.md) for the pipeline contract and backend limits.
+  crates, with a pure-Rust H.264 backend (`crates/paleo-h264`), an optional
+  audio runtime (`crates/paleo-audio`) that owns the output device, PCM
+  conversion, and the playback position, and the `PaleoSession` /
+  `AudioPaleoSession` adapters behind the `torn-widgets/audio` feature. Audio is
+  the master clock when a track is present; video follows it. See
+  [`PALEO.md`](PALEO.md) for the streaming model and codec matrix, and
+  [`MEDIA.md`](MEDIA.md) for the pipeline contract and backend limits.
+- normalized window lifecycle events (`Visible`, `Minimized`, `Occluded`) in
+  `torn-platform`, so an application can keep audio playing while video
+  presentation stops, without the toolkit prescribing that policy.
 
 ### M8 — Accessibility and virtualization
 
@@ -297,6 +303,25 @@ observability capabilities above as stable public contracts. Keep existing
 widget APIs compatible: `ListView` remains available alongside the data-driven
 virtual controls, and `TextField` keeps its character-index cursor API while
 using byte offsets internally.
+
+### M9 — Optional media director
+
+Add `torn-director` as a separate, optional crate rather than as part of
+`torn-widgets`. It consumes the normalized `WindowEvent` lifecycle states and
+the `MediaSession` clock to apply playback policy:
+
+```text
+MediaDirector    owns the sessions and the update loop
+VisibilityPolicy Continue | PauseVideoKeepAudio | PauseAll | StopAndRelease
+AppLifecycle     WindowVisible | WindowOccluded | WindowMinimized |
+                 LastWindowClosed | ApplicationExiting
+```
+
+The default policy keeps audio playing and stops video presentation when a
+window is minimized or occluded, and exits the application when the last window
+closes. Background playback remains an explicit application decision. `Video`
+stays presentation and control only; it never decides what a minimized window
+means.
 
 ## Explicit non-goals before v0
 

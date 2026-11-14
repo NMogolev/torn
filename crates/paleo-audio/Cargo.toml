@@ -1,0 +1,22 @@
+[package]
+name = "paleo-audio"
+description = "Audio output, PCM conversion, and playback clock for Paleo"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+default = ["device"]
+# Enables the cpal output backend. Disable default features to use only the
+# headless PCM utilities, for example in a metadata-only or server build.
+device = ["dep:cpal", "dep:ringbuf"]
+
+[dependencies]
+paleo = { path = "../paleo" }
+cpal = { version = "0.18.2", optional = true }
+ringbuf = { version = "0.6.0", optional = true }

@@ -3,6 +3,8 @@
 mod alert;
 mod align;
 mod animated_image;
+#[cfg(feature = "audio")]
+mod audio_session;
 mod avatar;
 mod badge;
 mod box_widget;
@@ -46,6 +48,8 @@ mod window_frame;
 pub use alert::{Alert, AlertTone};
 pub use align::{Align, Alignment};
 pub use animated_image::{AnimatedImage, AnimationFrame, GifDecodeError};
+#[cfg(feature = "audio")]
+pub use audio_session::AudioPaleoSession;
 pub use avatar::{Avatar, AvatarStatus};
 pub use badge::{Badge, BadgeTone};
 pub use box_widget::Box;

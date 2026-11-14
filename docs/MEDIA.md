@@ -3,9 +3,10 @@
 Media support in Torn is split into three layers: a timing and scheduling
 contract, a decode/playback session behind that contract, and widgets that only
 present frames and forward user intent. This document defines the contract and
-the two current backends: the out-of-process `FFmpeg` command-line backend and
-the in-process Paleo/H.264 backend. It is the reference to read before adding
-audio, streaming, or a new decoder.
+the current backends: the out-of-process `FFmpeg` command-line backend, the
+in-process Paleo/H.264 backend, and the audio-mastered Paleo backend with real
+audio output. It is the reference to read before adding a streaming source or a
+new decoder.
 
 ## Layers
 
@@ -114,9 +115,10 @@ the requested position.
   own `MediaClock` so progress and time labels stay live.
 - `AnimatedImage` and `Image` are not sessions. A GIF is a small, fully decoded
   timeline, not a media pipeline, and it keeps its own frame index.
-- Audio playback must subscribe to the same clock rather than becoming an
-  independent widget with its own timer. Adding a separate `AudioPlayer` before
-  the clock was shared is how video and audio drift apart.
+- Audio playback subscribes to the same clock rather than being an independent
+  widget with its own timer. Adding a separate `AudioPlayer` before the clock
+  was shared is how video and audio drift apart. Audio output lives in
+  `paleo-audio` and `AudioPaleoSession`; there is deliberately no audio widget.
 
 ## FFmpeg command-line backend
 
@@ -176,8 +178,80 @@ Known limits:
 
 - H.264 only (4:2:0 frame pictures); AV1, VP8/VP9, and HEVC still need a
   backend;
-- no audio output, resampling, or audio-mastered clock yet;
 - no hardware decode or zero-copy textures.
+
+## Audio-mastered Paleo backend
+
+`AudioPaleoSession` (in `torn-widgets`, behind the `audio` feature) adds the
+other half of playback. It decodes audio with Paleo, converts it to the output
+device with `paleo_audio::PcmConverter`, and calls
+`MediaClock::synchronize(output.position())` on every update, so the device is
+the master clock and video follows it:
+
+```text
+Paleo audio ──► PcmConverter ──► AudioOutput ring ──► device
+                                        │
+                                        └── position ──► MediaClock ──► Video frames
+```
+
+- `Video::open_paleo_audio(path)` is the convenience entry point; the
+  `torn` facade forwards the same feature as `torn/audio`.
+- The device is opened with its default output configuration and the media is
+  adapted to it. A file with no audio track falls back to the wall-clock
+  behavior of `PaleoSession`; a file with an audio track needs an output device
+  to open.
+- Audio is queued ahead of the device up to 120 ms. The ring drops the
+  remainder rather than blocking, so a stalled decoder cannot grow the queue.
+- Seeking resets the converter to the requested position, trims decoded audio
+  that precedes the keyframe the container lands on, and anchors the device
+  clock at the same timestamp. Video is then re-previewed from that position.
+- A video track is decoded only when it is H.264. An unsupported video codec is
+  skipped so that audio still plays, instead of failing the session.
+- Minimizing or occluding a window is an application policy. The session keeps
+  the device running while it is asked to update; the platform layer reports
+  `WindowEvent::Visible`, `Minimized`, and `Occluded` so an application can stop
+  presenting frames without stopping audio.
+
+Known limits:
+
+- playback speed is fixed at `1x`: scaling the rate would require resampling at
+  a scaled ratio, so `set_rate` keeps the clock at `1.0` instead of reporting a
+  rate the device does not follow;
+- decoding still happens on the calling thread. Audio decoding, conversion, and
+  queueing are bounded per update, but a large video frame can briefly block the
+  UI thread;
+- no device hot-plug handling: a device that disappears surfaces as a stream
+  error and a failed clock rather than a silent switch to another output;
+- audio is refilled from `MediaSession::update`, so sound continues only while
+  the application keeps ticking the session. A minimized or fully occluded
+  window may stop receiving redraws, so background playback needs a tick source
+  that does not depend on painting. That is part of the `torn-director`
+  milestone.
+
+## Lifecycle and presentation policy
+
+The platform layer reports normalized states instead of prescribing what to do:
+
+| Event | Meaning |
+| --- | --- |
+| `Visible(bool)` | the window is shown or hidden |
+| `Minimized(bool)` | the user minimized or restored the window |
+| `Occluded(bool)` | another window or the desktop fully covers the window |
+| `CloseRequested` | the user asked to close the window |
+
+Torn does not assume that audio must stop when video is not visible, and it does
+not assume that closing the last window means the application continues. Those
+are application decisions. The intended defaults are:
+
+- minimize or occlude: keep audio playing, stop presenting video, and skip GPU
+  redraws; pause video decoding or keep only a tiny preview buffer. On restore,
+  the audio clock already gives the position the video must catch up to.
+- close the last window: exit the application, unless background playback was
+  requested explicitly.
+
+`torn-director` will package exactly those policies as an optional crate so
+applications do not reimplement them. It is not part of `torn-widgets`: the
+widgets stay presentation and control only.
 
 ## Adding a backend
 
@@ -198,7 +272,11 @@ value is removing copies and improving seek accuracy, not changing the view API.
 
 The next milestones, in order:
 
-1. An audio output device and an audio-mastered clock shared by audio and video.
+1. `torn-director`: an optional runtime orchestration crate that owns
+   `MediaDirector`, `VisibilityPolicy` (`Continue`, `PauseVideoKeepAudio`,
+   `PauseAll`, `StopAndRelease`), and `AppLifecycle` (`WindowVisible`,
+   `WindowOccluded`, `WindowMinimized`, `LastWindowClosed`,
+   `ApplicationExiting`), and applies the lifecycle defaults above.
 2. Explicit buffering, pause-on-underflow, and end-of-stream reporting for
    network sources.
 3. Subtitle and metadata tracks.

@@ -10,6 +10,11 @@ repository.workspace = true
 [lints]
 workspace = true
 
+[features]
+default = []
+# Enables audio-mastered Paleo playback through the cpal output backend.
+audio = ["torn-widgets/audio"]
+
 [dependencies]
 torn-browser = { path = "../torn-browser" }
 torn-core = { path = "../torn-core" }

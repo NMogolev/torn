@@ -130,6 +130,24 @@ impl Video {
         Ok(Self::new().with_session(session))
     }
 
+    /// Opens `path` with Paleo audio output and follows video to the audio clock.
+    ///
+    /// Requires the `audio` feature. Audio is decoded by Paleo and played by
+    /// `paleo-audio`; the device position is the master clock. If the file has
+    /// no audio track, the session falls back to the wall-clock behavior of
+    /// [`Self::open_paleo`]. A video track is shown only when it is H.264.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MediaError`] when the file cannot be opened, the audio codec is
+    /// unsupported, no output device is available, or the video stream is
+    /// malformed.
+    #[cfg(feature = "audio")]
+    pub fn open_paleo_audio(path: impl AsRef<Path>) -> Result<Self, MediaError> {
+        let session = crate::AudioPaleoSession::open(path.as_ref())?;
+        Ok(Self::new().with_session(session))
+    }
+
     /// Attaches an externally created [`MediaSession`].
     ///
     /// This is the escape hatch for custom decoders and for backends that are

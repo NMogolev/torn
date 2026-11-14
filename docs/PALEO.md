@@ -9,15 +9,18 @@ The first implementation is built on [Symphonia](https://docs.rs/symphonia):
 
 ```text
 file ──► Symphonia demuxer ──┬──► Symphonia audio decoder ──► AudioBuffer (f32, interleaved)
+                             │                                        │
+                             │                          paleo-audio ──► PcmConverter ──► device
                              │
                              └──► VideoPacket (compressed) ──► video decoder backend
                                                                   │
                                           paleo-h264 ──► YUV 4:2:0 ──► RGBA frame
 ```
 
-Paleo lives in `crates/paleo`. The H.264 backend lives in `crates/paleo-h264`.
-The `MediaSession` contract, the `PaleoSession` adapter, and the widgets that
-present frames live in `torn-widgets`; see [MEDIA.md](MEDIA.md).
+Paleo lives in `crates/paleo`. The H.264 backend lives in `crates/paleo-h264`,
+and the optional audio runtime lives in `crates/paleo-audio`. The `MediaSession`
+contract, the `PaleoSession` and `AudioPaleoSession` adapters, and the widgets
+that present frames live in `torn-widgets`; see [MEDIA.md](MEDIA.md).
 
 ## Why not one framework
 
@@ -54,12 +57,16 @@ Paleo deliberately keeps no internal queues and never reads an entire file:
 | Returned data | one `AudioBuffer` or `VideoPacket` per `next_event` |
 | Video demux | none: packets are handed to the caller |
 | `paleo-h264` reorder | at most `reorder_depth` YUV pictures (default 4) |
+| `paleo-audio` ring | fixed at open: 250 ms by default, 20 ms–2 s requested, 1024-frame floor |
 
 `Media::next_event` returns owned values, so a frame or packet is freed as soon
 as the session has consumed it. The demuxer has no decode-ahead buffer by
 design; a `MediaSession` implementation decides how many frames to keep for
 scheduling. `paleo-h264` keeps only the decoded pictures that cannot yet be
 emitted in display order, and recycles each YUV frame into the next decode.
+`paleo-audio` owns one fixed-size ring between the decoding thread and the
+device callback; a full ring drops the overflow instead of blocking, so audio
+buffering cannot grow with a slow consumer.
 
 Measured with the `scan` example (release build, Windows, x86-64). Peak working
 set is sampled while the process runs:
@@ -176,12 +183,55 @@ copy for every frame.
 `rusty_h264-decoder` is pinned exactly (`=0.17.2`) because the packet bridge is
 written against its streaming API.
 
+## Audio output
+
+`crates/paleo-audio` is the platform-dependent half of playback. It keeps the
+same separation as the video side: Paleo decodes, `paleo-audio` adapts and
+outputs, and a session decides policy.
+
+| Type | Role |
+| --- | --- |
+| `PcmFormat`, `PcmBuffer` | sample rate, channel count, interleaved `f32` frames, timestamps |
+| `ChannelMap` | mono/stereo/surround mapping, including a `-3 dB` centre and surround downmix |
+| `LinearResampler` | streaming sample-rate conversion with one frame of history |
+| `PcmConverter` | channel map, then resample, then output timestamps; `reset_at` trims pre-seek audio |
+| `AudioOutput` | cpal device, bounded SPSC queue, volume/mute, pause, and a playable position |
+
+The output device is always opened with the host's default output
+configuration; media is adapted to it rather than the reverse. `AudioOutput`
+owns a fixed ring buffer (250 ms by default, clamped to 20 ms–2 s with a
+1024-frame floor). The application pushes converted frames; the real-time
+callback pops them and converts to the device's sample format. A full ring drops
+the remainder instead of blocking the decoding thread, and `QueueReport` reports
+both counts so a session can throttle.
+
+`AudioOutput::position` is `base + rendered_frames / sample_rate`. It counts
+frames the device actually consumed, including silence written after an
+underrun, which is why it can drive the media clock while decorated mode is
+paused or occluded. Call `reset(position)` and `PcmConverter::reset_at(position)`
+together after a seek so the converter drops decoded audio that precedes the
+target keyframe.
+
+The `device` feature is enabled by default and pulls in `cpal` and `ringbuf`.
+`paleo-audio` with `default-features = false` keeps the PCM utilities and links
+no native audio API, so a metadata, preview, or server build stays headless.
+Audio-mastered playback itself lives in `torn-widgets` behind its own `audio`
+feature; see [MEDIA.md](MEDIA.md).
+
 ## Testing
 
 - `cargo test -p paleo` runs PCM tests that build a WAV fixture in memory and
   verify decode counts, timestamps, normalization, and seek behavior.
 - `cargo test -p paleo-h264` runs unit tests for the `avcC` parser, NAL framing,
   and RGBA conversion.
+- `cargo test -p paleo-audio` runs PCM, channel-map, resampler, and converter
+  tests without touching a device. Setting `TORN_AUDIO_DEVICE_TEST` adds a
+  short default-output smoke test that starts a stream and checks that the
+  position advances.
+- `cargo test -p torn-widgets --features audio` covers `AudioPaleoSession`.
+  Setting `TORN_AUDIO_DEVICE_TEST` as well as `TORN_FFMPEG` adds an end-to-end
+  test that encodes a one-second clip, plays it through the device, and checks
+  that the audio clock drives playback and that seeking works.
 - Setting `TORN_FFMPEG` additionally runs `paleo/tests/ffmpeg_formats.rs` and
   `paleo-h264/tests/decode.rs`. They generate AAC, MP3, FLAC, Vorbis,
   MP4/H.264, and Matroska fixtures with a real FFmpeg, then check track
@@ -199,11 +249,10 @@ system FFmpeg is required for the normal suite.
 Not implemented yet:
 
 - AV1, VP8/VP9, and HEVC decoding;
-- audio output and resampling (an output device belongs to the platform layer,
-  not to Paleo; see [MEDIA.md](MEDIA.md));
 - HE-AAC and Opus decoding;
 - multiple audio or video tracks, subtitles, chapters, and attachments;
 - network sources and adaptive buffering;
+- variable-speed audio playback (resampling at a scaled ratio);
 - encoding.
 
 Known limits of the H.264 backend: `rusty_h264-decoder` decodes 4:2:0 frame
@@ -211,9 +260,14 @@ pictures only (no field/MBAFF or 4:2:2/4:4:4), and the reorder window uses a
 fixed depth rather than reading `max_num_reorder_frames` from the SPS VUI.
 Streams with a deeper reorder pattern can raise the depth explicitly.
 
+Known limits of the audio runtime: playback is fixed at `1x`, decoding,
+conversion, and queueing happen on the calling thread, and device loss is
+reported as an error instead of switching outputs automatically.
+
 Roadmap:
 
-1. Audio output device plus an audio-mastered `MediaClock`.
+1. Optional `torn-director` orchestration: visibility and lifecycle policies on
+   top of the normalized platform events.
 2. AV1 (decode) and VP8/VP9 (decode/encode) backends as separate crates.
 3. Opus and HE-AAC decoder backends; HEVC once a mature pure-Rust decoder
    exists.

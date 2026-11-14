@@ -92,11 +92,32 @@ pub enum WindowEvent {
     Maximized(bool),
     /// The window entered or left fullscreen mode.
     Fullscreen(bool),
+    /// The window became visible or was hidden by the platform or application.
+    ///
+    /// This is a normalized presentation state, not a request to redraw. A
+    /// media runtime should keep audio playing but may stop video presentation
+    /// while the value is `false`.
+    Visible(bool),
+    /// The window was minimized or restored.
+    ///
+    /// Minimizing implies [`Self::Occluded`] on platforms that report both, but
+    /// applications should treat this event as the explicit user intent to put
+    /// the window in the background.
+    Minimized(bool),
+    /// The window is completely occluded by another window or the desktop, or
+    /// it became visible again.
+    Occluded(bool),
     /// An input event relative to the content area in logical pixels.
     Input(InputEvent),
     /// The operating system requested a new frame.
     RedrawRequested,
     /// The user requested that the window be closed.
+    ///
+    /// Closing the last window does not stop the event loop by itself;
+    /// the application decides whether that means [`WindowAction::Exit`].
+    /// [`torn-director`](https://docs.rs/torn-director) provides the default
+    /// desktop policy: exit when the last window closes unless background
+    /// playback was requested explicitly.
     CloseRequested,
 }
 

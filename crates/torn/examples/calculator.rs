@@ -246,6 +246,11 @@ impl WindowApplication for CalculatorApp {
                     WindowAction::None
                 }
             }
+            // Lifecycle changes only affect whether a frame is worth drawing;
+            // the platform asks for a redraw when content becomes visible.
+            WindowEvent::Visible(_) | WindowEvent::Minimized(_) | WindowEvent::Occluded(_) => {
+                WindowAction::None
+            }
             WindowEvent::Maximized(_)
             | WindowEvent::Fullscreen(_)
             | WindowEvent::RedrawRequested => WindowAction::RequestRedraw,

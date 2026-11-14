@@ -141,12 +141,40 @@ struct Adapter {
     event_loop_proxy: EventLoopProxy<UserEvent>,
     logical_size: Option<Size>,
     needs_render: bool,
-    maximized: bool,
-    fullscreen: bool,
+    state: WindowState,
     cursor: Point,
     buttons: PointerButtons,
     modifiers: Modifiers,
     animation_deadline: Option<Instant>,
+}
+
+/// The normalized presentation state of the native window.
+///
+/// Winit reports these states through a mix of dedicated events and query
+/// methods that are not available on every platform, so the adapter tracks the
+/// last announced value and only dispatches a [`WindowEvent`] when it changes.
+// These are independent native flags, not a state machine: a window can be
+// maximized, fullscreen, occluded, and hidden in many combinations.
+#[allow(clippy::struct_excessive_bools)]
+#[derive(Clone, Copy, Debug)]
+struct WindowState {
+    maximized: bool,
+    fullscreen: bool,
+    visible: bool,
+    minimized: bool,
+    occluded: bool,
+}
+
+impl WindowState {
+    fn new(maximized: bool, fullscreen: bool) -> Self {
+        Self {
+            maximized,
+            fullscreen,
+            visible: true,
+            minimized: false,
+            occluded: false,
+        }
+    }
 }
 
 impl Adapter {
@@ -155,8 +183,7 @@ impl Adapter {
         event_loop_proxy: EventLoopProxy<UserEvent>,
     ) -> Self {
         let options = application.window_options();
-        let maximized = options.maximized;
-        let fullscreen = options.fullscreen;
+        let state = WindowState::new(options.maximized, options.fullscreen);
         Self {
             application,
             options,
@@ -166,8 +193,7 @@ impl Adapter {
             event_loop_proxy,
             logical_size: None,
             needs_render: false,
-            maximized,
-            fullscreen,
+            state,
             cursor: Point::ZERO,
             buttons: PointerButtons::NONE,
             modifiers: Modifiers::NONE,
@@ -217,8 +243,12 @@ impl Adapter {
             }
             WindowAction::ToggleFullscreen => {
                 if let Some(window) = &self.window {
-                    self.fullscreen = window.fullscreen().is_none();
-                    window.set_fullscreen(self.fullscreen.then_some(Fullscreen::Borderless(None)));
+                    self.state.fullscreen = window.fullscreen().is_none();
+                    window.set_fullscreen(
+                        self.state
+                            .fullscreen
+                            .then_some(Fullscreen::Borderless(None)),
+                    );
                 }
             }
             WindowAction::StartDrag => {
@@ -238,17 +268,27 @@ impl Adapter {
         let Some(window) = &self.window else {
             return;
         };
-        let maximized = window.is_maximized();
-        let fullscreen = window.fullscreen().is_some();
-        let maximized_changed = maximized != self.maximized;
-        let fullscreen_changed = fullscreen != self.fullscreen;
-        self.maximized = maximized;
-        self.fullscreen = fullscreen;
-        if maximized_changed {
-            self.dispatch(event_loop, WindowEvent::Maximized(maximized));
+        // `is_visible` and `is_minimized` return `None` on platforms that do
+        // not expose the query; keep the previously announced value then.
+        let observed = WindowState {
+            maximized: window.is_maximized(),
+            fullscreen: window.fullscreen().is_some(),
+            visible: window.is_visible().unwrap_or(self.state.visible),
+            minimized: window.is_minimized().unwrap_or(self.state.minimized),
+            occluded: self.state.occluded,
+        };
+        let previous = std::mem::replace(&mut self.state, observed);
+        if observed.maximized != previous.maximized {
+            self.dispatch(event_loop, WindowEvent::Maximized(observed.maximized));
         }
-        if fullscreen_changed {
-            self.dispatch(event_loop, WindowEvent::Fullscreen(fullscreen));
+        if observed.fullscreen != previous.fullscreen {
+            self.dispatch(event_loop, WindowEvent::Fullscreen(observed.fullscreen));
+        }
+        if observed.minimized != previous.minimized {
+            self.dispatch(event_loop, WindowEvent::Minimized(observed.minimized));
+        }
+        if observed.visible != previous.visible {
+            self.dispatch(event_loop, WindowEvent::Visible(observed.visible));
         }
     }
 
@@ -505,8 +545,8 @@ impl ApplicationHandler<UserEvent> for Adapter {
             ));
         }
         window.set_visible(true);
-        self.maximized = window.is_maximized();
-        self.fullscreen = window.fullscreen().is_some();
+        self.state.maximized = window.is_maximized();
+        self.state.fullscreen = window.fullscreen().is_some();
         let physical_size = window.inner_size();
         let scale_factor = window.scale_factor();
         if self.create_surface(physical_size, scale_factor).is_err() {
@@ -538,6 +578,12 @@ impl ApplicationHandler<UserEvent> for Adapter {
             WinitWindowEvent::CloseRequested => {
                 self.dispatch(event_loop, WindowEvent::CloseRequested);
             }
+            WinitWindowEvent::Occluded(occluded) => {
+                if self.state.occluded != occluded {
+                    self.state.occluded = occluded;
+                    self.dispatch(event_loop, WindowEvent::Occluded(occluded));
+                }
+            }
             WinitWindowEvent::Resized(physical_size) => {
                 self.handle_resize(event_loop, physical_size, scale_factor);
             }
@@ -552,6 +598,10 @@ impl ApplicationHandler<UserEvent> for Adapter {
                 let _ = self.handle_input_event(event_loop, event, scale_factor);
             }
         }
+        // Minimized and visible states have no dedicated winit event on every
+        // platform, so normalize them after each native event. The helper only
+        // dispatches the values that actually changed.
+        self.sync_window_state(event_loop);
     }
 }
 
@@ -560,6 +610,9 @@ fn should_refresh_accessibility(event: &WindowEvent) -> bool {
         WindowEvent::Input(InputEvent::PointerMove(_) | InputEvent::PointerLeave(_))
         | WindowEvent::Maximized(_)
         | WindowEvent::Fullscreen(_)
+        | WindowEvent::Visible(_)
+        | WindowEvent::Minimized(_)
+        | WindowEvent::Occluded(_)
         | WindowEvent::RedrawRequested
         | WindowEvent::CloseRequested => false,
         WindowEvent::Resized(_) | WindowEvent::Input(_) => true,

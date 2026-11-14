@@ -19,6 +19,8 @@ pub use torn_ui::{
     SurfaceStyle, SystemAppearance, SystemTheme, Theme, TssError, TssStyle, TssTheme,
     UiEnvironment, UiRuntime, UiRuntimeError, Widget, WindowCommand,
 };
+#[cfg(feature = "audio")]
+pub use torn_widgets::AudioPaleoSession;
 pub use torn_widgets::{
     Alert, AlertTone, Align, Alignment, AnimatedImage, AnimationFrame, Avatar, AvatarStatus, Badge,
     BadgeTone, Box, Button, ButtonStyle, Card, CardStyle, Checkbox, ComboBox, Container, Divider,
