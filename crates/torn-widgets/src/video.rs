@@ -346,6 +346,44 @@ impl Video {
         self.timeline().rate()
     }
 
+    /// Returns whether the attached session can stop video while audio plays.
+    ///
+    /// A policy layer should pause the whole session when this is `false`;
+    /// [`Self::set_video_enabled`] then has no effect.
+    #[must_use]
+    pub fn supports_video_pause(&self) -> bool {
+        self.session
+            .as_deref()
+            .is_some_and(MediaSession::supports_video_pause)
+    }
+
+    /// Suspends or resumes video decoding and presentation.
+    ///
+    /// Audio keeps playing when the session supports it, which is how a window
+    /// that is minimized or occluded can keep its soundtrack. The last painted
+    /// frame stays visible. Resuming decodes from the audio clock and discards
+    /// pictures that are already behind the playhead.
+    pub fn set_video_enabled(&mut self, enabled: bool) {
+        if let Some(session) = self.session.as_mut()
+            && let Err(error) = session.set_video_enabled(enabled)
+        {
+            self.record_error(&error);
+        }
+    }
+
+    /// Detaches the media session and stops playback.
+    ///
+    /// The last painted frame and the current position are kept, so the view
+    /// does not jump when a policy releases a stopped session.
+    pub fn release_session(&mut self) {
+        if let Some(session) = self.session.as_deref() {
+            self.clock = *session.clock();
+        }
+        if let Some(mut session) = self.session.take() {
+            session.pause();
+        }
+    }
+
     fn record_error(&mut self, error: &MediaError) {
         self.session_error = Some(error.message().to_owned());
     }
@@ -821,6 +859,8 @@ mod tests {
         clock: MediaClock,
         metadata: MediaMetadata,
         pending: Vec<MediaFrame>,
+        video_pausable: bool,
+        video_enabled: bool,
     }
 
     impl MockSession {
@@ -832,6 +872,8 @@ mod tests {
                 clock,
                 metadata: MediaMetadata::new(4, 2, Duration::from_secs(2)),
                 pending: Vec::new(),
+                video_pausable: false,
+                video_enabled: true,
             }
         }
     }
@@ -865,6 +907,18 @@ mod tests {
 
         fn set_rate(&mut self, rate: f64) {
             self.clock.set_rate(rate);
+        }
+
+        fn supports_video_pause(&self) -> bool {
+            self.video_pausable
+        }
+
+        fn set_video_enabled(&mut self, enabled: bool) -> Result<bool, MediaError> {
+            if !self.video_pausable || self.video_enabled == enabled {
+                return Ok(false);
+            }
+            self.video_enabled = enabled;
+            Ok(true)
         }
 
         fn update(&mut self, delta: Duration) -> MediaUpdate {
@@ -1049,6 +1103,37 @@ mod tests {
         assert!(video.advance_animation(Duration::ZERO, false));
         assert_eq!(video.frame().map(RasterImage::width), Some(3));
         assert!(!video.is_animating());
+    }
+
+    #[test]
+    fn video_pause_is_forwarded_and_release_keeps_the_position() {
+        let mut session = MockSession::new();
+        session.video_pausable = true;
+        session.clock.seek(Duration::from_millis(500));
+        let mut video = Video::new();
+        video.session = Some(Box::new(session));
+
+        assert!(video.supports_video_pause());
+        video.set_video_enabled(false);
+        assert_eq!(video.decoder_error(), None);
+        video.set_video_enabled(true);
+        assert_eq!(video.decoder_error(), None);
+
+        video.release_session();
+        assert!(!video.supports_video_pause());
+        assert!(!video.has_decoder());
+        assert_eq!(video.position(), Duration::from_millis(500));
+    }
+
+    #[test]
+    fn video_pause_is_ignored_without_session_support() {
+        let mut video = Video::new();
+        video.session = Some(Box::new(MockSession::new()));
+
+        assert!(!video.supports_video_pause());
+        video.set_video_enabled(false);
+        assert_eq!(video.decoder_error(), None);
+        assert!(video.has_decoder());
     }
 
     #[test]

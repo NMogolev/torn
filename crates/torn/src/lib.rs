@@ -9,6 +9,10 @@ pub use torn_core::{
     Modifiers, NamedKey, NoopClipboard, PanicOnDiagnostic, Point, PointerButton, PointerButtons,
     PointerEvent, PointerId, Rect, Size, SizeError, TextPreedit, WheelDelta, WheelEvent, WidgetId,
 };
+#[cfg(feature = "director")]
+pub use torn_director::{
+    AppLifecycle, DirectorAction, MediaDirector, PlaybackAction, VisibilityPolicy,
+};
 pub use torn_ui::{
     Accessibility, AccessibilityAction, AccessibilityActions, AccessibilityRole,
     AccessibilityState, AccessibilityTextSelection, Border, ChildLayout, Column, DEFAULT_DPI,

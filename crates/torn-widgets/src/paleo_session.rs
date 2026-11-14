@@ -25,6 +25,8 @@ const TARGET_QUEUE: usize = 2;
 const MAX_PACKETS_PER_UPDATE: usize = 16;
 /// Packet budget for a seek preview, which may walk a whole GOP.
 const MAX_PACKETS_PER_SEEK: usize = 2_000;
+/// How far before a seek target to look for the preceding keyframe.
+const KEYFRAME_LOOKBACK: Duration = Duration::from_secs(10);
 
 /// A [`MediaSession`] backed by Paleo's demuxer and the pure-Rust H.264
 /// decoder.
@@ -181,8 +183,14 @@ impl MediaSession for PaleoSession {
     fn seek(&mut self, position: Duration) -> Result<(), MediaError> {
         self.clock.seek(position);
         let target = self.clock.position();
+        let decoder = &self.decoder;
+        // The container seek lands inside a GOP, where H.264 cannot start.
+        // Seek back to the preceding IDR so the preview is at or before the
+        // target instead of skipping to the next keyframe.
         self.media
-            .seek(target)
+            .seek_keyframe(target, KEYFRAME_LOOKBACK, |data| {
+                decoder.is_keyframe_data(data)
+            })
             .map_err(|error| MediaError::new(format!("seek failed: {error}")))?;
         self.decoder.reset();
         self.queue.clear();
@@ -198,11 +206,12 @@ impl MediaSession for PaleoSession {
 
     fn update(&mut self, delta: Duration) -> MediaUpdate {
         let mut state_changed = self.clock.advance(delta);
+        let position = self.clock.position();
 
         let mut error = None;
         if self.clock.is_playing()
             && !self.ended
-            && let Err(failure) = self.fill(self.clock.position(), MAX_PACKETS_PER_UPDATE)
+            && let Err(failure) = self.fill(position, MAX_PACKETS_PER_UPDATE)
         {
             error = Some(failure);
         }
@@ -216,10 +225,28 @@ impl MediaSession for PaleoSession {
             state_changed = true;
         }
 
+        self.drop_expired(position);
         let frame = if error.is_some() {
             None
         } else {
-            self.queue.pop_front()
+            // Release a picture only once the clock reaches it. Draining one
+            // picture per update would run ahead of the wall clock whenever the
+            // update rate exceeds the frame rate.
+            let due = self
+                .queue
+                .front()
+                .is_some_and(|frame| frame.pts() <= position);
+            // A paused seek should still preview the frame that contains the
+            // target even if no timestamp lands exactly on it.
+            let preview = !self.clock.is_playing()
+                && self.queue.front().is_some_and(|frame| {
+                    frame.pts() <= position.saturating_add(self.frame_duration)
+                });
+            if due || preview {
+                self.queue.pop_front()
+            } else {
+                None
+            }
         };
         MediaUpdate {
             frame,

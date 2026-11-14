@@ -12,6 +12,7 @@ members = [
     "crates/torn-platform",
     "crates/torn-platform-winit",
     "crates/torn-workspace",
+    "crates/torn-director",
     "crates/torn-servo-windows",
     "crates/torn-servo-linux",
     "crates/torn-servo-macos",

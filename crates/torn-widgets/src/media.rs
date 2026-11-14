@@ -571,6 +571,30 @@ pub trait MediaSession {
     /// Changes the playback rate.
     fn set_rate(&mut self, rate: f64);
 
+    /// Returns whether this session can suspend video while audio continues.
+    ///
+    /// The default returns `false`: a session that presents only video, or
+    /// that has no independent audio path, must be paused as a whole.
+    fn supports_video_pause(&self) -> bool {
+        false
+    }
+
+    /// Suspends or resumes video decoding and presentation.
+    ///
+    /// This is how a policy layer keeps audio playing while a window is
+    /// minimized or occluded. Sessions that return `false` from
+    /// [`Self::supports_video_pause`] ignore the request.
+    ///
+    /// Returns whether the session changed state.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MediaError`] when the session cannot decode video from the
+    /// current position after resuming.
+    fn set_video_enabled(&mut self, _enabled: bool) -> Result<bool, MediaError> {
+        Ok(false)
+    }
+
     /// Advances playback and returns frames, errors, or state changes.
     fn update(&mut self, delta: Duration) -> MediaUpdate;
 

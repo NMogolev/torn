@@ -24,14 +24,20 @@ use crate::media::{MediaClock, MediaError, MediaFrame, MediaMetadata, MediaSessi
 const DEFAULT_FRAME_RATE: f64 = 30.0;
 /// How much audio to keep queued ahead of the output device.
 const TARGET_AUDIO_BUFFER: Duration = Duration::from_millis(120);
-/// How many decoded video frames to keep ahead of the playhead.
-const TARGET_VIDEO_QUEUE: usize = 2;
+/// How far ahead of the playhead video is decoded.
+///
+/// This is a time budget, not a frame count: an audio-mastered session must not
+/// decode faster than the device renders, or the demuxer runs ahead of the
+/// clock and reaches the end of the stream early.
+const TARGET_VIDEO_LOOKAHEAD: Duration = Duration::from_millis(200);
 /// Hard bound on decoded frames in memory after a seek or a sparse track.
 const MAX_VIDEO_QUEUE: usize = 8;
 /// Packet budget for one playback update.
 const MAX_PACKETS_PER_UPDATE: usize = 64;
 /// Packet budget for a seek preview, which may walk a whole GOP.
 const MAX_PACKETS_PER_SEEK: usize = 2_000;
+/// How far before a seek target to look for the preceding keyframe.
+const KEYFRAME_LOOKBACK: Duration = Duration::from_secs(10);
 
 struct AudioRuntime {
     output: AudioOutput,
@@ -57,6 +63,7 @@ pub struct AudioPaleoSession {
     metadata: MediaMetadata,
     frame_duration: Duration,
     queue: VecDeque<MediaFrame>,
+    video_enabled: bool,
     ended: bool,
 }
 
@@ -128,6 +135,7 @@ impl AudioPaleoSession {
             metadata: MediaMetadata::new(width, height, duration),
             frame_duration,
             queue: VecDeque::new(),
+            video_enabled: true,
             ended: false,
         };
         session.fill(Duration::ZERO, MAX_PACKETS_PER_SEEK)?;
@@ -137,14 +145,31 @@ impl AudioPaleoSession {
     /// Decodes until audio and video buffers are full, the stream ends, or
     /// `max_packets` packets were read.
     fn fill(&mut self, position: Duration, max_packets: usize) -> Result<(), MediaError> {
+        self.drop_expired(position);
         let mut packets = 0;
         while packets < max_packets {
             let audio_needed = self
                 .audio
                 .as_ref()
                 .is_some_and(|audio| audio.output.buffered() < TARGET_AUDIO_BUFFER);
-            let video_needed = self.decoder.is_some() && self.queue.len() < TARGET_VIDEO_QUEUE;
-            if self.ended || (!audio_needed && !video_needed) {
+            let video_needed = self.video_enabled
+                && self.decoder.is_some()
+                && self.queue.len() < MAX_VIDEO_QUEUE
+                && self
+                    .queue
+                    .back()
+                    .is_none_or(|frame| frame.end() < position + TARGET_VIDEO_LOOKAHEAD);
+            // While the decoder waits for its next IDR, let audio demand drive
+            // the demuxer. Otherwise a restore in the middle of a GOP would
+            // read and discard seconds of audio just to reach a keyframe,
+            // leaving an audible gap once the ring drains.
+            let video_drives = self.audio.is_none()
+                || self
+                    .decoder
+                    .as_ref()
+                    .is_none_or(|decoder| !decoder.is_awaiting_keyframe());
+            let needed = audio_needed || (video_needed && video_drives);
+            if self.ended || !needed {
                 break;
             }
 
@@ -165,11 +190,20 @@ impl AudioPaleoSession {
                 }
                 Ok(Event::Video(packet)) => {
                     packets += 1;
-                    if let Some(decoder) = self.decoder.as_mut() {
+                    // Keep demuxing so audio stays in sync, but skip decode
+                    // while presentation is suspended. `set_video_enabled`
+                    // resets the decoder, so it resumes on the next IDR.
+                    if self.video_enabled
+                        && let Some(decoder) = self.decoder.as_mut()
+                    {
                         let frames = decoder.decode(&packet).map_err(|error| {
                             MediaError::new(format!("H.264 decoding failed: {error}"))
                         })?;
                         self.push_frames(frames)?;
+                        // Catch-up can decode pictures behind the audio clock;
+                        // drop them as they arrive so the queue stays bounded
+                        // by the lookahead, not by the packet budget.
+                        self.drop_expired(position);
                     }
                 }
                 Ok(Event::EndOfStream) => {
@@ -261,9 +295,20 @@ impl MediaSession for AudioPaleoSession {
         let was_playing = self.clock.is_playing();
         self.clock.seek(position);
         let target = self.clock.position();
-        self.media
-            .seek(target)
-            .map_err(|error| MediaError::new(format!("seek failed: {error}")))?;
+        if let Some(decoder) = self.decoder.as_ref() {
+            // The container seek lands inside a GOP, where H.264 cannot start.
+            // Seek back to the preceding IDR so the preview is at or before the
+            // target instead of skipping to the next keyframe.
+            self.media
+                .seek_keyframe(target, KEYFRAME_LOOKBACK, |data| {
+                    decoder.is_keyframe_data(data)
+                })
+                .map_err(|error| MediaError::new(format!("seek failed: {error}")))?;
+        } else {
+            self.media
+                .seek(target)
+                .map_err(|error| MediaError::new(format!("seek failed: {error}")))?;
+        }
         if let Some(decoder) = self.decoder.as_mut() {
             decoder.reset();
         }
@@ -291,6 +336,31 @@ impl MediaSession for AudioPaleoSession {
 
     fn set_rate(&mut self, _rate: f64) {
         self.clock.set_rate(1.0);
+    }
+
+    fn supports_video_pause(&self) -> bool {
+        // Only a session with an independent audio path can keep playing while
+        // video stops; without audio, "pause video" would stop the media.
+        self.audio.is_some()
+    }
+
+    fn set_video_enabled(&mut self, enabled: bool) -> Result<bool, MediaError> {
+        if self.video_enabled == enabled || self.decoder.is_none() {
+            return Ok(false);
+        }
+        self.video_enabled = enabled;
+        if let Some(decoder) = self.decoder.as_mut() {
+            decoder.reset();
+        }
+        self.queue.clear();
+        if enabled {
+            // The audio clock is authoritative, so decode from where the stream
+            // is now and let `drop_expired` discard anything behind the
+            // playhead. This is the catch-up path after a hidden window.
+            let position = self.clock.position();
+            self.fill(position, MAX_PACKETS_PER_SEEK)?;
+        }
+        Ok(true)
     }
 
     fn update(&mut self, delta: Duration) -> MediaUpdate {
@@ -332,7 +402,29 @@ impl MediaSession for AudioPaleoSession {
 
         let position = self.clock.position();
         self.drop_expired(position);
-        let frame = self.queue.pop_front();
+        // Hand a picture to the view only when the audio clock has reached it.
+        // Releasing one frame per update regardless of its timestamp would
+        // drain the queue faster than the device renders sound, so the
+        // demuxer would race ahead and hit end-of-stream early.
+        let frame = if self.video_enabled {
+            let due = self
+                .queue
+                .front()
+                .is_some_and(|frame| frame.pts() <= position);
+            // A paused seek should still preview the frame that contains the
+            // target even if no timestamp lands exactly on it.
+            let preview = !self.clock.is_playing()
+                && self.queue.front().is_some_and(|frame| {
+                    frame.pts() <= position.saturating_add(self.frame_duration)
+                });
+            if due || preview {
+                self.queue.pop_front()
+            } else {
+                None
+            }
+        } else {
+            None
+        };
 
         let drained = self.ended
             && self.queue.is_empty()

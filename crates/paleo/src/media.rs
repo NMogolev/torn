@@ -29,6 +29,8 @@ use crate::video::{VideoExtraData, VideoExtraDataKind, VideoPacket};
 
 /// Consecutive undecodable audio packets tolerated before playback fails.
 const MAX_DECODE_FAILURES: u32 = 64;
+/// Upper bound on packets inspected while looking for a keyframe before a seek.
+const MAX_KEYFRAME_SCAN_PACKETS: usize = 20_000;
 
 /// Which tracks [`Media`] prepares when a file is opened.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -423,6 +425,73 @@ impl Media {
         self.decode_failures = 0;
         self.ended = false;
         Ok(())
+    }
+
+    /// Moves the reader to the last video keyframe at or before `position`.
+    ///
+    /// Containers can only resume video at a keyframe, but a time seek lands on
+    /// the packet that *contains* the requested time, which is usually an inter
+    /// picture. A decoder that resets there silently skips forward to the next
+    /// keyframe, so the view would show a picture later than the seek target.
+    /// This method scans a bounded window before `position`, without decoding,
+    /// and then seeks to the keyframe it found.
+    ///
+    /// `is_keyframe` receives each raw video packet in the window and returns
+    /// whether it starts a random-access sequence. Audio packets are skipped,
+    /// not decoded. Scanning is bounded by `lookback` and an internal packet
+    /// budget.
+    ///
+    /// Returns `true` when a keyframe was found and the reader moved to it. When
+    /// none is found the reader is left at `position` and the caller must wait
+    /// for the next keyframe.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as [`Self::seek`].
+    pub fn seek_keyframe(
+        &mut self,
+        position: Duration,
+        lookback: Duration,
+        mut is_keyframe: impl FnMut(&[u8]) -> bool,
+    ) -> Result<bool> {
+        let Some(video_track) = self.video_track else {
+            self.seek(position)?;
+            return Ok(false);
+        };
+        self.seek(position.saturating_sub(lookback))?;
+
+        let mut found = None;
+        for _ in 0..MAX_KEYFRAME_SCAN_PACKETS {
+            let packet = match self.reader.next_packet() {
+                Ok(Some(packet)) => packet,
+                Ok(None) => break,
+                Err(symphonia::core::errors::Error::IoError(ref error))
+                    if error.kind() == ErrorKind::UnexpectedEof =>
+                {
+                    break;
+                }
+                Err(symphonia::core::errors::Error::ResetRequired) => continue,
+                Err(error) => return Err(error.into()),
+            };
+            if packet.track_id != video_track {
+                continue;
+            }
+            let pts = timestamp_duration(self.video_time_base, packet.pts).unwrap_or_default();
+            if pts > position {
+                break;
+            }
+            if is_keyframe(&packet.data) {
+                found = Some(pts);
+            }
+        }
+
+        if let Some(keyframe) = found {
+            self.seek(keyframe)?;
+            Ok(true)
+        } else {
+            self.seek(position)?;
+            Ok(false)
+        }
     }
 
     fn finish(&mut self) -> Event {

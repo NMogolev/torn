@@ -134,6 +134,15 @@ track, which is useful for a video session that cannot decode or output audio.
 resume once its atom iterator has reached EOF, so `Media` reopens the source in
 that case; the cost is one probe and no re-decoding.
 
+`seek_keyframe(position, lookback, is_keyframe)` is the video-aware form. A
+container seek lands on the packet that *contains* the requested time, which is
+usually an inter picture, and an H.264 decoder that resets there can only resume
+at the next IDR. `seek_keyframe` instead scans a bounded window before
+`position`, keeps the last packet that `is_keyframe` accepts, and seeks exactly
+there. Audio packets in the window are skipped without decoding. The caller
+supplies the predicate because Symphonia 0.6 does not expose packet keyframe
+flags; `paleo_h264::H264Decoder::is_keyframe_data` recognizes IDR slices.
+
 `AudioBuffer` contains interleaved `f32` samples normalized to `-1.0..=1.0`,
 with the presentation timestamp, sample rate, and channel count of the block.
 `VideoPacket` contains the compressed payload and both timestamps; it carries no
@@ -230,8 +239,11 @@ feature; see [MEDIA.md](MEDIA.md).
   position advances.
 - `cargo test -p torn-widgets --features audio` covers `AudioPaleoSession`.
   Setting `TORN_AUDIO_DEVICE_TEST` as well as `TORN_FFMPEG` adds an end-to-end
-  test that encodes a one-second clip, plays it through the device, and checks
-  that the audio clock drives playback and that seeking works.
+  test that encodes a one-second clip, plays it through the device, checks that
+  the audio clock drives playback, that a hidden window keeps audio running
+  while video stops, and that seeking resumes video from the audio clock.
+- `cargo test -p torn-director` covers lifecycle transitions, every visibility
+  policy, last-window close behavior, and applying actions to a `Video`.
 - Setting `TORN_FFMPEG` additionally runs `paleo/tests/ffmpeg_formats.rs` and
   `paleo-h264/tests/decode.rs`. They generate AAC, MP3, FLAC, Vorbis,
   MP4/H.264, and Matroska fixtures with a real FFmpeg, then check track
@@ -266,8 +278,6 @@ reported as an error instead of switching outputs automatically.
 
 Roadmap:
 
-1. Optional `torn-director` orchestration: visibility and lifecycle policies on
-   top of the normalized platform events.
-2. AV1 (decode) and VP8/VP9 (decode/encode) backends as separate crates.
-3. Opus and HE-AAC decoder backends; HEVC once a mature pure-Rust decoder
+1. AV1 (decode) and VP8/VP9 (decode/encode) backends as separate crates.
+2. Opus and HE-AAC decoder backends; HEVC once a mature pure-Rust decoder
    exists.

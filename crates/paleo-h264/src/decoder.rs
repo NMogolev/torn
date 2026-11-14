@@ -164,9 +164,28 @@ impl H264Decoder {
     /// Returns `false` before [`Self::configure`] has seen an `avcC` record.
     #[must_use]
     pub fn is_keyframe(&self, packet: &VideoPacket) -> bool {
+        self.is_keyframe_data(packet.data())
+    }
+
+    /// Reports whether raw length-prefixed packet data contains an IDR slice.
+    ///
+    /// This is the byte-level form of [`Self::is_keyframe`], used while scanning
+    /// the demuxer for the keyframe that precedes a seek target.
+    #[must_use]
+    pub fn is_keyframe_data(&self, data: &[u8]) -> bool {
         self.config
             .as_ref()
-            .is_some_and(|config| config.is_idr(packet.data()))
+            .is_some_and(|config| config.is_idr(data))
+    }
+
+    /// Reports whether decoding is waiting for the next random-access packet.
+    ///
+    /// A reset decoder drops inter pictures until the next IDR. A session can
+    /// use this to avoid demuxing far ahead of its clock while video is
+    /// resynchronizing after a seek or a hidden window.
+    #[must_use]
+    pub const fn is_awaiting_keyframe(&self) -> bool {
+        self.awaiting_keyframe
     }
 
     /// Decodes one packet and returns the pictures that are ready to present.

@@ -98,6 +98,21 @@ clock, returns at most the newest frame, and may report an error or a state
 change. A session must be cheap when nothing changed: a paused session returns an
 empty update instead of waking a decoder.
 
+Two methods are defaulted for sessions whose video can be suspended without
+stopping the media:
+
+- `supports_video_pause()` reports whether the session has an independent audio
+  path, so audio can continue while video decoding stops.
+- `set_video_enabled(bool)` stops or resumes video decoding and returns whether
+  the state changed. The audio clock remains authoritative, so resuming drops
+  pictures behind the clock and waits for the next random-access point instead of
+  replaying the hidden interval.
+
+`Video` forwards both methods and adds `release_session()`, which drops the
+session while keeping the last painted frame. Applications use them through a
+policy layer such as `torn-director`; a widget never decides on its own what a
+hidden window means.
+
 `MediaMetadata` reports the display width and height after rotation, plus the
 container duration (zero when unknown). `MediaError` is a displayable fatal
 error. Recoverable conditions belong in `MediaState::Buffering`, not in an error.
@@ -163,10 +178,16 @@ with `paleo_h264::H264Decoder`:
   not prevent playback and no audio is decoded before an output device exists.
 - Decoding is synchronous and bounded on the calling thread. Each `update`
   decodes at most a few packets and keeps a couple of pictures ahead of the
-  playhead instead of building an unbounded queue. There is no worker thread
-  yet, so a large frame can briefly block the UI thread.
-- Seeking resets the decoder and decodes a preview even while paused, so the
-  view can repaint immediately.
+  playhead instead of building an unbounded queue. A picture is released only
+  when the clock reaches its timestamp, so a high update rate cannot outrun the
+  stream. There is no worker thread yet, so a large frame can briefly block the
+  UI thread.
+- Seeking finds the keyframe at or before the target (scanning back up to 10 s),
+  moves the reader there, resets the decoder, and decodes a preview even while
+  paused, so the view repaints at or before the requested position instead of
+  jumping forward to the next keyframe. Symphonia 0.6 does not expose packet
+  keyframe flags, so `paleo_h264::H264Decoder::is_keyframe_data` recognizes IDR
+  slices in the bitstream during the scan.
 - `PaleoSession` stores the source path and reopens it when seeking after
   end-of-stream. Symphonia 0.6's ISO/MP4 reader cannot resume once its atom
   iterator has reached EOF; `paleo::Media` does the same for direct callers.
@@ -202,15 +223,20 @@ Paleo audio ──► PcmConverter ──► AudioOutput ring ──► device
   to open.
 - Audio is queued ahead of the device up to 120 ms. The ring drops the
   remainder rather than blocking, so a stalled decoder cannot grow the queue.
-- Seeking resets the converter to the requested position, trims decoded audio
-  that precedes the keyframe the container lands on, and anchors the device
-  clock at the same timestamp. Video is then re-previewed from that position.
+  Video is decoded on a 200 ms time budget rather than a fixed queue length, so
+  the demuxer cannot race ahead of the device and reach end-of-stream early.
+- Seeking searches back for the preceding IDR, repositions audio and video
+  together, resets the converter and output clock to the requested position, and
+  trims audio decoded before the target. The decoder resumes at a random-access
+  point, so the preview is at or before the target.
 - A video track is decoded only when it is H.264. An unsupported video codec is
   skipped so that audio still plays, instead of failing the session.
-- Minimizing or occluding a window is an application policy. The session keeps
-  the device running while it is asked to update; the platform layer reports
-  `WindowEvent::Visible`, `Minimized`, and `Occluded` so an application can stop
-  presenting frames without stopping audio.
+- `set_video_enabled(false)` stops video decoding and presentation while audio
+  keeps playing; `set_video_enabled(true)` decodes from the current demuxer
+  position, waits for the next IDR, and drops pictures behind the audio clock.
+  Minimizing or occluding a window to trigger this is an application policy. The
+  platform layer reports `WindowEvent::Visible`, `Minimized`, and `Occluded` so
+  an application or director can stop presenting frames without stopping audio.
 
 Known limits:
 
@@ -224,9 +250,9 @@ Known limits:
   error and a failed clock rather than a silent switch to another output;
 - audio is refilled from `MediaSession::update`, so sound continues only while
   the application keeps ticking the session. A minimized or fully occluded
-  window may stop receiving redraws, so background playback needs a tick source
-  that does not depend on painting. That is part of the `torn-director`
-  milestone.
+  window may stop receiving redraws; a background-playing application must keep
+  a tick source that does not depend on painting. `torn-director` supplies the
+  policy and window actions, but the event loop still owns that tick.
 
 ## Lifecycle and presentation policy
 
@@ -249,9 +275,32 @@ are application decisions. The intended defaults are:
 - close the last window: exit the application, unless background playback was
   requested explicitly.
 
-`torn-director` will package exactly those policies as an optional crate so
-applications do not reimplement them. It is not part of `torn-widgets`: the
-widgets stay presentation and control only.
+`torn-director` packages those policies as an optional crate so applications do
+not reimplement them. It is not part of `torn-widgets`: the widgets stay
+presentation and control only. Enable it through the `torn` facade with the
+`director` feature, or depend on `torn-director` directly:
+
+```text
+MediaDirector    owns lifecycle state and converts WindowEvents into actions
+VisibilityPolicy Continue | PauseVideoKeepAudio | PauseAll | StopAndRelease
+AppLifecycle     WindowVisible | WindowOccluded | WindowMinimized |
+                 LastWindowClosed | ApplicationExiting
+DirectorAction   AppLifecycle + PlaybackAction + WindowAction + redraw flag
+```
+
+`MediaDirector::window_event` ignores input and resize events and turns
+visibility, minimize, occlude, and close events into a `DirectorAction`.
+`MediaDirector::apply` applies it to a `Video`: `PauseVideo` calls
+`Video::set_video_enabled(false)` when the session supports it and degrades to
+`PauseAll` when it does not; `StopAndRelease` pauses and calls
+`Video::release_session`. The director remembers whether it paused playback, so
+a policy pause resumes on restore while a user pause stays paused.
+
+The default policy is `PauseVideoKeepAudio`. The last window closing exits unless
+the application opts into background playback with
+`with_background_playback(true)`. A director action requests a redraw when a
+window becomes visible again, so a presenter that skipped frames while hidden
+repaints immediately.
 
 ## Adding a backend
 
@@ -272,18 +321,15 @@ value is removing copies and improving seek accuracy, not changing the view API.
 
 The next milestones, in order:
 
-1. `torn-director`: an optional runtime orchestration crate that owns
-   `MediaDirector`, `VisibilityPolicy` (`Continue`, `PauseVideoKeepAudio`,
-   `PauseAll`, `StopAndRelease`), and `AppLifecycle` (`WindowVisible`,
-   `WindowOccluded`, `WindowMinimized`, `LastWindowClosed`,
-   `ApplicationExiting`), and applies the lifecycle defaults above.
-2. Explicit buffering, pause-on-underflow, and end-of-stream reporting for
+1. Explicit buffering, pause-on-underflow, and end-of-stream reporting for
    network sources.
-3. Subtitle and metadata tracks.
-4. Additional Paleo video backends: AV1, VP8/VP9, and HEVC once a mature
+2. Subtitle and metadata tracks.
+3. Additional Paleo video backends: AV1, VP8/VP9, and HEVC once a mature
    pure-Rust decoder exists.
-5. In-process decoding, hardware decode, and GPU external textures without
+4. In-process decoding, hardware decode, and GPU external textures without
    changing `Video` or `MediaSession` callers.
+5. A non-redraw tick source in the windowed examples so `torn-director`
+   background playback keeps refilling audio while no window is painted.
 
 Until then, documentation and one coherent example product are more valuable
 than additional media surface area. That example should exercise media with a

@@ -113,6 +113,47 @@ fn follows_the_audio_clock_and_seeks() {
     assert_eq!(video.decoder_error(), None);
     assert!(video.frame().is_some(), "video follows the audio clock");
 
+    // A hidden window keeps audio running and stops video decoding. The last
+    // painted frame stays on screen instead of going blank.
+    assert!(video.supports_video_pause());
+    let hidden_frame = video
+        .frame()
+        .expect("a frame is presented")
+        .pixels()
+        .to_vec();
+    video.set_video_enabled(false);
+    assert_eq!(video.decoder_error(), None);
+    let before_hidden = video.position();
+    std::thread::sleep(Duration::from_millis(120));
+    video.advance_animation(Duration::ZERO, false);
+    assert!(
+        video.position() > before_hidden,
+        "audio keeps the clock running while video is suspended"
+    );
+    assert_eq!(
+        video.frame().expect("the last frame stays").pixels(),
+        hidden_frame,
+        "no new video is presented while hidden"
+    );
+
+    // Restoring catches video up to the audio clock: decoding resumes at the
+    // demuxer position and stale pictures are dropped rather than replayed.
+    video.set_video_enabled(true);
+    assert_eq!(video.decoder_error(), None);
+    for _ in 0..120 {
+        video.advance_animation(Duration::from_millis(10), false);
+        if video.position() >= Duration::from_millis(900) {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert_ne!(
+        video.frame().expect("a frame is presented").pixels(),
+        hidden_frame,
+        "video resumes from the audio clock"
+    );
+    assert_eq!(video.decoder_error(), None);
+
     video.set_playing(false);
     assert!(!video.is_playing());
     let held = video.position();

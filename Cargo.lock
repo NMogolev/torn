@@ -2599,6 +2599,7 @@ version = "0.1.0"
 dependencies = [
  "torn-browser",
  "torn-core",
+ "torn-director",
  "torn-platform",
  "torn-platform-winit",
  "torn-render",
@@ -2624,6 +2625,14 @@ dependencies = [
 [[package]]
 name = "torn-core"
 version = "0.1.0"
+
+[[package]]
+name = "torn-director"
+version = "0.1.0"
+dependencies = [
+ "torn-platform",
+ "torn-widgets",
+]
 
 [[package]]
 name = "torn-platform"

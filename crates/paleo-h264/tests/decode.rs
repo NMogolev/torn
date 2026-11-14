@@ -208,6 +208,57 @@ fn decodes_hierarchical_b_frames() {
     let _ = std::fs::remove_file(clip);
 }
 
+#[test]
+fn seek_keyframe_lands_on_the_preceding_idr() {
+    let Some(ffmpeg) = ffmpeg() else {
+        eprintln!("skipping: set TORN_FFMPEG or install ffmpeg to run this test");
+        return;
+    };
+    let clip = std::env::temp_dir().join(format!("paleo-h264-keyseek-{}.mp4", std::process::id()));
+    generate(&ffmpeg, &clip);
+    let (_, extra_data) = packets(&clip);
+    let mut decoder = H264Decoder::new();
+    decoder
+        .configure(&extra_data)
+        .expect("the avcC record is valid");
+
+    let mut media = Media::open(&clip).expect("the clip opens");
+    let found = media
+        .seek_keyframe(
+            Duration::from_millis(1_500),
+            Duration::from_secs(2),
+            |data| decoder.is_keyframe_data(data),
+        )
+        .expect("the seek succeeds");
+    assert!(found, "a keyframe precedes the target");
+
+    // The reader is positioned on the IDR, not on the packet containing 1.5 s.
+    decoder.reset();
+    let mut first_keyframe = None;
+    loop {
+        let packet = match media.next_event().expect("demuxing succeeds") {
+            Event::Video(packet) => packet,
+            Event::Audio(_) => continue,
+            Event::EndOfStream => panic!("the clip ends before the keyframe decodes"),
+        };
+        if first_keyframe.is_none() {
+            first_keyframe = Some(packet.pts());
+            assert!(
+                decoder.is_keyframe(&packet),
+                "the first packet after the seek is an IDR"
+            );
+        }
+        let frames = decoder.decode(&packet).expect("the keyframe decodes");
+        if let Some(frame) = frames.first() {
+            assert_eq!(frame.pts(), Duration::from_secs(1));
+            break;
+        }
+    }
+    assert_eq!(first_keyframe, Some(Duration::from_secs(1)));
+
+    let _ = std::fs::remove_file(clip);
+}
+
 fn assert_matches_ffmpeg(
     ffmpeg: &std::ffi::OsString,
     clip: &Path,

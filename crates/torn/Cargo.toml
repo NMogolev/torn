@@ -14,10 +14,13 @@ workspace = true
 default = []
 # Enables audio-mastered Paleo playback through the cpal output backend.
 audio = ["torn-widgets/audio"]
+# Enables the optional media director runtime.
+director = ["dep:torn-director"]
 
 [dependencies]
 torn-browser = { path = "../torn-browser" }
 torn-core = { path = "../torn-core" }
+torn-director = { path = "../torn-director", optional = true }
 torn-render = { path = "../torn-render" }
 torn-software = { path = "../torn-software" }
 torn-wgpu = { path = "../torn-wgpu" }

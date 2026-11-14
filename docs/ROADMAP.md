@@ -181,6 +181,10 @@ torn-platform         Platform abstraction
 torn-platform-winit   Winit window/event-loop adapter
 torn-wgpu             GPU renderer
 torn-style            Extracted theme/cascade engine, if warranted
+paleo                 Headless container, audio decode, and video demux
+paleo-h264            Pure-Rust H.264 video backend
+paleo-audio           Optional audio device runtime
+torn-director         Optional media lifecycle and presentation policy
 ```
 
 This order intentionally avoids adding `winit`, `wgpu`, or a CSS parser before
@@ -306,22 +310,34 @@ using byte offsets internally.
 
 ### M9 — Optional media director
 
-Add `torn-director` as a separate, optional crate rather than as part of
+`torn-director` is a separate, optional crate rather than part of
 `torn-widgets`. It consumes the normalized `WindowEvent` lifecycle states and
 the `MediaSession` clock to apply playback policy:
 
 ```text
-MediaDirector    owns the sessions and the update loop
+MediaDirector    owns lifecycle state and converts WindowEvents into actions
 VisibilityPolicy Continue | PauseVideoKeepAudio | PauseAll | StopAndRelease
 AppLifecycle     WindowVisible | WindowOccluded | WindowMinimized |
                  LastWindowClosed | ApplicationExiting
+DirectorAction   AppLifecycle + PlaybackAction + WindowAction + redraw flag
 ```
 
 The default policy keeps audio playing and stops video presentation when a
 window is minimized or occluded, and exits the application when the last window
-closes. Background playback remains an explicit application decision. `Video`
-stays presentation and control only; it never decides what a minimized window
-means.
+closes. Background playback remains an explicit application decision through
+`with_background_playback(true)`. `Video` stays presentation and control only;
+it never decides what a minimized window means.
+
+`MediaDirector::apply` drives the session through `Video::set_video_enabled` and
+`Video::release_session`. A `PauseVideo` policy degrades to `PauseAll` for
+sessions that cannot pause video independently, and a policy pause resumes on
+restore while a user pause stays paused. The action also requests a redraw when
+a window becomes visible again.
+
+The crate is reachable through the `torn` facade as `torn/director`. The event
+loop still owns the tick that refills audio, so a windowed application that
+plays in the background needs a tick source that does not depend on redraws; the
+director supplies policy and window actions, not a timer.
 
 ## Explicit non-goals before v0
 
